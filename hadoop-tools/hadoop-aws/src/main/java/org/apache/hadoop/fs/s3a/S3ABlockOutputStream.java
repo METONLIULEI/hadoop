@@ -20,39 +20,47 @@ package org.apache.hadoop.fs.s3a;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Callable;
+import java.util.Locale;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import com.amazonaws.AmazonClientException;
 import com.amazonaws.event.ProgressEvent;
 import com.amazonaws.event.ProgressEventType;
 import com.amazonaws.event.ProgressListener;
-import com.amazonaws.services.s3.model.CompleteMultipartUploadResult;
 import com.amazonaws.services.s3.model.PartETag;
 import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.PutObjectResult;
 import com.amazonaws.services.s3.model.UploadPartRequest;
-import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.ListeningExecutorService;
-import com.google.common.util.concurrent.MoreExecutors;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Futures;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListenableFuture;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListeningExecutorService;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.MoreExecutors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.io.retry.RetryPolicies;
-import org.apache.hadoop.io.retry.RetryPolicy;
+import org.apache.hadoop.fs.PathIOException;
+import org.apache.hadoop.fs.StreamCapabilities;
+import org.apache.hadoop.fs.s3a.commit.CommitConstants;
+import org.apache.hadoop.fs.s3a.commit.PutTracker;
+import org.apache.hadoop.fs.s3a.statistics.BlockOutputStreamStatistics;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.IOStatisticsLogging;
+import org.apache.hadoop.fs.statistics.IOStatisticsSource;
 import org.apache.hadoop.util.Progressable;
 
 import static org.apache.hadoop.fs.s3a.S3AUtils.*;
 import static org.apache.hadoop.fs.s3a.Statistic.*;
+import static org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding.emptyStatistics;
+import static org.apache.hadoop.io.IOUtils.cleanupWithLogger;
 
 /**
  * Upload files/parts directly via different buffering mechanisms:
@@ -65,7 +73,8 @@ import static org.apache.hadoop.fs.s3a.Statistic.*;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
-class S3ABlockOutputStream extends OutputStream {
+class S3ABlockOutputStream extends OutputStream implements
+    StreamCapabilities, IOStatisticsSource {
 
   private static final Logger LOG =
       LoggerFactory.getLogger(S3ABlockOutputStream.class);
@@ -79,6 +88,9 @@ class S3ABlockOutputStream extends OutputStream {
   /** Size of all blocks. */
   private final int blockSize;
 
+  /** IO Statistics. */
+  private final IOStatistics iostatistics;
+
   /** Total bytes for uploads submitted so far. */
   private long bytesSubmitted;
 
@@ -86,14 +98,6 @@ class S3ABlockOutputStream extends OutputStream {
   private final ProgressListener progressListener;
   private final ListeningExecutorService executorService;
 
-  /**
-   * Retry policy for multipart commits; not all AWS SDK versions retry that.
-   */
-  private final RetryPolicy retryPolicy =
-      RetryPolicies.retryUpToMaximumCountWithProportionalSleep(
-          5,
-          2000,
-          TimeUnit.MILLISECONDS);
   /**
    * Factory for blocks.
    */
@@ -115,12 +119,17 @@ class S3ABlockOutputStream extends OutputStream {
   private long blockCount = 0;
 
   /** Statistics to build up. */
-  private final S3AInstrumentation.OutputStreamStatistics statistics;
+  private final BlockOutputStreamStatistics statistics;
 
   /**
    * Write operation helper; encapsulation of the filesystem operations.
    */
-  private final S3AFileSystem.WriteOperationHelper writeOperationHelper;
+  private final WriteOperationHelper writeOperationHelper;
+
+  /**
+   * Track multipart put operation.
+   */
+  private final PutTracker putTracker;
 
   /**
    * An S3A output stream which uploads partitions in a separate pool of
@@ -138,6 +147,7 @@ class S3ABlockOutputStream extends OutputStream {
    * @param blockFactory factory for creating stream destinations
    * @param statistics stats for this stream
    * @param writeOperationHelper state of the write operation.
+   * @param putTracker put tracking for commit support
    * @throws IOException on any problem
    */
   S3ABlockOutputStream(S3AFileSystem fs,
@@ -146,15 +156,21 @@ class S3ABlockOutputStream extends OutputStream {
       Progressable progress,
       long blockSize,
       S3ADataBlocks.BlockFactory blockFactory,
-      S3AInstrumentation.OutputStreamStatistics statistics,
-      S3AFileSystem.WriteOperationHelper writeOperationHelper)
+      BlockOutputStreamStatistics statistics,
+      WriteOperationHelper writeOperationHelper,
+      PutTracker putTracker)
       throws IOException {
     this.fs = fs;
     this.key = key;
     this.blockFactory = blockFactory;
     this.blockSize = (int) blockSize;
     this.statistics = statistics;
+    // test instantiations may not provide statistics;
+    this.iostatistics = statistics != null
+        ? statistics.getIOStatistics()
+        : emptyStatistics();
     this.writeOperationHelper = writeOperationHelper;
+    this.putTracker = putTracker;
     Preconditions.checkArgument(blockSize >= Constants.MULTIPART_MIN_SIZE,
         "Block size is too small: %d", blockSize);
     this.executorService = MoreExecutors.listeningDecorator(executorService);
@@ -166,7 +182,11 @@ class S3ABlockOutputStream extends OutputStream {
     // writes a 0-byte entry.
     createBlockIfNeeded();
     LOG.debug("Initialized S3ABlockOutputStream for {}" +
-        " output to {}", writeOperationHelper, activeBlock);
+        " output to {}", key, activeBlock);
+    if (putTracker.initialize()) {
+      LOG.debug("Put tracker requests multipart upload");
+      initMultipartUpload();
+    }
   }
 
   /**
@@ -233,7 +253,12 @@ class S3ABlockOutputStream extends OutputStream {
    */
   @Override
   public synchronized void flush() throws IOException {
-    checkOpen();
+    try {
+      checkOpen();
+    } catch (IOException e) {
+      LOG.warn("Stream closed: " + e.getMessage());
+      return;
+    }
     S3ADataBlocks.DataBlock dataBlock = getActiveBlock();
     if (dataBlock != null) {
       dataBlock.flush();
@@ -271,6 +296,7 @@ class S3ABlockOutputStream extends OutputStream {
     if (len == 0) {
       return;
     }
+    statistics.writeBytes(len);
     S3ADataBlocks.DataBlock block = createBlockIfNeeded();
     int written = block.write(source, offset, len);
     int remainingCapacity = block.remainingCapacity();
@@ -293,22 +319,33 @@ class S3ABlockOutputStream extends OutputStream {
 
   /**
    * Start an asynchronous upload of the current block.
-   * @throws IOException Problems opening the destination for upload
-   * or initializing the upload.
+   * @throws IOException Problems opening the destination for upload,
+   * initializing the upload, or if a previous operation has failed.
    */
   private synchronized void uploadCurrentBlock() throws IOException {
     Preconditions.checkState(hasActiveBlock(), "No active block");
     LOG.debug("Writing block # {}", blockCount);
-    if (multiPartUpload == null) {
-      LOG.debug("Initiating Multipart upload");
-      multiPartUpload = new MultiPartUpload();
-    }
+    initMultipartUpload();
     try {
       multiPartUpload.uploadBlockAsync(getActiveBlock());
       bytesSubmitted += getActiveBlock().dataSize();
     } finally {
       // set the block to null, so the next write will create a new block.
       clearActiveBlock();
+    }
+  }
+
+  /**
+   * Init multipart upload. Assumption: this is called from
+   * a synchronized block.
+   * Note that this makes a blocking HTTPS request to the far end, so
+   * can take time and potentially fail.
+   * @throws IOException failure to initialize the upload
+   */
+  private void initMultipartUpload() throws IOException {
+    if (multiPartUpload == null) {
+      LOG.debug("Initiating Multipart upload");
+      multiPartUpload = new MultiPartUpload(key);
     }
   }
 
@@ -342,32 +379,53 @@ class S3ABlockOutputStream extends OutputStream {
           // This must happen even if there is no data, so that 0 byte files
           // are created.
           bytes = putObject();
+          bytesSubmitted = bytes;
         }
       } else {
-        // there has already been at least one block scheduled for upload;
-        // put up the current then wait
-        if (hasBlock && block.hasData()) {
+        // there's an MPU in progress';
+        // IF there is more data to upload, or no data has yet been uploaded,
+        // PUT the final block
+        if (hasBlock &&
+            (block.hasData() || multiPartUpload.getPartsSubmitted() == 0)) {
           //send last part
           uploadCurrentBlock();
         }
         // wait for the partial uploads to finish
         final List<PartETag> partETags =
             multiPartUpload.waitForAllPartUploads();
-        // then complete the operation
-        multiPartUpload.complete(partETags);
         bytes = bytesSubmitted;
+        // then complete the operation
+        if (putTracker.aboutToComplete(multiPartUpload.getUploadId(),
+            partETags,
+            bytes,
+            iostatistics)) {
+          multiPartUpload.complete(partETags);
+        } else {
+          LOG.info("File {} will be visible when the job is committed", key);
+        }
       }
-      LOG.debug("Upload complete for {}", writeOperationHelper);
+      if (!putTracker.outputImmediatelyVisible()) {
+        // track the number of bytes uploaded as commit operations.
+        statistics.commitUploaded(bytes);
+      }
+      LOG.debug("Upload complete to {} by {}", key, writeOperationHelper);
     } catch (IOException ioe) {
+      // the operation failed.
+      // if this happened during a multipart upload, abort the
+      // operation, so as to not leave (billable) data
+      // pending on the bucket
+      if (multiPartUpload != null) {
+        multiPartUpload.abort();
+      }
       writeOperationHelper.writeFailed(ioe);
       throw ioe;
     } finally {
-      closeAll(LOG, block, blockFactory);
+      cleanupWithLogger(LOG, block, blockFactory);
       LOG.debug("Statistics: {}", statistics);
-      closeAll(LOG, statistics);
+      cleanupWithLogger(LOG, statistics);
       clearActiveBlock();
     }
-    // All end of write operations, including deleting fake parent directories
+    // Note end of write. This does not change the state of the remote FS.
     writeOperationHelper.writeSuccessful(bytes);
   }
 
@@ -387,27 +445,22 @@ class S3ABlockOutputStream extends OutputStream {
     int size = block.dataSize();
     final S3ADataBlocks.BlockUploadData uploadData = block.startUpload();
     final PutObjectRequest putObjectRequest = uploadData.hasFile() ?
-        writeOperationHelper.newPutRequest(uploadData.getFile()) :
-        writeOperationHelper.newPutRequest(uploadData.getUploadStream(), size);
-    long transferQueueTime = now();
+        writeOperationHelper.createPutObjectRequest(key, uploadData.getFile())
+        : writeOperationHelper.createPutObjectRequest(key,
+            uploadData.getUploadStream(), size, null);
     BlockUploadProgress callback =
         new BlockUploadProgress(
-            block, progressListener, transferQueueTime);
+            block, progressListener,  now());
     putObjectRequest.setGeneralProgressListener(callback);
     statistics.blockUploadQueued(size);
     ListenableFuture<PutObjectResult> putObjectResult =
-        executorService.submit(new Callable<PutObjectResult>() {
-          @Override
-          public PutObjectResult call() throws Exception {
-            PutObjectResult result;
-            try {
-              // the putObject call automatically closes the input
-              // stream afterwards.
-              result = writeOperationHelper.putObject(putObjectRequest);
-            } finally {
-              closeAll(LOG, uploadData, block);
-            }
-            return result;
+        executorService.submit(() -> {
+          try {
+            // the putObject call automatically closes the input
+            // stream afterwards.
+            return writeOperationHelper.putObject(putObjectRequest);
+          } finally {
+            cleanupWithLogger(LOG, uploadData, block);
           }
         });
     clearActiveBlock();
@@ -435,6 +488,8 @@ class S3ABlockOutputStream extends OutputStream {
     if (block != null) {
       sb.append(", activeBlock=").append(block);
     }
+    sb.append(" Statistics=")
+        .append(IOStatisticsLogging.ioStatisticsSourceToString(this));
     sb.append('}');
     return sb.toString();
   }
@@ -447,16 +502,53 @@ class S3ABlockOutputStream extends OutputStream {
    * Current time in milliseconds.
    * @return time
    */
-  private long now() {
-    return System.currentTimeMillis();
+  private Instant now() {
+    return Instant.now();
   }
 
   /**
    * Get the statistics for this stream.
    * @return stream statistics
    */
-  S3AInstrumentation.OutputStreamStatistics getStatistics() {
+  BlockOutputStreamStatistics getStatistics() {
     return statistics;
+  }
+
+  /**
+   * Return the stream capabilities.
+   * This stream always returns false when queried about hflush and hsync.
+   * If asked about {@link CommitConstants#STREAM_CAPABILITY_MAGIC_OUTPUT}
+   * it will return true iff this is an active "magic" output stream.
+   * @param capability string to query the stream support for.
+   * @return true if the capability is supported by this instance.
+   */
+  @SuppressWarnings("deprecation")
+  @Override
+  public boolean hasCapability(String capability) {
+    switch (capability.toLowerCase(Locale.ENGLISH)) {
+
+      // does the output stream have delayed visibility
+    case CommitConstants.STREAM_CAPABILITY_MAGIC_OUTPUT:
+    case CommitConstants.STREAM_CAPABILITY_MAGIC_OUTPUT_OLD:
+      return !putTracker.outputImmediatelyVisible();
+
+      // The flush/sync options are absolutely not supported
+    case StreamCapabilities.HFLUSH:
+    case StreamCapabilities.HSYNC:
+      return false;
+
+      // yes, we do statistics.
+    case StreamCapabilities.IOSTATISTICS:
+      return true;
+
+    default:
+      return false;
+    }
+  }
+
+  @Override
+  public IOStatistics getIOStatistics() {
+    return iostatistics;
   }
 
   /**
@@ -465,12 +557,76 @@ class S3ABlockOutputStream extends OutputStream {
   private class MultiPartUpload {
     private final String uploadId;
     private final List<ListenableFuture<PartETag>> partETagsFutures;
+    private int partsSubmitted;
+    private int partsUploaded;
+    private long bytesSubmitted;
 
-    MultiPartUpload() throws IOException {
-      this.uploadId = writeOperationHelper.initiateMultiPartUpload();
+    /**
+     * Any IOException raised during block upload.
+     * if non-null, then close() MUST NOT complete
+     * the file upload.
+     */
+    private IOException blockUploadFailure;
+
+    MultiPartUpload(String key) throws IOException {
+      this.uploadId = writeOperationHelper.initiateMultiPartUpload(key);
       this.partETagsFutures = new ArrayList<>(2);
       LOG.debug("Initiated multi-part upload for {} with " +
           "id '{}'", writeOperationHelper, uploadId);
+    }
+
+    /**
+     * Get a count of parts submitted.
+     * @return the number of parts submitted; will always be >= the
+     * value of {@link #getPartsUploaded()}
+     */
+    public int getPartsSubmitted() {
+      return partsSubmitted;
+    }
+
+    /**
+     * Count of parts actually uploaded.
+     * @return the count of successfully completed part uploads.
+     */
+    public int getPartsUploaded() {
+      return partsUploaded;
+    }
+
+    /**
+     * Get the upload ID; will be null after construction completes.
+     * @return the upload ID
+     */
+    public String getUploadId() {
+      return uploadId;
+    }
+
+    /**
+     * Get the count of bytes submitted.
+     * @return the current upload size.
+     */
+    public long getBytesSubmitted() {
+      return bytesSubmitted;
+    }
+
+    /**
+     * A block upload has failed.
+     * Recorded it if there has been no previous failure.
+     * @param e error
+     */
+    public void noteUploadFailure(final IOException e) {
+      if (blockUploadFailure == null) {
+        blockUploadFailure = e;
+      }
+    }
+
+    /**
+     * If there is a block upload failure -throw it.
+     * @throws IOException if one has already been caught.
+     */
+    public void maybeRethrowUploadFailure() throws IOException {
+      if (blockUploadFailure != null) {
+        throw blockUploadFailure;
+      }
     }
 
     /**
@@ -478,46 +634,60 @@ class S3ABlockOutputStream extends OutputStream {
      * This will take the block
      * @param block block to upload
      * @throws IOException upload failure
+     * @throws PathIOException if too many blocks were written
      */
     private void uploadBlockAsync(final S3ADataBlocks.DataBlock block)
         throws IOException {
-      LOG.debug("Queueing upload of {}", block);
+      LOG.debug("Queueing upload of {} for upload {}", block, uploadId);
+      Preconditions.checkNotNull(uploadId, "Null uploadId");
+      maybeRethrowUploadFailure();
+      partsSubmitted++;
       final int size = block.dataSize();
-      final S3ADataBlocks.BlockUploadData uploadData = block.startUpload();
+      bytesSubmitted += size;
       final int currentPartNumber = partETagsFutures.size() + 1;
-      final UploadPartRequest request =
-          writeOperationHelper.newUploadPartRequest(
-              uploadId,
-              currentPartNumber,
-              size,
-              uploadData.getUploadStream(),
-              uploadData.getFile());
-
-      long transferQueueTime = now();
+      final UploadPartRequest request;
+      final S3ADataBlocks.BlockUploadData uploadData;
+      try {
+        uploadData = block.startUpload();
+        request = writeOperationHelper.newUploadPartRequest(
+            key,
+            uploadId,
+            currentPartNumber,
+            size,
+            uploadData.getUploadStream(),
+            uploadData.getFile(),
+            0L);
+      } catch (IOException e) {
+        // failure to start the upload.
+        noteUploadFailure(e);
+        throw e;
+      }
       BlockUploadProgress callback =
           new BlockUploadProgress(
-              block, progressListener, transferQueueTime);
+              block, progressListener, now());
       request.setGeneralProgressListener(callback);
       statistics.blockUploadQueued(block.dataSize());
       ListenableFuture<PartETag> partETagFuture =
-          executorService.submit(new Callable<PartETag>() {
-            @Override
-            public PartETag call() throws Exception {
-              // this is the queued upload operation
-              LOG.debug("Uploading part {} for id '{}'", currentPartNumber,
-                  uploadId);
-              // do the upload
-              PartETag partETag;
-              try {
-                partETag = fs.uploadPart(request).getPartETag();
-                LOG.debug("Completed upload of {} to part {}", block,
-                    partETag.getETag());
-                LOG.debug("Stream statistics of {}", statistics);
-              } finally {
-                // close the stream and block
-                closeAll(LOG, uploadData, block);
-              }
+          executorService.submit(() -> {
+            // this is the queued upload operation
+            // do the upload
+            try {
+              LOG.debug("Uploading part {} for id '{}'",
+                  currentPartNumber, uploadId);
+              PartETag partETag = writeOperationHelper.uploadPart(request)
+                  .getPartETag();
+              LOG.debug("Completed upload of {} to part {}",
+                  block, partETag.getETag());
+              LOG.debug("Stream statistics of {}", statistics);
+              partsUploaded++;
               return partETag;
+            } catch (IOException e) {
+              // save immediately.
+              noteUploadFailure(e);
+              throw e;
+            } finally {
+              // close the stream and block
+              cleanupWithLogger(LOG, uploadData, block);
             }
           });
       partETagsFutures.add(partETagFuture);
@@ -540,14 +710,20 @@ class S3ABlockOutputStream extends OutputStream {
         //there is no way of recovering so abort
         //cancel all partUploads
         LOG.debug("While waiting for upload completion", ee);
-        LOG.debug("Cancelling futures");
-        for (ListenableFuture<PartETag> future : partETagsFutures) {
-          future.cancel(true);
-        }
         //abort multipartupload
         this.abort();
         throw extractException("Multi-part upload with id '" + uploadId
                 + "' to " + key, key, ee);
+      }
+    }
+
+    /**
+     * Cancel all active uploads.
+     */
+    private void cancelAllActiveFutures() {
+      LOG.debug("Cancelling futures");
+      for (ListenableFuture<PartETag> future : partETagsFutures) {
+        future.cancel(true);
       }
     }
 
@@ -558,28 +734,19 @@ class S3ABlockOutputStream extends OutputStream {
      * @param partETags list of partial uploads
      * @throws IOException on any problem
      */
-    private CompleteMultipartUploadResult complete(List<PartETag> partETags)
+    private void complete(List<PartETag> partETags)
         throws IOException {
-      int retryCount = 0;
-      AmazonClientException lastException;
-      String operation =
-          String.format("Completing multi-part upload for key '%s'," +
-                  " id '%s' with %s partitions ",
-              key, uploadId, partETags.size());
-      do {
-        try {
-          LOG.debug(operation);
-          return writeOperationHelper.completeMultipartUpload(
-                  uploadId,
-                  partETags);
-        } catch (AmazonClientException e) {
-          lastException = e;
-          statistics.exceptionInMultipartComplete();
-        }
-      } while (shouldRetry(operation, lastException, retryCount++));
-      // this point is only reached if the operation failed more than
-      // the allowed retry count
-      throw translateException(operation, key, lastException);
+      maybeRethrowUploadFailure();
+      AtomicInteger errorCount = new AtomicInteger(0);
+      try {
+        writeOperationHelper.completeMPUwithRetries(key,
+            uploadId,
+            partETags,
+            bytesSubmitted,
+            errorCount);
+      } finally {
+        statistics.exceptionInMultipartComplete(errorCount.get());
+      }
     }
 
     /**
@@ -587,60 +754,17 @@ class S3ABlockOutputStream extends OutputStream {
      * IOExceptions are caught; this is expected to be run as a cleanup process.
      */
     public void abort() {
-      int retryCount = 0;
-      AmazonClientException lastException;
+      LOG.debug("Aborting upload");
       fs.incrementStatistic(OBJECT_MULTIPART_UPLOAD_ABORTED);
-      String operation =
-          String.format("Aborting multi-part upload for '%s', id '%s",
-              writeOperationHelper, uploadId);
-      do {
-        try {
-          LOG.debug(operation);
-          writeOperationHelper.abortMultipartUpload(uploadId);
-          return;
-        } catch (AmazonClientException e) {
-          lastException = e;
-          statistics.exceptionInMultipartAbort();
-        }
-      } while (shouldRetry(operation, lastException, retryCount++));
-      // this point is only reached if the operation failed more than
-      // the allowed retry count
-      LOG.warn("Unable to abort multipart upload, you may need to purge  " +
-          "uploaded parts", lastException);
-    }
-
-    /**
-     * Predicate to determine whether a failed operation should
-     * be attempted again.
-     * If a retry is advised, the exception is automatically logged and
-     * the filesystem statistic {@link Statistic#IGNORED_ERRORS} incremented.
-     * The method then sleeps for the sleep time suggested by the sleep policy;
-     * if the sleep is interrupted then {@code Thread.interrupted()} is set
-     * to indicate the thread was interrupted; then false is returned.
-     *
-     * @param operation operation for log message
-     * @param e exception raised.
-     * @param retryCount  number of retries already attempted
-     * @return true if another attempt should be made
-     */
-    private boolean shouldRetry(String operation,
-        AmazonClientException e,
-        int retryCount) {
+      cancelAllActiveFutures();
       try {
-        RetryPolicy.RetryAction retryAction =
-            retryPolicy.shouldRetry(e, retryCount, 0, true);
-        boolean retry = retryAction == RetryPolicy.RetryAction.RETRY;
-        if (retry) {
-          fs.incrementStatistic(IGNORED_ERRORS);
-          LOG.info("Retrying {} after exception ", operation, e);
-          Thread.sleep(retryAction.delayMillis);
-        }
-        return retry;
-      } catch (InterruptedException ex) {
-        Thread.currentThread().interrupt();
-        return false;
-      } catch (Exception ignored) {
-        return false;
+        writeOperationHelper.abortMultipartUpload(key, uploadId,
+            (text, e, r, i) -> statistics.exceptionInMultipartAbort());
+      } catch (IOException e) {
+        // this point is only reached if the operation failed more than
+        // the allowed retry count
+        LOG.warn("Unable to abort multipart upload,"
+            + " you may need to purge uploaded parts", e);
       }
     }
 
@@ -655,8 +779,8 @@ class S3ABlockOutputStream extends OutputStream {
   private final class BlockUploadProgress implements ProgressListener {
     private final S3ADataBlocks.DataBlock block;
     private final ProgressListener nextListener;
-    private final long transferQueueTime;
-    private long transferStartTime;
+    private final Instant transferQueueTime;
+    private Instant transferStartTime;
 
     /**
      * Track the progress of a single block upload.
@@ -667,7 +791,7 @@ class S3ABlockOutputStream extends OutputStream {
      */
     private BlockUploadProgress(S3ADataBlocks.DataBlock block,
         ProgressListener nextListener,
-        long transferQueueTime) {
+        Instant transferQueueTime) {
       this.block = block;
       this.transferQueueTime = transferQueueTime;
       this.nextListener = nextListener;
@@ -688,17 +812,22 @@ class S3ABlockOutputStream extends OutputStream {
 
       case TRANSFER_PART_STARTED_EVENT:
         transferStartTime = now();
-        statistics.blockUploadStarted(transferStartTime - transferQueueTime,
+        statistics.blockUploadStarted(
+            Duration.between(transferQueueTime, transferStartTime),
             size);
         incrementWriteOperations();
         break;
 
       case TRANSFER_PART_COMPLETED_EVENT:
-        statistics.blockUploadCompleted(now() - transferStartTime, size);
+        statistics.blockUploadCompleted(
+            Duration.between(transferStartTime, now()),
+            size);
         break;
 
       case TRANSFER_PART_FAILED_EVENT:
-        statistics.blockUploadFailed(now() - transferStartTime, size);
+        statistics.blockUploadFailed(
+            Duration.between(transferStartTime, now()),
+            size);
         LOG.warn("Transfer failure of block {}", block);
         break;
 
@@ -718,7 +847,7 @@ class S3ABlockOutputStream extends OutputStream {
   private static class ProgressableListener implements ProgressListener {
     private final Progressable progress;
 
-    public ProgressableListener(Progressable progress) {
+    ProgressableListener(Progressable progress) {
       this.progress = progress;
     }
 

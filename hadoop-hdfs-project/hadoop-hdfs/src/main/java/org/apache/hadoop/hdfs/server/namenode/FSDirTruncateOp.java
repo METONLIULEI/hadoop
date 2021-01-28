@@ -38,7 +38,7 @@ import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem.RecoverLeaseOp;
 import org.apache.hadoop.hdfs.server.namenode.INode.BlocksMapUpdateInfo;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Helper class to perform truncate operation.
@@ -104,7 +104,7 @@ final class FSDirTruncateOp {
       final BlockInfo last = file.getLastBlock();
       if (last != null && last.getBlockUCState()
           == BlockUCState.UNDER_RECOVERY) {
-        final Block truncatedBlock = last.getUnderConstructionFeature()
+        final BlockInfo truncatedBlock = last.getUnderConstructionFeature()
             .getTruncateBlock();
         if (truncatedBlock != null) {
           final long truncateLength = file.computeFileSize(false, false)
@@ -259,9 +259,14 @@ final class FSDirTruncateOp {
       oldBlock = file.getLastBlock();
       assert !oldBlock.isComplete() : "oldBlock should be under construction";
       BlockUnderConstructionFeature uc = oldBlock.getUnderConstructionFeature();
-      uc.setTruncateBlock(new Block(oldBlock));
+      uc.setTruncateBlock(new BlockInfoContiguous(oldBlock,
+          oldBlock.getReplication()));
       uc.getTruncateBlock().setNumBytes(oldBlock.getNumBytes() - lastBlockDelta);
-      uc.getTruncateBlock().setGenerationStamp(newBlock.getGenerationStamp());
+      final long newGenerationStamp = newBlock.getGenerationStamp();
+      uc.getTruncateBlock().setGenerationStamp(newGenerationStamp);
+      // Update global generation stamp in Standby NameNode
+      blockManager.getBlockIdManager().setGenerationStampIfGreater(
+          newGenerationStamp);
       truncatedBlockUC = oldBlock;
 
       NameNode.stateChangeLog.debug("BLOCK* prepareFileForTruncate: " +

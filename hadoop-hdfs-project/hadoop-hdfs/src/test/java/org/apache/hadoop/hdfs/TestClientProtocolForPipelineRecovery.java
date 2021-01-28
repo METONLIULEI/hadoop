@@ -27,7 +27,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -435,6 +435,8 @@ public class TestClientProtocolForPipelineRecovery {
       Assert.assertEquals("The pipeline recovery count shouldn't increase",
           0, out.getStreamer().getPipelineRecoveryCount());
       out.write(1);
+      out.close();
+      // Ensure that subsequent closes are idempotent and do not throw errors
       out.close();
     } finally {
       if (cluster != null) {

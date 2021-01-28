@@ -122,8 +122,8 @@ export default BaseChartComponent.extend({
     var xOffset = layout.margin;
     var yOffset = layout.margin * 3;
 
-    var gradientStartColor = "#2ca02c";
-    var gradientEndColor = "#ffb014";
+    var gradientStartColor = "#60cea5";
+    var gradientEndColor = "#ffbc0b";
 
     var colorFunc = d3.interpolateRgb(d3.rgb(gradientStartColor), d3.rgb(gradientEndColor));
 
@@ -138,7 +138,7 @@ export default BaseChartComponent.extend({
       var rect = g.append("rect")
         .attr("x", sampleXOffset)
         .attr("y", sampleYOffset)
-        .attr("fill", this.selectedCategory === i ? "#2c7bb6" : colorFunc(ratio))
+        .attr("fill", this.selectedCategory === i ? "#26bbf0" : colorFunc(ratio))
         .attr("width", this.SAMPLE_CELL_WIDTH)
         .attr("height", this.SAMPLE_HEIGHT)
         .attr("class", "hyperlink");
@@ -228,14 +228,16 @@ export default BaseChartComponent.extend({
       rect.attr("fill", "DimGray");
     }
     var node_id = data.get("id"),
-        node_addr = data.get("nodeHTTPAddress"),
-        href = `#/yarn-node/${node_id}/${node_addr}`;
+        node_addr = encodeURIComponent(data.get("nodeHTTPAddress")),
+        href = `#/yarn-node/${node_id}/${node_addr}/info`;
+    var nodeHostName = data.get("nodeHostName");
     var a = g.append("a")
       .attr("href", href);
     a.append("text")
-      .text(data.get("nodeHostName"))
+      .text(nodeHostName.length > 30 ? nodeHostName.substr(0, 30) + '...' : nodeHostName)
       .attr("y", yOffset + this.CELL_HEIGHT / 2 + 5)
-      .attr("x", xOffset + this.CELL_WIDTH / 2)
+      .attr("x", nodeHostName.length > 30 ? xOffset + 10 : xOffset + this.CELL_WIDTH / 2)
+      .style("text-anchor", nodeHostName.length > 30 ? "start" : "middle")
       .attr("class", this.isNodeSelected(data) ? "heatmap-cell" : "heatmap-cell-notselected");
     if (this.isNodeSelected(data)) {
       this.bindTP(a, rect);

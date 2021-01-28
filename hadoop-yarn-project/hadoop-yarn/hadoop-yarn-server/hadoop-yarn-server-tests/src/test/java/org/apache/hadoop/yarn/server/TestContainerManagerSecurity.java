@@ -28,14 +28,15 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.TimeoutException;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.minikdc.KerberosSecurityTestcase;
-import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.SecretManager.InvalidToken;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.api.ContainerManagementProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetContainerStatusesResponse;
@@ -374,8 +375,8 @@ public class TestContainerManagerSecurity extends KerberosSecurityTestcase {
     // authentication... It should complain saying container was recently
     // stopped.
     sb = new StringBuilder("Container ");
-    sb.append(validContainerId);
-    sb.append(" was recently stopped on node manager");
+    sb.append(validContainerId)
+        .append(" was recently stopped on node manager");
     Assert.assertTrue(testGetContainer(rpc, validAppAttemptId, validNode,
         validContainerId, validNMToken, true).contains(sb.toString()));
 
@@ -384,9 +385,9 @@ public class TestContainerManagerSecurity extends KerberosSecurityTestcase {
     
     // This should fail as container is removed from recently tracked finished
     // containers.
-    sb = new StringBuilder("Container ");
-    sb.append(validContainerId.toString());
-    sb.append(" is not handled by this NodeManager");
+    sb = new StringBuilder("Container ")
+        .append(validContainerId.toString())
+        .append(" is not handled by this NodeManager");
     Assert.assertTrue(testGetContainer(rpc, validAppAttemptId, validNode,
         validContainerId, validNMToken, false).contains(sb.toString()));
 
@@ -404,27 +405,31 @@ public class TestContainerManagerSecurity extends KerberosSecurityTestcase {
       newContainerToken, attempt1NMToken, false).isEmpty());
   }
 
-  private void waitForContainerToFinishOnNM(ContainerId containerId) {
+  private void waitForContainerToFinishOnNM(ContainerId containerId)
+      throws InterruptedException {
     Context nmContext = yarnCluster.getNodeManager(0).getNMContext();
-    int interval = 4 * 60; // Max time for container token to expire.
+    // Max time for container token to expire.
+    final int timeout = 4 * 60 * 1000;
 
-    Assert.assertNotNull(nmContext.getContainers().containsKey(containerId));
-
-    // Get the container first, as it may be removed from the Context
-    // by asynchronous calls.
-    // This was leading to a flakey test as otherwise the container could
-    // be removed and end up null.
+    // If the container is null, then it has already completed and been removed
+    // from the Context by asynchronous calls.
     Container waitContainer = nmContext.getContainers().get(containerId);
-
-    while ((interval-- > 0)
-        && !waitContainer.cloneAndGetContainerStatus()
-        .getState().equals(ContainerState.COMPLETE)) {
+    if (waitContainer != null) {
       try {
-        LOG.info("Waiting for " + containerId + " to complete.");
-        Thread.sleep(1000);
-      } catch (InterruptedException e) {
+        LOG.info("Waiting for " + containerId + " to get to state " +
+            ContainerState.COMPLETE);
+        GenericTestUtils.waitFor(() -> ContainerState.COMPLETE.equals(
+            waitContainer.cloneAndGetContainerStatus().getState()),
+            500, timeout);
+      } catch (TimeoutException te) {
+        LOG.error("TimeoutException", te);
+        fail("Was waiting for " + containerId + " to get to state " +
+            ContainerState.COMPLETE + " but was in state " +
+            waitContainer.cloneAndGetContainerStatus().getState() +
+            " after the timeout");
       }
     }
+
     // Normally, Containers will be removed from NM context after they are
     // explicitly acked by RM. Now, manually remove it for testing.
     yarnCluster.getNodeManager(0).getNodeStatusUpdater()
@@ -703,8 +708,8 @@ public class TestContainerManagerSecurity extends KerberosSecurityTestcase {
             nodeId, user, r, Priority.newInstance(0), 0);
     
     StringBuilder sb = new StringBuilder("Given Container ");
-    sb.append(cId2);
-    sb.append(" seems to have an illegally generated token.");
+    sb.append(cId2)
+        .append(" seems to have an illegally generated token.");
     Assert.assertTrue(testStartContainer(rpc, appAttemptId, nodeId,
         containerToken2, nmToken, true).contains(sb.toString()));
   }

@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.sls.web;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
+import java.nio.charset.StandardCharsets;
 import java.text.MessageFormat;
 import java.util.HashMap;
 import java.util.Map;
@@ -69,6 +70,8 @@ public class SLSWebApp extends HttpServlet {
   private transient Gauge availableMemoryGauge;
   private transient Gauge availableVCoresGauge;
   private transient Histogram allocateTimecostHistogram;
+  private transient Histogram commitSuccessTimecostHistogram;
+  private transient Histogram commitFailureTimecostHistogram;
   private transient Histogram handleTimecostHistogram;
   private transient Map<SchedulerEventType, Histogram>
      handleOperTimecostHistogramMap;
@@ -81,16 +84,22 @@ public class SLSWebApp extends HttpServlet {
   private String simulateTemplate;
   private String trackTemplate;
 
+  private transient Counter schedulerCommitSuccessCounter;
+  private transient Counter schedulerCommitFailureCounter;
+  private Long lastTrackingTime;
+  private Long lastSchedulerCommitSuccessCount;
+  private Long lastSchedulerCommitFailureCount;
+
   {
     // load templates
     ClassLoader cl = Thread.currentThread().getContextClassLoader();
     try {
       simulateInfoTemplate = IOUtils.toString(
-          cl.getResourceAsStream("html/simulate.info.html.template"));
+          cl.getResourceAsStream("html/simulate.info.html.template"), StandardCharsets.UTF_8);
       simulateTemplate = IOUtils.toString(
-          cl.getResourceAsStream("html/simulate.html.template"));
+          cl.getResourceAsStream("html/simulate.html.template"), StandardCharsets.UTF_8);
       trackTemplate = IOUtils.toString(
-          cl.getResourceAsStream("html/track.html.template"));
+          cl.getResourceAsStream("html/track.html.template"), StandardCharsets.UTF_8);
     } catch (IOException e) {
       e.printStackTrace();
     }
@@ -386,12 +395,25 @@ public class SLSWebApp extends HttpServlet {
             Double.parseDouble(availableVCoresGauge.getValue().toString());
 
     // scheduler operation
-    double allocateTimecost, handleTimecost;
+    double allocateTimecost, commitSuccessTimecost, commitFailureTimecost,
+        handleTimecost;
     if (allocateTimecostHistogram == null &&
             metrics.getHistograms().containsKey(
                     "sampler.scheduler.operation.allocate.timecost")) {
       allocateTimecostHistogram = metrics.getHistograms()
               .get("sampler.scheduler.operation.allocate.timecost");
+    }
+    if (commitSuccessTimecostHistogram == null &&
+        metrics.getHistograms().containsKey(
+            "sampler.scheduler.operation.commit.success.timecost")) {
+      commitSuccessTimecostHistogram = metrics.getHistograms()
+          .get("sampler.scheduler.operation.commit.success.timecost");
+    }
+    if (commitFailureTimecostHistogram == null &&
+        metrics.getHistograms().containsKey(
+            "sampler.scheduler.operation.commit.failure.timecost")) {
+      commitFailureTimecostHistogram = metrics.getHistograms()
+          .get("sampler.scheduler.operation.commit.failure.timecost");
     }
     if (handleTimecostHistogram == null &&
             metrics.getHistograms().containsKey(
@@ -401,6 +423,10 @@ public class SLSWebApp extends HttpServlet {
     }
     allocateTimecost = allocateTimecostHistogram == null ? 0.0 :
             allocateTimecostHistogram.getSnapshot().getMean()/1000000;
+    commitSuccessTimecost = commitSuccessTimecostHistogram == null ? 0.0 :
+            commitSuccessTimecostHistogram.getSnapshot().getMean()/1000000;
+    commitFailureTimecost = commitFailureTimecostHistogram == null ? 0.0 :
+            commitFailureTimecostHistogram.getSnapshot().getMean()/1000000;
     handleTimecost = handleTimecostHistogram == null ? 0.0 :
             handleTimecostHistogram.getSnapshot().getMean()/1000000;
     // various handle operation
@@ -447,6 +473,41 @@ public class SLSWebApp extends HttpServlet {
       queueAllocatedVCoresMap.put(queue, queueAllocatedVCores);
     }
 
+    // calculate commit throughput, unit is number/second
+    if (schedulerCommitSuccessCounter == null && metrics.getCounters()
+        .containsKey("counter.scheduler.operation.commit.success")) {
+      schedulerCommitSuccessCounter = metrics.getCounters()
+          .get("counter.scheduler.operation.commit.success");
+    }
+    if (schedulerCommitFailureCounter == null && metrics.getCounters()
+        .containsKey("counter.scheduler.operation.commit.failure")) {
+      schedulerCommitFailureCounter = metrics.getCounters()
+          .get("counter.scheduler.operation.commit.failure");
+    }
+    long schedulerCommitSuccessThroughput = 0;
+    long schedulerCommitFailureThroughput = 0;
+    if (schedulerCommitSuccessCounter != null
+        && schedulerCommitFailureCounter != null) {
+      long currentTrackingTime = System.currentTimeMillis();
+      long currentSchedulerCommitSucessCount =
+          schedulerCommitSuccessCounter.getCount();
+      long currentSchedulerCommitFailureCount =
+          schedulerCommitFailureCounter.getCount();
+      if (lastTrackingTime != null) {
+        double intervalSeconds =
+            (double) (currentTrackingTime - lastTrackingTime) / 1000;
+        schedulerCommitSuccessThroughput = Math.round(
+            (currentSchedulerCommitSucessCount
+                - lastSchedulerCommitSuccessCount) / intervalSeconds);
+        schedulerCommitFailureThroughput = Math.round(
+            (currentSchedulerCommitFailureCount
+                - lastSchedulerCommitFailureCount) / intervalSeconds);
+      }
+      lastTrackingTime = currentTrackingTime;
+      lastSchedulerCommitSuccessCount = currentSchedulerCommitSucessCount;
+      lastSchedulerCommitFailureCount = currentSchedulerCommitFailureCount;
+    }
+
     // package results
     StringBuilder sb = new StringBuilder();
     sb.append("{");
@@ -469,6 +530,14 @@ public class SLSWebApp extends HttpServlet {
     }
     // scheduler allocate & handle
     sb.append(",\"scheduler.allocate.timecost\":").append(allocateTimecost);
+    sb.append(",\"scheduler.commit.success.timecost\":")
+        .append(commitSuccessTimecost);
+    sb.append(",\"scheduler.commit.failure.timecost\":")
+        .append(commitFailureTimecost);
+    sb.append(",\"scheduler.commit.success.throughput\":")
+        .append(schedulerCommitSuccessThroughput);
+    sb.append(",\"scheduler.commit.failure.throughput\":")
+        .append(schedulerCommitFailureThroughput);
     sb.append(",\"scheduler.handle.timecost\":").append(handleTimecost);
     for (SchedulerEventType e : SchedulerEventType.values()) {
       sb.append(",\"scheduler.handle-").append(e).append(".timecost\":")

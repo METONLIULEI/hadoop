@@ -18,22 +18,28 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler;
 
-import com.google.common.base.Preconditions;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.yarn.server.resourcemanager.ClusterMetrics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.util.resource.Resources;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -45,7 +51,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 @InterfaceAudience.Private
 public class ClusterNodeTracker<N extends SchedulerNode> {
-  private static final Log LOG = LogFactory.getLog(ClusterNodeTracker.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ClusterNodeTracker.class);
 
   private ReadWriteLock readWriteLock = new ReentrantReadWriteLock(true);
   private Lock readLock = readWriteLock.readLock();
@@ -54,22 +61,39 @@ public class ClusterNodeTracker<N extends SchedulerNode> {
   private HashMap<NodeId, N> nodes = new HashMap<>();
   private Map<String, N> nodeNameToNodeMap = new HashMap<>();
   private Map<String, List<N>> nodesPerRack = new HashMap<>();
+  private Map<String, List<N>> nodesPerLabel = new HashMap<>();
 
-  private Resource clusterCapacity = Resources.clone(Resources.none());
-  private Resource staleClusterCapacity = null;
+  private Resource clusterCapacity = Resources.createResource(0, 0);
+  private volatile Resource staleClusterCapacity =
+      Resources.clone(Resources.none());
 
   // Max allocation
-  private long maxNodeMemory = -1;
-  private int maxNodeVCores = -1;
+  private final long[] maxAllocation;
   private Resource configuredMaxAllocation;
   private boolean forceConfiguredMaxAllocation = true;
   private long configuredMaxAllocationWaitTime;
+  private boolean reportedMaxAllocation = false;
+
+  public ClusterNodeTracker() {
+    maxAllocation = new long[ResourceUtils.getNumberOfCountableResourceTypes()];
+    Arrays.fill(maxAllocation, -1);
+  }
 
   public void addNode(N node) {
     writeLock.lock();
     try {
       nodes.put(node.getNodeID(), node);
       nodeNameToNodeMap.put(node.getNodeName(), node);
+
+      List<N> nodesPerLabels = nodesPerLabel.get(node.getPartition());
+
+      if (nodesPerLabels == null) {
+        nodesPerLabels = new ArrayList<N>();
+      }
+      nodesPerLabels.add(node);
+
+      // Update new set of nodes for given partition.
+      nodesPerLabel.put(node.getPartition(), nodesPerLabels);
 
       // Update nodes per rack as well
       String rackName = node.getRackName();
@@ -82,6 +106,8 @@ public class ClusterNodeTracker<N extends SchedulerNode> {
 
       // Update cluster capacity
       Resources.addTo(clusterCapacity, node.getTotalResource());
+      staleClusterCapacity = Resources.clone(clusterCapacity);
+      ClusterMetrics.getMetrics().incrCapability(node.getTotalResource());
 
       // Update maximumAllocation
       updateMaxResources(node, true);
@@ -139,16 +165,7 @@ public class ClusterNodeTracker<N extends SchedulerNode> {
   }
 
   public Resource getClusterCapacity() {
-    readLock.lock();
-    try {
-      if (staleClusterCapacity == null ||
-          !Resources.equals(staleClusterCapacity, clusterCapacity)) {
-        staleClusterCapacity = Resources.clone(clusterCapacity);
-      }
-      return staleClusterCapacity;
-    } finally {
-      readLock.unlock();
-    }
+    return staleClusterCapacity;
   }
 
   public N removeNode(NodeId nodeId) {
@@ -173,8 +190,20 @@ public class ClusterNodeTracker<N extends SchedulerNode> {
         }
       }
 
+      List<N> nodesPerPartition = nodesPerLabel.get(node.getPartition());
+      nodesPerPartition.remove(node);
+
+      // Update new set of nodes for given partition.
+      if (nodesPerPartition.isEmpty()) {
+        nodesPerLabel.remove(node.getPartition());
+      } else {
+        nodesPerLabel.put(node.getPartition(), nodesPerPartition);
+      }
+
       // Update cluster capacity
       Resources.subtractFrom(clusterCapacity, node.getTotalResource());
+      staleClusterCapacity = Resources.clone(clusterCapacity);
+      ClusterMetrics.getMetrics().decrCapability(node.getTotalResource());
 
       // Update maximumAllocation
       updateMaxResources(node, false);
@@ -214,17 +243,18 @@ public class ClusterNodeTracker<N extends SchedulerNode> {
         forceConfiguredMaxAllocation = false;
       }
 
-      if (forceConfiguredMaxAllocation
-          || maxNodeMemory == -1 || maxNodeVCores == -1) {
+      if (forceConfiguredMaxAllocation || !reportedMaxAllocation) {
         return configuredMaxAllocation;
       }
 
       Resource ret = Resources.clone(configuredMaxAllocation);
-      if (ret.getMemorySize() > maxNodeMemory) {
-        ret.setMemorySize(maxNodeMemory);
-      }
-      if (ret.getVirtualCores() > maxNodeVCores) {
-        ret.setVirtualCores(maxNodeVCores);
+
+      for (int i = 0; i < maxAllocation.length; i++) {
+        ResourceInformation info = ret.getResourceInformation(i);
+
+        if (info.getValue() > maxAllocation[i]) {
+          info.setValue(maxAllocation[i]);
+        }
       }
 
       return ret;
@@ -233,33 +263,63 @@ public class ClusterNodeTracker<N extends SchedulerNode> {
     }
   }
 
-  private void updateMaxResources(SchedulerNode node, boolean add) {
-    Resource totalResource = node.getTotalResource();
+  @VisibleForTesting
+  public void setForceConfiguredMaxAllocation(boolean flag) {
     writeLock.lock();
     try {
+      forceConfiguredMaxAllocation = flag;
+    } finally {
+      writeLock.unlock();
+    }
+  }
+
+  private void updateMaxResources(SchedulerNode node, boolean add) {
+    Resource totalResource = node.getTotalResource();
+    ResourceInformation[] totalResources;
+
+    if (totalResource != null) {
+      totalResources = totalResource.getResources();
+    } else {
+      LOG.warn(node.getNodeName() + " reported in with null resources, which "
+          + "indicates a problem in the source code. Please file an issue at "
+          + "https://issues.apache.org/jira/secure/CreateIssue!default.jspa");
+
+      return;
+    }
+
+    writeLock.lock();
+
+    try {
       if (add) { // added node
-        long nodeMemory = totalResource.getMemorySize();
-        if (nodeMemory > maxNodeMemory) {
-          maxNodeMemory = nodeMemory;
-        }
-        int nodeVCores = totalResource.getVirtualCores();
-        if (nodeVCores > maxNodeVCores) {
-          maxNodeVCores = nodeVCores;
+        // If we add a node, we must have a max allocation for all resource
+        // types
+        reportedMaxAllocation = true;
+
+        for (int i = 0; i < maxAllocation.length; i++) {
+          long value = totalResources[i].getValue();
+
+          if (value > maxAllocation[i]) {
+            maxAllocation[i] = value;
+          }
         }
       } else {  // removed node
-        if (maxNodeMemory == totalResource.getMemorySize()) {
-          maxNodeMemory = -1;
+        boolean recalculate = false;
+
+        for (int i = 0; i < maxAllocation.length; i++) {
+          if (totalResources[i].getValue() == maxAllocation[i]) {
+            // No need to set reportedMaxAllocation to false here because we
+            // will recalculate before we release the lock.
+            maxAllocation[i] = -1;
+            recalculate = true;
+          }
         }
-        if (maxNodeVCores == totalResource.getVirtualCores()) {
-          maxNodeVCores = -1;
-        }
+
         // We only have to iterate through the nodes if the current max memory
         // or vcores was equal to the removed node's
-        if (maxNodeMemory == -1 || maxNodeVCores == -1) {
+        if (recalculate) {
           // Treat it like an empty cluster and add nodes
-          for (N n : nodes.values()) {
-            updateMaxResources(n, true);
-          }
+          reportedMaxAllocation = false;
+          nodes.values().forEach(n -> updateMaxResources(n, true));
         }
       }
     } finally {
@@ -329,21 +389,21 @@ public class ClusterNodeTracker<N extends SchedulerNode> {
 
   /**
    * Convenience method to sort nodes.
+   * Nodes can change while being sorted. Using a standard sort will fail
+   * without locking each node, the TreeSet handles this without locks.
    *
-   * Note that the sort is performed without holding a lock. We are sorting
-   * here instead of on the caller to allow for future optimizations (e.g.
-   * sort once every x milliseconds).
+   * @param comparator the comparator to sort the nodes with
+   * @return sorted set of nodes in the form of a TreeSet
    */
-  public List<N> sortedNodeList(Comparator<N> comparator) {
-    List<N> sortedList = null;
+  public TreeSet<N> sortedNodeSet(Comparator<N> comparator) {
+    TreeSet<N> sortedSet = new TreeSet<>(comparator);
     readLock.lock();
     try {
-      sortedList = new ArrayList(nodes.values());
+      sortedSet.addAll(nodes.values());
     } finally {
       readLock.unlock();
     }
-    Collections.sort(sortedList, comparator);
-    return sortedList;
+    return sortedSet;
   }
 
   /**
@@ -396,5 +456,55 @@ public class ClusterNodeTracker<N extends SchedulerNode> {
           "Could not find a node matching given resourceName " + resourceName);
     }
     return retNodes;
+  }
+
+  /**
+   * update cached nodes per partition on a node label change event.
+   * @param partition nodeLabel
+   * @param nodeIds List of Node IDs
+   */
+  public void updateNodesPerPartition(String partition, Set<NodeId> nodeIds) {
+    writeLock.lock();
+    try {
+      // Clear all entries.
+      nodesPerLabel.remove(partition);
+
+      List<N> nodesPerPartition = new ArrayList<N>();
+      for (NodeId nodeId : nodeIds) {
+        N n = getNode(nodeId);
+        if (n != null) {
+          nodesPerPartition.add(n);
+        }
+      }
+
+      // Update new set of nodes for given partition.
+      nodesPerLabel.put(partition, nodesPerPartition);
+    } finally {
+      writeLock.unlock();
+    }
+  }
+
+  public List<N> getNodesPerPartition(String partition) {
+    List<N> nodesPerPartition = null;
+    readLock.lock();
+    try {
+      if (nodesPerLabel.containsKey(partition)) {
+        nodesPerPartition = new ArrayList<N>(nodesPerLabel.get(partition));
+      }
+    } finally {
+      readLock.unlock();
+    }
+    return nodesPerPartition;
+  }
+
+  public List<String> getPartitions() {
+    List<String> partitions = null;
+    readLock.lock();
+    try {
+      partitions = new ArrayList(nodesPerLabel.keySet());
+    } finally {
+      readLock.unlock();
+    }
+    return partitions;
   }
 }

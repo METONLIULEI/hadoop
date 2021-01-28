@@ -65,11 +65,11 @@ Architecture
 
       2. _The size of a striping cell._ This determines the granularity of striped reads and writes, including buffer sizes and encoding work.
 
-    Policies are named *codec*-*num data blocks*-*num parity blocks*-*cell size*. Currently, six built-in policies are supported: `RS-3-2-1024k`, `RS-6-3-1024k`, `RS-10-4-1024k`, `RS-LEGACY-6-3-1024k`, `XOR-2-1-1024k` and `REPLICATION`.
+    Policies are named *codec*-*num data blocks*-*num parity blocks*-*cell size*. Currently, five built-in policies are supported: `RS-3-2-1024k`, `RS-6-3-1024k`, `RS-10-4-1024k`, `RS-LEGACY-6-3-1024k`, `XOR-2-1-1024k`.
 
-    `REPLICATION` is a special policy. It can only be set on directory, to force the directory to adopt 3x replication scheme, instead of inheriting its ancestor's erasure coding policy. This policy makes it possible to interleave 3x replication scheme directory with erasure coding directory.
+    The default `REPLICATION` scheme is also supported. It can only be set on directory, to force the directory to adopt 3x replication scheme, instead of inheriting its ancestor's erasure coding policy. This policy makes it possible to interleave 3x replication scheme directory with erasure coding directory.
 
-    `REPLICATION` policy is always enabled. For other built-in policies, they are disabled by default.
+    `REPLICATION` is always enabled. Out of all the EC policies, RS(6,3) is enabled by default.
 
     Similar to HDFS storage policies, erasure coding policies are set on a directory. When a file is created, it inherits the EC policy of its nearest ancestor directory.
 
@@ -99,14 +99,18 @@ Deployment
 
   Encoding and decoding work consumes additional CPU on both HDFS clients and DataNodes.
 
+  Erasure coding requires a minimum of as many DataNodes in the cluster as
+  the configured EC stripe width. For EC policy RS (6,3), this means
+  a minimum of 9 DataNodes.
+
   Erasure coded files are also spread across racks for rack fault-tolerance.
   This means that when reading and writing striped files, most operations are off-rack.
   Network bisection bandwidth is thus very important.
 
-  For rack fault-tolerance, it is also important to have at least as many racks as the configured EC stripe width.
-  For EC policy RS (6,3), this means minimally 9 racks, and ideally 10 or 11 to handle planned and unplanned outages.
-  For clusters with fewer racks than the stripe width, HDFS cannot maintain rack fault-tolerance, but will still attempt
-  to spread a striped file across multiple nodes to preserve node-level fault-tolerance.
+  For rack fault-tolerance, it is also important to have enough number of racks, so that on average, each rack holds number of blocks no more than the number of EC parity blocks. A formula to calculate this would be (data blocks + parity blocks) / parity blocks, rounding up.
+  For EC policy RS (6,3), this means minimally 3 racks (calculated by (6 + 3) / 3 = 3), and ideally 9 or more to handle planned and unplanned outages.
+  For clusters with fewer racks than the number of the parity cells, HDFS cannot maintain rack fault-tolerance, but will still attempt
+  to spread a striped file across multiple nodes to preserve node-level fault-tolerance. For this reason, it is recommended to setup racks with similar number of DataNodes.
 
 ### Configuration keys
 
@@ -136,10 +140,17 @@ Deployment
   1. `dfs.datanode.ec.reconstruction.stripedread.timeout.millis` - Timeout for striped reads. Default value is 5000 ms.
   1. `dfs.datanode.ec.reconstruction.stripedread.buffer.size` - Buffer size for reader service. Default value is 64KB.
   1. `dfs.datanode.ec.reconstruction.threads` - Number of threads used by the Datanode for background reconstruction work. Default value is 8 threads.
+  1. `dfs.datanode.ec.reconstruction.xmits.weight` - Relative weight of xmits used by EC background recovery task comparing to replicated block recovery. Default value is 0.5.
+  It sets to `0` to disable calculate weights for EC recovery tasks, that is, EC task always has `1` xmits.
+  The xmits of an erasure coding recovery task is calculated as the maximum value between the number of read streams and the number of write streams. For example, if an EC recovery
+  task need to read from 6 nodes and write to 2 nodes, it has xmits of `max(6, 2) * 0.5 = 3`. Recovery task for replicated file always counts
+  as `1` xmit. NameNode utilizes `dfs.namenode.replication.max-streams` minus the total `xmitsInProgress` on the DataNode that combines of the xmits from
+  replicated file and EC files, to schedule recovery tasks to this DataNode.
 
 ### Enable Intel ISA-L
 
   HDFS native implementation of default RS codec leverages Intel ISA-L library to improve the encoding and decoding calculation. To enable and use Intel ISA-L, there are three steps.
+
   1. Build ISA-L library. Please refer to the official site "https://github.com/01org/isa-l/" for detail information.
   2. Build Hadoop with ISA-L support. Please refer to "Intel ISA-L build options" section in "Build instructions for Hadoop" in (BUILDING.txt) in the source code.
   3. Use `-Dbundle.isal` to copy the contents of the `isal.lib` directory into the final tar file. Deploy Hadoop with the tar file. Make sure ISA-L is available on HDFS clients and DataNodes.
@@ -159,6 +170,8 @@ Deployment
          [-listCodecs]
          [-enablePolicy -policy <policyName>]
          [-disablePolicy -policy <policyName>]
+         [-removePolicy -policy <policyName>]
+         [-verifyClusterSetup -policy <policyName>...<policyName>]
          [-help [cmd ...]]
 
 Below are the details about each command.
@@ -173,7 +186,7 @@ Below are the details about each command.
       This parameter can be omitted if a 'dfs.namenode.ec.system.default.policy' configuration is set.
       The EC policy of the path will be set with the default value in configuration.
 
-      `-replicate` apply the special `REPLICATION` policy on the directory, force the directory to adopt 3x replication scheme.
+      `-replicate` apply the default `REPLICATION` scheme on the directory, force the directory to adopt 3x replication scheme.
 
       `-replicate` and `-policy <policyName>` are optional arguments. They cannot be specified at the same time.
 
@@ -192,7 +205,7 @@ Below are the details about each command.
 
  *  `[-addPolicies -policyFile <file>]`
 
-     Add a list of erasure coding policies. Please refer etc/hadoop/user_ec_policies.xml.template for the example policy file. The maximum cell size is defined in property 'dfs.namenode.ec.policies.max.cellsize' with the default value 4MB.
+     Add a list of user defined erasure coding policies. Please refer etc/hadoop/user_ec_policies.xml.template for the example policy file. The maximum cell size is defined in property 'dfs.namenode.ec.policies.max.cellsize' with the default value 4MB. Currently HDFS allows the user to add 64 policies in total, and the added policy ID is in range of 64 to 127. Adding policy will fail if there are already 64 policies added.
 
  *  `[-listCodecs]`
 
@@ -200,7 +213,7 @@ Below are the details about each command.
 
 *  `[-removePolicy -policy <policyName>]`
 
-     Remove an erasure coding policy.
+     Remove an user defined erasure coding policy.
 
 *  `[-enablePolicy -policy <policyName>]`
 
@@ -210,14 +223,21 @@ Below are the details about each command.
 
      Disable an erasure coding policy.
 
+*  `[-verifyClusterSetup -policy <policyName>...<policyName>]`
+
+     Verify if the cluster setup can support all enabled erasure coding policies. If optional parameter -policy is specified, verify if the cluster setup can support the given policy or policies.
+
 Limitations
 -----------
 
-Certain HDFS file write operations, i.e., `hflush`, `hsync` and `append`,
+Certain HDFS operations, i.e., `hflush`, `hsync`, `concat`, `setReplication`, `truncate` and `append`,
 are not supported on erasure coded files due to substantial technical
 challenges.
 
-* `append()` on an erasure coded file will throw `IOException`.
+* `append()` and `truncate()` on an erasure coded file will throw `IOException`.
+* `concat()` will throw `IOException` if files are mixed with different erasure
+coding policies or with replicated files.
+* `setReplication()` is no-op on erasure coded files.
 * `hflush()` and `hsync()` on `DFSStripedOutputStream` are no-op. Thus calling
 `hflush()` or `hsync()` on an erasure coded file can not guarantee data
 being persistent.

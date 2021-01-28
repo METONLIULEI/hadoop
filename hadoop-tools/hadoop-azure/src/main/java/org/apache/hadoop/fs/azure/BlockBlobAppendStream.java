@@ -27,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.Random;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -41,9 +42,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.commons.lang3.StringUtils;
 
 import org.apache.hadoop.fs.FSExceptionMessages;
 import org.apache.commons.codec.binary.Base64;
@@ -62,9 +63,6 @@ import com.microsoft.azure.storage.blob.BlobRequestOptions;
 import com.microsoft.azure.storage.blob.BlockEntry;
 import com.microsoft.azure.storage.blob.BlockListingFilter;
 import com.microsoft.azure.storage.blob.BlockSearchMode;
-
-import static org.apache.hadoop.fs.StreamCapabilities.StreamCapability.HFLUSH;
-import static org.apache.hadoop.fs.StreamCapabilities.StreamCapability.HSYNC;
 
 /**
  * Stream object that implements append for Block Blobs in WASB.
@@ -550,9 +548,16 @@ public class BlockBlobAppendStream extends OutputStream implements Syncable,
    */
   @Override
   public boolean hasCapability(String capability) {
-    return compactionEnabled
-        && (capability.equalsIgnoreCase(HSYNC.getValue())
-        || capability.equalsIgnoreCase((HFLUSH.getValue())));
+    if (!compactionEnabled) {
+      return false;
+    }
+    switch (capability.toLowerCase(Locale.ENGLISH)) {
+    case StreamCapabilities.HSYNC:
+    case StreamCapabilities.HFLUSH:
+      return true;
+    default:
+      return false;
+    }
   }
 
   /**

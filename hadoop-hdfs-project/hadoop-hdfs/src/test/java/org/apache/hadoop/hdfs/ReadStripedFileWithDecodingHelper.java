@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.Path;
@@ -50,8 +48,7 @@ abstract public class ReadStripedFileWithDecodingHelper {
       LoggerFactory.getLogger(ReadStripedFileWithDecodingHelper.class);
 
   static {
-    ((Log4JLogger)LogFactory.getLog(BlockPlacementPolicy.class))
-        .getLogger().setLevel(org.apache.log4j.Level.ALL);
+    GenericTestUtils.setLogLevel(BlockPlacementPolicy.LOG, Level.DEBUG);
     GenericTestUtils.setLogLevel(BlockManager.LOG, Level.DEBUG);
     GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.DEBUG);
     GenericTestUtils.setLogLevel(NameNode.stateChangeLog, Level.DEBUG);
@@ -79,8 +76,6 @@ abstract public class ReadStripedFileWithDecodingHelper {
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 0);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_STREAMS_HARD_LIMIT_KEY,
         0);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
-        false);
     MiniDFSCluster myCluster = new MiniDFSCluster.Builder(conf)
         .numDataNodes(NUM_DATANODES)
         .build();

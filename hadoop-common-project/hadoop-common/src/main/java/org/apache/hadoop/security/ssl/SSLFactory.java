@@ -44,10 +44,10 @@ import java.util.List;
 /**
  * Factory that creates SSLEngine and SSLSocketFactory instances using
  * Hadoop configuration information.
- * <p/>
+ * <p>
  * This SSLFactory uses a {@link ReloadingX509TrustManager} instance,
  * which reloads public keys if the truststore file changes.
- * <p/>
+ * <p>
  * This factory is used to configure HTTPS in Hadoop HTTP based endpoints, both
  * client and server.
  */
@@ -72,7 +72,7 @@ public class SSLFactory implements ConnectionConfigurator {
   public static final String SSL_ENABLED_PROTOCOLS_KEY =
       "hadoop.ssl.enabled.protocols";
   public static final String SSL_ENABLED_PROTOCOLS_DEFAULT =
-      "TLSv1,SSLv2Hello,TLSv1.1,TLSv1.2";
+      "TLSv1.2";
 
   public static final String SSL_SERVER_NEED_CLIENT_AUTH =
       "ssl.server.need.client.auth";
@@ -102,12 +102,16 @@ public class SSLFactory implements ConnectionConfigurator {
   public static final String SSLCERTIFICATE = IBM_JAVA?"ibmX509":"SunX509";
 
   public static final String KEYSTORES_FACTORY_CLASS_KEY =
-    "hadoop.ssl.keystores.factory.class";
+      "hadoop.ssl.keystores.factory.class";
 
   private Configuration conf;
   private Mode mode;
   private boolean requireClientCert;
   private SSLContext context;
+  // the java keep-alive cache relies on instance equivalence of the SSL socket
+  // factory.  in many java versions, SSLContext#getSocketFactory always
+  // returns a new instance which completely breaks the cache...
+  private SSLSocketFactory socketFactory;
   private HostnameVerifier hostnameVerifier;
   private KeyStoresFactory keystoresFactory;
 
@@ -161,6 +165,13 @@ public class SSLFactory implements ConnectionConfigurator {
           SSL_SERVER_CONF_DEFAULT);
     }
     sslConf.addResource(sslConfResource);
+    // Only fallback to input config if classpath SSL config does not load for
+    // backward compatibility.
+    if (sslConf.getResource(sslConfResource) == null) {
+      LOG.debug("{} can't be loaded form classpath, fallback using SSL" +
+          " config from input configuration.", sslConfResource);
+      sslConf = conf;
+    }
     return sslConf;
   }
 
@@ -178,6 +189,9 @@ public class SSLFactory implements ConnectionConfigurator {
     context.init(keystoresFactory.getKeyManagers(),
                  keystoresFactory.getTrustManagers(), null);
     context.getDefaultSSLParameters().setProtocols(enabledProtocols);
+    if (mode == Mode.CLIENT) {
+      socketFactory = context.getSocketFactory();
+    }
     hostnameVerifier = getHostnameVerifier(conf);
   }
 
@@ -298,7 +312,7 @@ public class SSLFactory implements ConnectionConfigurator {
       throw new IllegalStateException(
           "Factory is not in CLIENT mode. Actual mode is " + mode.toString());
     }
-    return context.getSocketFactory();
+    return socketFactory;
   }
 
   /**

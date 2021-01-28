@@ -30,6 +30,13 @@ Permissions are now checked when moving a file to Trash.
 
 ---
 
+* [HADOOP-13119](https://issues.apache.org/jira/browse/HADOOP-13119) | *Major* | **Add ability to secure log servlet using proxy users**
+
+**WARNING: No release note provided for this change.**
+
+
+---
+
 * [HDFS-11499](https://issues.apache.org/jira/browse/HDFS-11499) | *Major* | **Decommissioning stuck because of failing recovery**
 
 Allow a block to complete if the number of replicas on live nodes, decommissioning nodes and nodes in maintenance mode satisfies minimum replication factor.
@@ -73,3 +80,6 @@ Reverted HDFS-10797 to fix a scalability regression brought by the commit.
 * [HDFS-10326](https://issues.apache.org/jira/browse/HDFS-10326) | *Major* | **Disable setting tcp socket send/receive buffers for write pipelines**
 
 The size of the TCP socket buffers are no longer hardcoded by default. Instead the OS now will automatically tune the size for the buffer.
+
+
+

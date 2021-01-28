@@ -19,26 +19,31 @@ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.policies;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
+
 import org.apache.curator.shaded.com.google.common.base.Joiner;
 import org.apache.hadoop.conf.Configuration;
-
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSContext;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FakeSchedulable;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.Schedulable;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.policies.DominantResourceFairnessPolicy.DominantResourceFairnessComparator;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.policies.DominantResourceFairnessPolicy.DominantResourceFairnessComparatorN;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.policies.DominantResourceFairnessPolicy.DominantResourceFairnessComparator2;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.junit.Assert;
-import org.junit.BeforeClass;
+import org.junit.Before;
 import org.junit.Test;
 
 /**
@@ -46,8 +51,8 @@ import org.junit.Test;
  * container before sched2
  */
 public class TestDominantResourceFairnessPolicy {
-  @BeforeClass
-  public static void setup() {
+  @Before
+  public void setup() {
     addResources("test");
   }
 
@@ -77,7 +82,6 @@ public class TestDominantResourceFairnessPolicy {
     return createSchedulable(memUsage, cpuUsage, weights, 0, 0);
   }
 
-  
   private Schedulable createSchedulable(int memUsage, int cpuUsage,
       float weights, int minMemShare, int minCpuShare) {
     Resource usage = BuilderUtils.newResource(memUsage, cpuUsage);
@@ -98,6 +102,12 @@ public class TestDominantResourceFairnessPolicy {
   }
   
   @Test
+  public void testSameDominantResource2() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+    testSameDominantResource();
+  }
+
+  @Test
   public void testDifferentDominantResource() {
     Comparator c = createComparator(8000, 8);
     Schedulable s1 = createSchedulable(4000, 3);
@@ -108,6 +118,12 @@ public class TestDominantResourceFairnessPolicy {
   }
   
   @Test
+  public void testDifferentDominantResource2() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+    testDifferentDominantResource();
+  }
+
+  @Test
   public void testOneIsNeedy() {
     Comparator c = createComparator(8000, 8);
     Schedulable s1 = createSchedulable(2000, 5, 0, 6);
@@ -117,6 +133,12 @@ public class TestDominantResourceFairnessPolicy {
         c.compare(s1, s2) < 0);
   }
   
+  @Test
+  public void testOneIsNeedy2() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+    testOneIsNeedy();
+  }
+
   @Test
   public void testBothAreNeedy() {
     Comparator c = createComparator(8000, 100);
@@ -138,6 +160,12 @@ public class TestDominantResourceFairnessPolicy {
   }
   
   @Test
+  public void testBothAreNeedy2() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+    testBothAreNeedy();
+  }
+
+  @Test
   public void testEvenWeightsSameDominantResource() {
     assertTrue(createComparator(8000, 8).compare(
         createSchedulable(3000, 1, 2.0f),
@@ -147,6 +175,12 @@ public class TestDominantResourceFairnessPolicy {
         createSchedulable(1000, 2)) < 0);
   }
   
+  @Test
+  public void testEvenWeightsSameDominantResource2() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+    testEvenWeightsSameDominantResource();
+  }
+
   @Test
   public void testEvenWeightsDifferentDominantResource() {
     assertTrue(createComparator(8000, 8).compare(
@@ -158,13 +192,19 @@ public class TestDominantResourceFairnessPolicy {
   }
   
   @Test
+  public void testEvenWeightsDifferentDominantResource2() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+    testEvenWeightsDifferentDominantResource();
+  }
+
+  @Test
   public void testSortShares() {
     float[][] ratios1 = {{0.3f, 2.0f}, {0.2f, 1.0f}, {0.4f, 0.1f}};
     float[][] ratios2 = {{0.2f, 9.0f}, {0.3f, 2.0f}, {0.25f, 0.1f}};
     float[][] expected1 = {{0.4f, 0.1f}, {0.3f, 2.0f}, {0.2f, 1.0f}};
     float[][] expected2 = {{0.3f, 2.0f}, {0.25f, 0.1f}, {0.2f, 9.0f}};
-    DominantResourceFairnessComparator comparator =
-        new DominantResourceFairnessComparator();
+    DominantResourceFairnessComparatorN comparator =
+        new DominantResourceFairnessComparatorN();
 
     comparator.sortRatios(ratios1, ratios2);
 
@@ -184,8 +224,8 @@ public class TestDominantResourceFairnessPolicy {
     Resource used = Resources.createResource(10, 5);
     Resource capacity = Resources.createResource(100, 10);
     float[][] shares = new float[3][2];
-    DominantResourceFairnessComparator comparator =
-        new DominantResourceFairnessComparator();
+    DominantResourceFairnessComparatorN comparator =
+        new DominantResourceFairnessComparatorN();
 
     used.setResourceValue("test", 2L);
     capacity.setResourceValue("test", 5L);
@@ -207,13 +247,33 @@ public class TestDominantResourceFairnessPolicy {
   }
 
   @Test
+  public void testCalculateClusterAndFairRatios2() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+    Resource used = Resources.createResource(10, 5);
+    Resource capacity = Resources.createResource(100, 10);
+    double[] shares = new double[2];
+    DominantResourceFairnessComparator2 comparator =
+        new DominantResourceFairnessComparator2();
+    int dominant =
+        comparator.calculateClusterAndFairRatios(used.getResources(), 1.0f,
+            capacity.getResources(), shares);
+
+    assertEquals("Calculated usage ratio for memory (10MB out of 100MB) is "
+        + "incorrect", 0.1, shares[Resource.MEMORY_INDEX], .00001);
+    assertEquals("Calculated usage ratio for vcores (5 out of 10) is "
+        + "incorrect", 0.5, shares[Resource.VCORES_INDEX], .00001);
+    assertEquals("The wrong dominant resource index was returned",
+        Resource.VCORES_INDEX, dominant);
+  }
+
+  @Test
   public void testCalculateMinShareRatios() {
     Map<String, Integer> index = ResourceUtils.getResourceTypeIndex();
     Resource used = Resources.createResource(10, 5);
     Resource minShares = Resources.createResource(5, 10);
     float[][] ratios = new float[3][3];
-    DominantResourceFairnessComparator comparator =
-        new DominantResourceFairnessComparator();
+    DominantResourceFairnessComparatorN comparator =
+        new DominantResourceFairnessComparatorN();
 
     used.setResourceValue("test", 2L);
     minShares.setResourceValue("test", 0L);
@@ -229,6 +289,24 @@ public class TestDominantResourceFairnessPolicy {
     assertEquals("Calculated min share ratio for test resource (0 out of 5) is "
         + "incorrect", Float.POSITIVE_INFINITY, ratios[index.get("test")][2],
         0.00001f);
+  }
+
+  @Test
+  public void testCalculateMinShareRatios2() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+    Resource used = Resources.createResource(10, 5);
+    Resource minShares = Resources.createResource(5, 10);
+    DominantResourceFairnessComparator2 comparator =
+        new DominantResourceFairnessComparator2();
+
+    double[] ratios =
+        comparator.calculateMinShareRatios(used.getResources(),
+            minShares.getResources());
+
+    assertEquals("Calculated min share ratio for memory (10MB out of 5MB) is "
+        + "incorrect", 2.0, ratios[Resource.MEMORY_INDEX], .00001f);
+    assertEquals("Calculated min share ratio for vcores (5 out of 10) is "
+        + "incorrect", 0.5, ratios[Resource.VCORES_INDEX], .00001f);
   }
 
   @Test
@@ -248,8 +326,8 @@ public class TestDominantResourceFairnessPolicy {
         {0.2f, 0.1f, 2.0f},
         {0.1f, 2.0f, 1.0f}
     };
-    DominantResourceFairnessComparator comparator =
-        new DominantResourceFairnessComparator();
+    DominantResourceFairnessComparatorN comparator =
+        new DominantResourceFairnessComparatorN();
 
     int ret = comparator.compareRatios(ratios1, ratios2, 0);
 
@@ -368,5 +446,64 @@ public class TestDominantResourceFairnessPolicy {
     // Add a third resource to the allowed set
     conf.set(YarnConfiguration.RESOURCE_TYPES, Joiner.on(',').join(resources));
     ResourceUtils.resetResourceTypes(conf);
+  }
+
+  @Test
+  public void testModWhileSorting(){
+    final List<FakeSchedulable> schedulableList = new ArrayList<>();
+    for (int i=0; i<10000; i++) {
+      schedulableList.add(
+          (FakeSchedulable)createSchedulable((i%10)*100, (i%3)*2));
+    }
+    Comparator DRFComparator = createComparator(100000, 50000);
+
+    /*
+     * The old sort should fail, but timing it makes testing to flaky.
+     * TimSort which is used does not handle the concurrent modification of
+     * objects it is sorting. This is the test that should fail:
+     *  modThread.start();
+     *  try {
+     *    Collections.sort(schedulableList, DRFComparator);
+     *  } catch (IllegalArgumentException iae) {
+     *    // failed sort
+     *  }
+     */
+
+    TreeSet<Schedulable> sortedSchedulable = new TreeSet<>(DRFComparator);
+    Thread modThread = modificationThread(schedulableList);
+    modThread.start();
+    sortedSchedulable.addAll(schedulableList);
+    try {
+      modThread.join();
+    } catch (InterruptedException ie) {
+      fail("ModThread join failed: " + ie.getMessage());
+    }
+  }
+
+  /**
+   * Thread to simulate concurrent schedulable changes while sorting
+   */
+  private Thread modificationThread(final List<FakeSchedulable> schedulableList) {
+    Thread modThread  = new Thread() {
+      @Override
+      public void run() {
+        try {
+          // This sleep is needed to make sure the sort has started before the
+          // modifications start and finish
+          Thread.sleep(500);
+        } catch (InterruptedException ie) {
+          fail("Modification thread interrupted while asleep " +
+              ie.getMessage());
+        }
+        Resource newUsage = Resources.createResource(0, 0);
+        for (int j = 0; j < 1000; j++) {
+          FakeSchedulable sched = schedulableList.get(j * 10);
+          newUsage.setMemorySize(20000);
+          newUsage.setVirtualCores(j % 10);
+          sched.setResourceUsage(newUsage);
+        }
+      }
+    };
+    return modThread;
   }
 }

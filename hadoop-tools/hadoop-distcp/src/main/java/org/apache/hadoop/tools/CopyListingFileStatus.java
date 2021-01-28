@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.AclEntry;
@@ -39,15 +40,25 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
 
-import com.google.common.base.Objects;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.base.Objects;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 /**
  * CopyListingFileStatus is a view of {@link FileStatus}, recording additional
  * data members useful to distcp.
+ *
+ * This is the datastructure persisted in the sequence files generated
+ * in the CopyCommitter when deleting files.
+ * Any tool working with these generated files needs to be aware of an
+ * important stability guarantee: there is none; expect it to change
+ * across minor Hadoop releases without any support for reading the files of
+ * different versions.
+ * Tools parsing the listings must be built and tested against the point
+ * release of Hadoop which they intend to support.
  */
-@InterfaceAudience.Private
+@InterfaceAudience.LimitedPrivate("Distcp support tools")
+@InterfaceStability.Unstable
 public final class CopyListingFileStatus implements Writable {
 
   private static final byte NO_ACL_ENTRIES = -1;
@@ -64,6 +75,7 @@ public final class CopyListingFileStatus implements Writable {
   private FsPermission permission;
   private String owner;
   private String group;
+  private String ecPolicy;
 
   // Retain static arrays of enum values to prevent repeated allocation of new
   // arrays during deserialization.
@@ -394,13 +406,14 @@ public final class CopyListingFileStatus implements Writable {
   public String toString() {
     StringBuilder sb = new StringBuilder(super.toString());
     sb.append('{');
-    sb.append(this.getPath().toString());
-    sb.append(" length = ").append(this.getLen());
-    sb.append(" aclEntries = ").append(aclEntries);
-    sb.append(", xAttrs = ").append(xAttrs);
+    sb.append(this.getPath() == null ? "" : this.getPath().toString())
+        .append(" length = ").append(this.getLen())
+        .append(" aclEntries = ").append(aclEntries)
+        .append(", xAttrs = ").append(xAttrs)
+        .append(", modTime = ").append(modificationTime);
     if (isSplit()) {
-      sb.append(", chunkOffset = ").append(this.getChunkOffset());
-      sb.append(", chunkLength = ").append(this.getChunkLength());
+      sb.append(", chunkOffset = ").append(this.getChunkOffset())
+          .append(", chunkLength = ").append(this.getChunkLength());
     }
     sb.append('}');
     return sb.toString();

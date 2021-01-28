@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.fs;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
@@ -242,9 +242,7 @@ public class DelegationTokenRenewer
       } catch (InterruptedException ie) {
         LOG.error("Interrupted while canceling token for " + fs.getUri()
             + "filesystem");
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Exception in removeRenewAction: ", ie);
-        }
+        LOG.debug("Exception in removeRenewAction: {}", ie);
       }
     }
   }

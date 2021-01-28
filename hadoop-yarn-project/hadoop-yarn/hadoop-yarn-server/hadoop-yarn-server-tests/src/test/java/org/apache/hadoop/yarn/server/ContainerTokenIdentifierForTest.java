@@ -24,6 +24,7 @@ import java.io.IOException;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.LogAggregationContext;
 import org.apache.hadoop.yarn.api.records.Priority;
@@ -37,7 +38,7 @@ import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
 import org.apache.hadoop.yarn.proto.YarnProtos.LogAggregationContextProto;
 import org.apache.hadoop.yarn.proto.YarnSecurityTestTokenProtos.ContainerTokenIdentifierForTestProto;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -121,6 +122,12 @@ public class ContainerTokenIdentifierForTest extends ContainerTokenIdentifier {
     return new ContainerIdPBImpl(proto.getContainerId());
   }
 
+  @Override
+  public UserGroupInformation getUser() {
+    final ContainerId containerId = getContainerID();
+    return UserGroupInformation.createRemoteUser(containerId.toString());
+  }
+
   public String getApplicationSubmitter() {
     return proto.getAppSubmitter();
   }
@@ -165,7 +172,7 @@ public class ContainerTokenIdentifierForTest extends ContainerTokenIdentifier {
 
   @Override
   public void write(DataOutput out) throws IOException {
-    LOG.debug("Writing ContainerTokenIdentifierForTest to RPC layer: " + this);
+    LOG.debug("Writing ContainerTokenIdentifierForTest to RPC layer: {}", this);
     out.write(proto.toByteArray());
   }
   

@@ -17,8 +17,10 @@
  */
 package org.apache.hadoop.hdfs;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.ReadOption;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
@@ -52,6 +54,8 @@ import java.util.Collection;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadPoolExecutor;
 
+import static org.apache.hadoop.hdfs.util.IOUtilsClient.updateReadStatistics;
+
 /**
  * DFSStripedInputStream reads from striped block groups.
  */
@@ -66,7 +70,8 @@ public class DFSStripedInputStream extends DFSInputStream {
   private final int groupSize;
   /** the buffer for a complete stripe. */
   private ByteBuffer curStripeBuf;
-  private ByteBuffer parityBuf;
+  @VisibleForTesting
+  protected ByteBuffer parityBuf;
   private final ErasureCodingPolicy ecPolicy;
   private RawErasureDecoder decoder;
 
@@ -92,6 +97,7 @@ public class DFSStripedInputStream extends DFSInputStream {
       LocatedBlocks locatedBlocks) throws IOException {
     super(dfsClient, src, verifyChecksum, locatedBlocks);
 
+    this.readStatistics.setBlockType(BlockType.STRIPED);
     assert ecPolicy != null;
     this.ecPolicy = ecPolicy;
     this.cellSize = ecPolicy.getCellSize();
@@ -104,25 +110,25 @@ public class DFSStripedInputStream extends DFSInputStream {
         dataBlkNum, parityBlkNum);
     decoder = CodecUtil.createRawDecoder(dfsClient.getConfiguration(),
         ecPolicy.getCodecName(), coderOptions);
-    if (DFSClient.LOG.isDebugEnabled()) {
-      DFSClient.LOG.debug("Creating an striped input stream for file " + src);
-    }
+    DFSClient.LOG.debug("Creating an striped input stream for file {}", src);
   }
 
   private boolean useDirectBuffer() {
     return decoder.preferDirectBuffer();
   }
 
-  void resetCurStripeBuffer() {
-    if (curStripeBuf == null) {
+  private void resetCurStripeBuffer(boolean shouldAllocateBuf) {
+    if (shouldAllocateBuf && curStripeBuf == null) {
       curStripeBuf = BUFFER_POOL.getBuffer(useDirectBuffer(),
           cellSize * dataBlkNum);
     }
-    curStripeBuf.clear();
+    if (curStripeBuf != null) {
+      curStripeBuf.clear();
+    }
     curStripeRange = new StripeRange(0, 0);
   }
 
-  protected ByteBuffer getParityBuffer() {
+  protected synchronized ByteBuffer getParityBuffer() {
     if (parityBuf == null) {
       parityBuf = BUFFER_POOL.getBuffer(useDirectBuffer(),
           cellSize * parityBlkNum);
@@ -137,10 +143,6 @@ public class DFSStripedInputStream extends DFSInputStream {
 
   protected String getSrc() {
     return src;
-  }
-
-  protected DFSClient getDFSClient() {
-    return dfsClient;
   }
 
   protected LocatedBlocks getLocatedBlocks() {
@@ -158,7 +160,8 @@ public class DFSStripedInputStream extends DFSInputStream {
    * When seeking into a new block group, create blockReader for each internal
    * block in the group.
    */
-  private synchronized void blockSeekTo(long target) throws IOException {
+  @VisibleForTesting
+  synchronized void blockSeekTo(long target) throws IOException {
     if (target >= getFileLength()) {
       throw new IOException("Attempted to read past end of file");
     }
@@ -202,7 +205,7 @@ public class DFSStripedInputStream extends DFSInputStream {
    */
   @Override
   protected void closeCurrentBlockReaders() {
-    resetCurStripeBuffer();
+    resetCurStripeBuffer(false);
     if (blockReaders ==  null || blockReaders.length == 0) {
       return;
     }
@@ -274,7 +277,7 @@ public class DFSStripedInputStream extends DFSInputStream {
               "block" + block.getBlock(), e);
           // re-fetch the block in case the block has been moved
           fetchBlockAt(block.getStartOffset());
-          addToDeadNodes(dnInfo.info);
+          addToLocalDeadNodes(dnInfo.info);
         }
       }
       if (reader != null) {
@@ -292,7 +295,7 @@ public class DFSStripedInputStream extends DFSInputStream {
    */
   private void readOneStripe(CorruptedBlocks corruptedBlocks)
       throws IOException {
-    resetCurStripeBuffer();
+    resetCurStripeBuffer(true);
 
     // compute stripe range based on pos
     final long offsetInBlockGroup = getOffsetInBlockGroup();
@@ -320,6 +323,26 @@ public class DFSStripedInputStream extends DFSInputStream {
     curStripeBuf.position(stripeBufOffset);
     curStripeBuf.limit(stripeLimit);
     curStripeRange = stripeRange;
+  }
+
+  /**
+   * Update read statistics. Note that this has to be done on the thread that
+   * initiates the read, rather than inside each async thread, for
+   * {@link org.apache.hadoop.fs.FileSystem.Statistics} to work correctly with
+   * its ThreadLocal.
+   *
+   * @param stats striped read stats
+   */
+  void updateReadStats(final StripedBlockUtil.BlockReadStats stats) {
+    if (stats == null) {
+      return;
+    }
+    updateReadStatistics(readStatistics, stats.getBytesRead(),
+        stats.isShortCircuit(), stats.getNetworkDistance());
+    dfsClient.updateFileSystemReadStats(stats.getNetworkDistance(),
+        stats.getBytesRead());
+    assert readStatistics.getBlockType() == BlockType.STRIPED;
+    dfsClient.updateFileSystemECReadStats(stats.getBytesRead());
   }
 
   /**
@@ -398,8 +421,8 @@ public class DFSStripedInputStream extends DFSInputStream {
       } finally {
         // Check if need to report block replicas corruption either read
         // was successful or ChecksumException occurred.
-        reportCheckSumFailure(corruptedBlocks,
-            currentLocatedBlock.getLocations().length, true);
+        reportCheckSumFailure(corruptedBlocks, getCurrentBlockLocationsLength(),
+            true);
       }
     }
     return -1;
@@ -440,10 +463,8 @@ public class DFSStripedInputStream extends DFSInputStream {
         break;
       }
     }
-    if (DFSClient.LOG.isDebugEnabled()) {
-      DFSClient.LOG.debug("refreshLocatedBlock for striped blocks, offset="
-          + block.getStartOffset() + ". Obtained block " + lb + ", idx=" + idx);
-    }
+    DFSClient.LOG.debug("refreshLocatedBlock for striped blocks, offset={}." +
+        " Obtained block {}, idx={}", block.getStartOffset(), lb, idx);
     return StripedBlockUtil.constructInternalBlock(
         lsb, i, cellSize, dataBlkNum, idx);
   }
@@ -501,7 +522,7 @@ public class DFSStripedInputStream extends DFSInputStream {
       if (!warnedNodes.containsAll(dnUUIDs)) {
         DFSClient.LOG.warn(Arrays.toString(nodes) + " are unavailable and " +
             "all striping blocks on them are lost. " +
-            "IgnoredNodes = " + ignoredNodes);
+            "IgnoredNodes = {}", ignoredNodes);
         warnedNodes.addAll(dnUUIDs);
       }
     } else {
@@ -525,5 +546,18 @@ public class DFSStripedInputStream extends DFSInputStream {
   public synchronized void releaseBuffer(ByteBuffer buffer) {
     throw new UnsupportedOperationException(
         "Not support enhanced byte buffer access.");
+  }
+
+  @Override
+  public synchronized void unbuffer() {
+    super.unbuffer();
+    if (curStripeBuf != null) {
+      BUFFER_POOL.putBuffer(curStripeBuf);
+      curStripeBuf = null;
+    }
+    if (parityBuf != null) {
+      BUFFER_POOL.putBuffer(parityBuf);
+      parityBuf = null;
+    }
   }
 }

@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
 import org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeMetrics;
 import org.apache.hadoop.util.Time;
 
@@ -66,7 +67,11 @@ class StripedBlockReconstructor extends StripedReconstructor
       LOG.warn("Failed to reconstruct striped block: {}", getBlockGroup(), e);
       getDatanode().getMetrics().incrECFailedReconstructionTasks();
     } finally {
-      getDatanode().decrementXmitsInProgress(getXmits());
+      float xmitWeight = getErasureCodingWorker().getXmitWeight();
+      // if the xmits is smaller than 1, the xmitsSubmitted should be set to 1
+      // because if it set to zero, we cannot to measure the xmits submitted
+      int xmitsSubmitted = Math.max((int) (getXmits() * xmitWeight), 1);
+      getDatanode().decrementXmitsInProgress(xmitsSubmitted);
       final DataNodeMetrics metrics = getDatanode().getMetrics();
       metrics.incrECReconstructionTasks();
       metrics.incrECReconstructionBytesRead(getBytesRead());
@@ -78,8 +83,10 @@ class StripedBlockReconstructor extends StripedReconstructor
     }
   }
 
+  @Override
   void reconstruct() throws IOException {
     while (getPositionInBlock() < getMaxTargetLength()) {
+      DataNodeFaultInjector.get().stripedBlockReconstruction();
       long remaining = getMaxTargetLength() - getPositionInBlock();
       final int toReconstructLen =
           (int) Math.min(getStripedReader().getBufferSize(), remaining);
@@ -113,7 +120,7 @@ class StripedBlockReconstructor extends StripedReconstructor
     }
   }
 
-  private void reconstructTargets(int toReconstructLen) {
+  private void reconstructTargets(int toReconstructLen) throws IOException {
     ByteBuffer[] inputs = getStripedReader().getInputBuffers(toReconstructLen);
 
     int[] erasedIndices = stripedWriter.getRealTargetIndices();

@@ -42,7 +42,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.BlockWrite;
@@ -80,11 +80,11 @@ import org.apache.htrace.core.SpanId;
 import org.apache.htrace.core.TraceScope;
 import org.apache.htrace.core.Tracer;
 
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.cache.RemovalListener;
-import com.google.common.cache.RemovalNotification;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.RemovalListener;
+import org.apache.hadoop.thirdparty.com.google.common.cache.RemovalNotification;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -285,38 +285,21 @@ class DataStreamer extends Daemon {
     packets.clear();
   }
 
-  class LastExceptionInStreamer {
-    private IOException thrown;
-
-    synchronized void set(Throwable t) {
-      assert t != null;
-      this.thrown = t instanceof IOException ?
-          (IOException) t : new IOException(t);
-    }
-
-    synchronized void clear() {
-      thrown = null;
-    }
-
-    /** Check if there already is an exception. */
+  class LastExceptionInStreamer extends ExceptionLastSeen {
+    /**
+     * Check if there already is an exception.
+     */
+    @Override
     synchronized void check(boolean resetToNull) throws IOException {
+      final IOException thrown = get();
       if (thrown != null) {
         if (LOG.isTraceEnabled()) {
           // wrap and print the exception to know when the check is called
           LOG.trace("Got Exception while checking, " + DataStreamer.this,
               new Throwable(thrown));
         }
-        final IOException e = thrown;
-        if (resetToNull) {
-          thrown = null;
-        }
-        throw e;
+        super.check(resetToNull);
       }
-    }
-
-    synchronized void throwException4Close() throws IOException {
-      check(false);
-      throw new ClosedChannelException();
     }
   }
 
@@ -697,7 +680,7 @@ class DataStreamer extends Daemon {
             try {
               dataQueue.wait(timeout);
             } catch (InterruptedException  e) {
-              LOG.warn("Caught exception", e);
+              LOG.debug("Thread interrupted", e);
             }
             doSleep = false;
             now = Time.monotonicNow();
@@ -712,7 +695,7 @@ class DataStreamer extends Daemon {
             try {
               backOffIfNecessary();
             } catch (InterruptedException e) {
-              LOG.warn("Caught exception", e);
+              LOG.debug("Thread interrupted", e);
             }
             one = dataQueue.getFirst(); // regular data packet
             SpanId[] parents = one.getTraceParents();
@@ -725,9 +708,8 @@ class DataStreamer extends Daemon {
         }
 
         // get new block from namenode.
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("stage=" + stage + ", " + this);
-        }
+        LOG.debug("stage={}, {}", stage, this);
+
         if (stage == BlockConstructionStage.PIPELINE_SETUP_CREATE) {
           LOG.debug("Allocating new block: {}", this);
           setPipeline(nextBlockOutputStream());
@@ -755,7 +737,7 @@ class DataStreamer extends Daemon {
                 // wait for acks to arrive from datanodes
                 dataQueue.wait(1000);
               } catch (InterruptedException  e) {
-                LOG.warn("Caught exception", e);
+                LOG.debug("Thread interrupted", e);
               }
             }
           }
@@ -910,6 +892,7 @@ class DataStreamer extends Daemon {
         }
         checkClosed();
       } catch (ClosedChannelException cce) {
+        LOG.debug("Closed channel exception", cce);
       }
       long duration = Time.monotonicNow() - begin;
       if (duration > dfsclientSlowLogThresholdMs) {
@@ -963,7 +946,8 @@ class DataStreamer extends Daemon {
         }
         checkClosed();
         queuePacket(packet);
-      } catch (ClosedChannelException ignored) {
+      } catch (ClosedChannelException cce) {
+        LOG.debug("Closed channel exception", cce);
       }
     }
   }
@@ -1002,7 +986,8 @@ class DataStreamer extends Daemon {
         response.close();
         response.join();
       } catch (InterruptedException  e) {
-        LOG.warn("Caught exception", e);
+        LOG.debug("Thread interrupted", e);
+        Thread.currentThread().interrupt();
       } finally {
         response = null;
       }
@@ -1114,9 +1099,7 @@ class DataStreamer extends Daemon {
             }
           }
 
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("DFSClient {}", ack);
-          }
+          LOG.debug("DFSClient {}", ack);
 
           long seqno = ack.getSeqno();
           // processes response status from datanodes.
@@ -1170,8 +1153,8 @@ class DataStreamer extends Daemon {
           }
           if (one.getSeqno() != seqno) {
             throw new IOException("ResponseProcessor: Expecting seqno " +
-                " for block " + block +
-                one.getSeqno() + " but received " + seqno);
+                one.getSeqno() + " for block " + block +
+                " but received " + seqno);
           }
           isLastPacketInBlock = one.isLastPacketInBlock();
 
@@ -1201,7 +1184,7 @@ class DataStreamer extends Daemon {
 
             one.releaseBuffer(byteArrayManager);
           }
-        } catch (Exception e) {
+        } catch (Throwable e) {
           if (!responderClosed) {
             lastException.set(e);
             errorState.setInternalError();
@@ -1403,7 +1386,7 @@ class DataStreamer extends Daemon {
         if (dfsClient.dtpReplaceDatanodeOnFailureReplication > 0 && nodes.length
             >= dfsClient.dtpReplaceDatanodeOnFailureReplication) {
           DFSClient.LOG.warn(
-              "Failed to find a new datanode to add to the write pipeline, "
+              "Failed to find a new datanode to add to the write pipeline,"
                   + " continue to write to the pipeline with " + nodes.length
                   + " nodes since it's no less than minimum replication: "
                   + dfsClient.dtpReplaceDatanodeOnFailureReplication
@@ -1633,7 +1616,8 @@ class DataStreamer extends Daemon {
         // good reports should follow bad ones, if client committed
         // with those nodes.
         Thread.sleep(2000);
-      } catch (InterruptedException ignored) {
+      } catch (InterruptedException e) {
+        LOG.debug("Thread interrupted", e);
       }
     }
   }
@@ -1798,12 +1782,13 @@ class DataStreamer extends Daemon {
         blockStream = out;
         result =  true; // success
         errorState.resetInternalError();
+        lastException.clear();
         // remove all restarting nodes from failed nodes list
         failed.removeAll(restartingNodes);
         restartingNodes.clear();
       } catch (IOException ie) {
         if (!errorState.isRestartingNode()) {
-          LOG.info("Exception in createBlockOutputStream " + this, ie);
+          LOG.warn("Exception in createBlockOutputStream " + this, ie);
         }
         if (ie instanceof InvalidEncryptionKeyException &&
             refetchEncryptionKey > 0) {

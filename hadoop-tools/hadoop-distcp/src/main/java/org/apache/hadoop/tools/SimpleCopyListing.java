@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.tools;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileStatus;
@@ -39,7 +39,7 @@ import org.apache.hadoop.tools.util.WorkRequestProcessor;
 import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.security.Credentials;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -60,7 +60,7 @@ import static org.apache.hadoop.tools.DistCpConstants
  * Note: The SimpleCopyListing doesn't handle wild-cards in the input-paths.
  */
 public class SimpleCopyListing extends CopyListing {
-  private static final Log LOG = LogFactory.getLog(SimpleCopyListing.class);
+  private static final Logger LOG = LoggerFactory.getLogger(SimpleCopyListing.class);
 
   public static final int DEFAULT_FILE_STATUS_SIZE = 1000;
   public static final boolean DEFAULT_RANDOMIZE_FILE_LISTING = true;
@@ -309,7 +309,7 @@ public class SimpleCopyListing extends CopyListing {
       fileListWriter.close();
       fileListWriter = null;
     } finally {
-      IOUtils.cleanup(LOG, fileListWriter);
+      IOUtils.cleanupWithLogger(LOG, fileListWriter);
     }
   }
 
@@ -402,7 +402,7 @@ public class SimpleCopyListing extends CopyListing {
       LOG.info("Build file listing completed.");
       fileListWriter = null;
     } finally {
-      IOUtils.cleanup(LOG, fileListWriter);
+      IOUtils.cleanupWithLogger(LOG, fileListWriter);
     }
   }
 
@@ -718,8 +718,8 @@ public class SimpleCopyListing extends CopyListing {
       return;
     }
 
-    fileListWriter.append(new Text(DistCpUtils.getRelativePath(sourcePathRoot,
-        fileStatus.getPath())), fileStatus);
+    fileListWriter.append(getFileListingKey(sourcePathRoot, fileStatus),
+        getFileListingValue(fileStatus));
     fileListWriter.sync();
 
     if (!fileStatus.isDirectory()) {

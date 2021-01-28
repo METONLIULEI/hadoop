@@ -33,6 +33,7 @@ import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateRequest;
@@ -44,15 +45,17 @@ import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
-import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
+import org.apache.hadoop.yarn.client.AMRMClientUtils;
 import org.apache.hadoop.yarn.exceptions.YarnException;
-import org.apache.hadoop.yarn.server.utils.AMRMClientUtils;
+import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+import org.apache.hadoop.yarn.server.AMRMClientRelayer;
 import org.apache.hadoop.yarn.util.AsyncCallback;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * A service that manages a pool of UAM managers in
@@ -67,7 +70,7 @@ public class UnmanagedAMPoolManager extends AbstractService {
   // Map from uamId to UAM instances
   private Map<String, UnmanagedApplicationManager> unmanagedAppMasterMap;
 
-  private Map<String, ApplicationAttemptId> attemptIdMap;
+  private Map<String, ApplicationId> appIdMap;
 
   private ExecutorService threadpool;
 
@@ -82,7 +85,7 @@ public class UnmanagedAMPoolManager extends AbstractService {
       this.threadpool = Executors.newCachedThreadPool();
     }
     this.unmanagedAppMasterMap = new ConcurrentHashMap<>();
-    this.attemptIdMap = new ConcurrentHashMap<>();
+    this.appIdMap = new ConcurrentHashMap<>();
     super.serviceStart();
   }
 
@@ -114,7 +117,7 @@ public class UnmanagedAMPoolManager extends AbstractService {
         public KillApplicationResponse call() throws Exception {
           try {
             LOG.info("Force-killing UAM id " + uamId + " for application "
-                + attemptIdMap.get(uamId));
+                + appIdMap.get(uamId));
             return unmanagedAppMasterMap.remove(uamId).forceKillApplication();
           } catch (Exception e) {
             LOG.error("Failed to kill unmanaged application master", e);
@@ -132,7 +135,7 @@ public class UnmanagedAMPoolManager extends AbstractService {
         LOG.error("Failed to kill unmanaged application master", e);
       }
     }
-    this.attemptIdMap.clear();
+    this.appIdMap.clear();
     super.serviceStop();
   }
 
@@ -145,13 +148,19 @@ public class UnmanagedAMPoolManager extends AbstractService {
    * @param queueName queue of the application
    * @param submitter submitter name of the UAM
    * @param appNameSuffix application name suffix for the UAM
+   * @param keepContainersAcrossApplicationAttempts keep container flag for UAM
+   *          recovery.
+   * @param rmName name of the YarnRM
+   * @see ApplicationSubmissionContext
+   *          #setKeepContainersAcrossApplicationAttempts(boolean)
    * @return uamId for the UAM
    * @throws YarnException if registerApplicationMaster fails
    * @throws IOException if registerApplicationMaster fails
    */
   public String createAndRegisterNewUAM(
       RegisterApplicationMasterRequest registerRequest, Configuration conf,
-      String queueName, String submitter, String appNameSuffix)
+      String queueName, String submitter, String appNameSuffix,
+      boolean keepContainersAcrossApplicationAttempts, String rmName)
       throws YarnException, IOException {
     ApplicationId appId = null;
     ApplicationClientProtocol rmClient;
@@ -173,45 +182,54 @@ public class UnmanagedAMPoolManager extends AbstractService {
       rmClient = null;
     }
 
-    createAndRegisterNewUAM(appId.toString(), registerRequest, conf, appId,
-        queueName, submitter, appNameSuffix);
+    // Launch the UAM in RM
+    launchUAM(appId.toString(), conf, appId, queueName, submitter,
+        appNameSuffix, keepContainersAcrossApplicationAttempts, rmName);
+
+    // Register the UAM application
+    registerApplicationMaster(appId.toString(), registerRequest);
+
+    // Returns the appId as uamId
     return appId.toString();
   }
 
   /**
-   * Create a new UAM and register the application, using the provided uamId and
-   * appId.
+   * Launch a new UAM, using the provided uamId and appId.
    *
-   * @param uamId identifier for the UAM
-   * @param registerRequest RegisterApplicationMasterRequest
+   * @param uamId uam Id
    * @param conf configuration for this UAM
    * @param appId application id for the UAM
    * @param queueName queue of the application
    * @param submitter submitter name of the UAM
    * @param appNameSuffix application name suffix for the UAM
-   * @return RegisterApplicationMasterResponse
-   * @throws YarnException if registerApplicationMaster fails
-   * @throws IOException if registerApplicationMaster fails
+   * @param keepContainersAcrossApplicationAttempts keep container flag for UAM
+   *          recovery.
+   * @param rmName name of the YarnRM
+   * @see ApplicationSubmissionContext
+   *          #setKeepContainersAcrossApplicationAttempts(boolean)
+   * @return UAM token
+   * @throws YarnException if fails
+   * @throws IOException if fails
    */
-  public RegisterApplicationMasterResponse createAndRegisterNewUAM(String uamId,
-      RegisterApplicationMasterRequest registerRequest, Configuration conf,
+  public Token<AMRMTokenIdentifier> launchUAM(String uamId, Configuration conf,
       ApplicationId appId, String queueName, String submitter,
-      String appNameSuffix) throws YarnException, IOException {
+      String appNameSuffix, boolean keepContainersAcrossApplicationAttempts,
+      String rmName) throws YarnException, IOException {
 
     if (this.unmanagedAppMasterMap.containsKey(uamId)) {
       throw new YarnException("UAM " + uamId + " already exists");
     }
-    UnmanagedApplicationManager uam =
-        createUAM(conf, appId, queueName, submitter, appNameSuffix);
+    UnmanagedApplicationManager uam = createUAM(conf, appId, queueName,
+        submitter, appNameSuffix, keepContainersAcrossApplicationAttempts,
+        rmName);
     // Put the UAM into map first before initializing it to avoid additional UAM
     // for the same uamId being created concurrently
     this.unmanagedAppMasterMap.put(uamId, uam);
 
-    RegisterApplicationMasterResponse response = null;
+    Token<AMRMTokenIdentifier> amrmToken = null;
     try {
-      LOG.info("Creating and registering UAM id {} for application {}", uamId,
-          appId);
-      response = uam.createAndRegisterApplicationMaster(registerRequest);
+      LOG.info("Launching UAM id {} for application {}", uamId, appId);
+      amrmToken = uam.launchUAM();
     } catch (Exception e) {
       // Add the map earlier and remove here if register failed because we want
       // to make sure there is only one uam instance per uamId at any given time
@@ -219,8 +237,49 @@ public class UnmanagedAMPoolManager extends AbstractService {
       throw e;
     }
 
-    this.attemptIdMap.put(uamId, uam.getAttemptId());
-    return response;
+    this.appIdMap.put(uamId, uam.getAppId());
+    return amrmToken;
+  }
+
+  /**
+   * Re-attach to an existing UAM, using the provided uamIdentifier.
+   *
+   * @param uamId uam Id
+   * @param conf configuration for this UAM
+   * @param appId application id for the UAM
+   * @param queueName queue of the application
+   * @param submitter submitter name of the UAM
+   * @param appNameSuffix application name suffix for the UAM
+   * @param uamToken UAM token
+   * @param rmName name of the YarnRM
+   * @throws YarnException if fails
+   * @throws IOException if fails
+   */
+  public void reAttachUAM(String uamId, Configuration conf, ApplicationId appId,
+      String queueName, String submitter, String appNameSuffix,
+      Token<AMRMTokenIdentifier> uamToken, String rmName)
+      throws YarnException, IOException {
+
+    if (this.unmanagedAppMasterMap.containsKey(uamId)) {
+      throw new YarnException("UAM " + uamId + " already exists");
+    }
+    UnmanagedApplicationManager uam = createUAM(conf, appId, queueName,
+        submitter, appNameSuffix, true, rmName);
+    // Put the UAM into map first before initializing it to avoid additional UAM
+    // for the same uamId being created concurrently
+    this.unmanagedAppMasterMap.put(uamId, uam);
+
+    try {
+      LOG.info("Reattaching UAM id {} for application {}", uamId, appId);
+      uam.reAttachUAM(uamToken);
+    } catch (Exception e) {
+      // Add the map earlier and remove here if register failed because we want
+      // to make sure there is only one uam instance per uamId at any given time
+      this.unmanagedAppMasterMap.remove(uamId);
+      throw e;
+    }
+
+    this.appIdMap.put(uamId, uam.getAppId());
   }
 
   /**
@@ -231,20 +290,44 @@ public class UnmanagedAMPoolManager extends AbstractService {
    * @param queueName queue of the application
    * @param submitter submitter name of the application
    * @param appNameSuffix application name suffix
+   * @param keepContainersAcrossApplicationAttempts keep container flag for UAM
+   * @param rmName name of the YarnRM
    * @return the UAM instance
    */
   @VisibleForTesting
   protected UnmanagedApplicationManager createUAM(Configuration conf,
       ApplicationId appId, String queueName, String submitter,
-      String appNameSuffix) {
+      String appNameSuffix, boolean keepContainersAcrossApplicationAttempts,
+      String rmName) {
     return new UnmanagedApplicationManager(conf, appId, queueName, submitter,
-        appNameSuffix);
+        appNameSuffix, keepContainersAcrossApplicationAttempts, rmName);
+  }
+
+  /**
+   * Register application master for the UAM.
+   *
+   * @param uamId uam Id
+   * @param registerRequest RegisterApplicationMasterRequest
+   * @return register response
+   * @throws YarnException if register fails
+   * @throws IOException if register fails
+   */
+  public RegisterApplicationMasterResponse registerApplicationMaster(
+      String uamId, RegisterApplicationMasterRequest registerRequest)
+      throws YarnException, IOException {
+    if (!this.unmanagedAppMasterMap.containsKey(uamId)) {
+      throw new YarnException("UAM " + uamId + " does not exist");
+    }
+    LOG.info("Registering UAM id {} for application {}", uamId,
+        this.appIdMap.get(uamId));
+    return this.unmanagedAppMasterMap.get(uamId)
+        .registerApplicationMaster(registerRequest);
   }
 
   /**
    * AllocateAsync to an UAM.
    *
-   * @param uamId identifier for the UAM
+   * @param uamId uam Id
    * @param request AllocateRequest
    * @param callback callback for response
    * @throws YarnException if allocate fails
@@ -262,7 +345,7 @@ public class UnmanagedAMPoolManager extends AbstractService {
   /**
    * Finish an UAM/application.
    *
-   * @param uamId identifier for the UAM
+   * @param uamId uam Id
    * @param request FinishApplicationMasterRequest
    * @return FinishApplicationMasterResponse
    * @throws YarnException if finishApplicationMaster call fails
@@ -274,17 +357,46 @@ public class UnmanagedAMPoolManager extends AbstractService {
     if (!this.unmanagedAppMasterMap.containsKey(uamId)) {
       throw new YarnException("UAM " + uamId + " does not exist");
     }
-    LOG.info("Finishing application for UAM id {} ", uamId);
+    LOG.info("Finishing UAM id {} for application {}", uamId,
+        this.appIdMap.get(uamId));
     FinishApplicationMasterResponse response =
         this.unmanagedAppMasterMap.get(uamId).finishApplicationMaster(request);
 
     if (response.getIsUnregistered()) {
       // Only remove the UAM when the unregister finished
       this.unmanagedAppMasterMap.remove(uamId);
-      this.attemptIdMap.remove(uamId);
+      this.appIdMap.remove(uamId);
       LOG.info("UAM id {} is unregistered", uamId);
     }
     return response;
+  }
+
+  /**
+   * Shutdown an UAM client without killing it in YarnRM.
+   *
+   * @param uamId uam Id
+   * @throws YarnException if fails
+   */
+  public void shutDownConnections(String uamId)
+      throws YarnException {
+    if (!this.unmanagedAppMasterMap.containsKey(uamId)) {
+      throw new YarnException("UAM " + uamId + " does not exist");
+    }
+    LOG.info(
+        "Shutting down UAM id {} for application {} without killing the UAM",
+        uamId, this.appIdMap.get(uamId));
+    this.unmanagedAppMasterMap.remove(uamId).shutDownConnections();
+  }
+
+  /**
+   * Shutdown all UAM clients without killing them in YarnRM.
+   *
+   * @throws YarnException if fails
+   */
+  public void shutDownConnections() throws YarnException {
+    for (String uamId : this.unmanagedAppMasterMap.keySet()) {
+      shutDownConnections(uamId);
+    }
   }
 
   /**
@@ -301,11 +413,41 @@ public class UnmanagedAMPoolManager extends AbstractService {
   /**
    * Return whether an UAM exists.
    *
-   * @param uamId identifier for the UAM
+   * @param uamId uam Id
    * @return UAM exists or not
    */
   public boolean hasUAMId(String uamId) {
     return this.unmanagedAppMasterMap.containsKey(uamId);
   }
 
+  /**
+   * Return the rmProxy relayer of an UAM.
+   *
+   * @param uamId uam Id
+   * @return the rmProxy relayer
+   * @throws YarnException if fails
+   */
+  public AMRMClientRelayer getAMRMClientRelayer(String uamId)
+      throws YarnException {
+    if (!this.unmanagedAppMasterMap.containsKey(uamId)) {
+      throw new YarnException("UAM " + uamId + " does not exist");
+    }
+    return this.unmanagedAppMasterMap.get(uamId).getAMRMClientRelayer();
+  }
+
+  @VisibleForTesting
+  public int getRequestQueueSize(String uamId) throws YarnException {
+    if (!this.unmanagedAppMasterMap.containsKey(uamId)) {
+      throw new YarnException("UAM " + uamId + " does not exist");
+    }
+    return this.unmanagedAppMasterMap.get(uamId).getRequestQueueSize();
+  }
+
+  @VisibleForTesting
+  public void drainUAMHeartbeats() {
+    for (UnmanagedApplicationManager uam : this.unmanagedAppMasterMap
+        .values()) {
+      uam.drainHeartbeatThread();
+    }
+  }
 }

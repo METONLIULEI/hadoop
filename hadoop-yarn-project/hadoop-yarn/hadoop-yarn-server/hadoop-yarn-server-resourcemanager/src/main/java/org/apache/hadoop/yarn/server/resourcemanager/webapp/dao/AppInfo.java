@@ -36,6 +36,7 @@ import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.LogAggregationStatus;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.SchedulingRequest;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
@@ -49,8 +50,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.DeSelectFields.DeSel
 import org.apache.hadoop.yarn.util.Times;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 
 @XmlRootElement(name = "app")
 @XmlAccessorType(XmlAccessType.FIELD)
@@ -87,11 +88,13 @@ public class AppInfo {
 
   // these are only allowed if acls allow
   protected long startedTime;
+  private long launchTime;
   protected long finishedTime;
   protected long elapsedTime;
   protected String amContainerLogs;
   protected String amHostHttpAddress;
   private String amRPCAddress;
+  private String masterNodeId;
   private long allocatedMB;
   private long allocatedVCores;
   private long reservedMB;
@@ -162,6 +165,7 @@ public class AppInfo {
       this.name = app.getName().toString();
       this.queue = app.getQueue().toString();
       this.priority = 0;
+      this.masterNodeId = "";
 
       if (app.getApplicationPriority() != null) {
         this.priority = app.getApplicationPriority().getPriority();
@@ -179,6 +183,7 @@ public class AppInfo {
       this.clusterId = ResourceManager.getClusterTimeStamp();
       if (hasAccess) {
         this.startedTime = app.getStartTime();
+        this.launchTime = app.getLaunchTime();
         this.finishedTime = app.getFinishTime();
         this.elapsedTime =
             Times.elapsed(app.getStartTime(), app.getFinishTime());
@@ -192,6 +197,7 @@ public class AppInfo {
                 schemePrefix + masterContainer.getNodeHttpAddress(),
                 masterContainer.getId().toString(), app.getUser());
             this.amHostHttpAddress = masterContainer.getNodeHttpAddress();
+            this.masterNodeId = masterContainer.getNodeId().toString();
           }
 
           this.amRPCAddress = getAmRPCAddressFromRMAppAttempt(attempt);
@@ -222,6 +228,15 @@ public class AppInfo {
 
             if (resourceRequestsRaw != null) {
               for (ResourceRequest req : resourceRequestsRaw) {
+                resourceRequests.add(new ResourceRequestInfo(req));
+              }
+            }
+
+            List<SchedulingRequest> schedulingRequestsRaw = rm.getRMContext()
+                .getScheduler().getPendingSchedulingRequestsForAttempt(
+                    attempt.getAppAttemptId());
+            if (schedulingRequestsRaw != null) {
+              for (SchedulingRequest req : schedulingRequestsRaw) {
                 resourceRequests.add(new ResourceRequestInfo(req));
               }
             }
@@ -304,19 +319,19 @@ public class AppInfo {
       if (!deSelects.contains(DeSelectType.TIMEOUTS)) {
         Map<ApplicationTimeoutType, Long> applicationTimeouts =
             app.getApplicationTimeouts();
+        timeouts = new AppTimeoutsInfo();
         if (applicationTimeouts.isEmpty()) {
           // If application is not set timeout, lifetime should be sent
           // as default with expiryTime=UNLIMITED and remainingTime=-1
           AppTimeoutInfo timeoutInfo = new AppTimeoutInfo();
           timeoutInfo.setTimeoutType(ApplicationTimeoutType.LIFETIME);
-          timeouts = new AppTimeoutsInfo();
           timeouts.add(timeoutInfo);
         } else {
           for (Map.Entry<ApplicationTimeoutType, Long> entry : app
               .getApplicationTimeouts().entrySet()) {
             AppTimeoutInfo timeout = new AppTimeoutInfo();
             timeout.setTimeoutType(entry.getKey());
-            long timeoutInMillis = entry.getValue().longValue();
+            long timeoutInMillis = entry.getValue();
             timeout.setExpiryTime(Times.formatISO8601(timeoutInMillis));
             if (app.isAppInCompletedStates()) {
               timeout.setRemainingTime(0);
@@ -375,6 +390,10 @@ public class AppInfo {
     return this.diagnostics;
   }
 
+  public void setNote(String diagnosticsMsg) {
+    this.diagnostics = diagnosticsMsg;
+  }
+
   public FinalApplicationStatus getFinalStatus() {
     return this.finalStatus;
   }
@@ -389,6 +408,10 @@ public class AppInfo {
 
   public long getStartTime() {
     return this.startedTime;
+  }
+
+  public long getLaunchTime() {
+    return this.launchTime;
   }
 
   public long getFinishTime() {
@@ -470,7 +493,7 @@ public class AppInfo {
   public int getNumNonAMContainersPreempted() {
     return numNonAMContainerPreempted;
   }
-  
+
   public int getNumAMContainersPreempted() {
     return numAMContainerPreempted;
   }
@@ -614,5 +637,13 @@ public class AppInfo {
 
   public void setName(String name) {
     this.name = name;
+  }
+
+  public String getMasterNodeId() {
+    return masterNodeId;
+  }
+
+  public void setMasterNodeId(String masterNodeId) {
+    this.masterNodeId = masterNodeId;
   }
 }

@@ -24,11 +24,18 @@ import com.amazonaws.services.s3.model.ListObjectsV2Request;
 /**
  * API version-independent container for S3 List requests.
  */
-public class S3ListRequest {
-  private ListObjectsRequest v1Request;
-  private ListObjectsV2Request v2Request;
+public final class S3ListRequest {
 
-  protected S3ListRequest(ListObjectsRequest v1, ListObjectsV2Request v2) {
+  /**
+   * Format for the toString() method: {@value}.
+   */
+  private static final String DESCRIPTION
+      = "List %s:/%s delimiter=%s keys=%d requester pays=%s";
+
+  private final ListObjectsRequest v1Request;
+  private final ListObjectsV2Request v2Request;
+
+  private S3ListRequest(ListObjectsRequest v1, ListObjectsV2Request v2) {
     v1Request = v1;
     v2Request = v2;
   }
@@ -65,5 +72,20 @@ public class S3ListRequest {
 
   public ListObjectsV2Request getV2() {
     return v2Request;
+  }
+
+  @Override
+  public String toString() {
+    if (isV1()) {
+      return String.format(DESCRIPTION,
+          v1Request.getBucketName(), v1Request.getPrefix(),
+          v1Request.getDelimiter(), v1Request.getMaxKeys(),
+          v1Request.isRequesterPays());
+    } else {
+      return String.format(DESCRIPTION,
+          v2Request.getBucketName(), v2Request.getPrefix(),
+          v2Request.getDelimiter(), v2Request.getMaxKeys(),
+          v2Request.isRequesterPays());
+    }
   }
 }

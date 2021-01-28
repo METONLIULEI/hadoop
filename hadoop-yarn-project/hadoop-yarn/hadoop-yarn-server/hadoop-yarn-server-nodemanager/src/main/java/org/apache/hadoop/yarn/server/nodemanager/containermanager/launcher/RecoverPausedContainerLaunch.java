@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -30,7 +30,7 @@ import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.ContainerManagerImpl;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.*;
-import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerSignalContext;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerReacquisitionContext;
 
 import java.io.File;
 import java.io.IOException;
@@ -42,7 +42,7 @@ import java.io.InterruptedIOException;
  */
 public class RecoverPausedContainerLaunch extends ContainerLaunch {
 
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       RecoveredContainerLaunch.class);
 
   public RecoverPausedContainerLaunch(Context context,
@@ -66,6 +66,8 @@ public class RecoverPausedContainerLaunch extends ContainerLaunch {
         containerId.getApplicationAttemptId().getApplicationId().toString();
     String containerIdStr = containerId.toString();
 
+    dispatcher.getEventHandler().handle(new ContainerEvent(containerId,
+        ContainerEventType.RECOVER_PAUSED_CONTAINER));
     boolean notInterrupted = true;
     try {
       File pidFile = locatePidFile(appIdStr, containerIdStr);
@@ -73,16 +75,17 @@ public class RecoverPausedContainerLaunch extends ContainerLaunch {
         String pidPathStr = pidFile.getPath();
         pidFilePath = new Path(pidPathStr);
         exec.activateContainer(containerId, pidFilePath);
-        exec.signalContainer(new ContainerSignalContext.Builder()
-            .setContainer(container)
-            .setUser(container.getUser())
-            .setSignal(ContainerExecutor.Signal.KILL)
-            .build());
+        retCode = exec.reacquireContainer(
+            new ContainerReacquisitionContext.Builder()
+                .setContainer(container)
+                .setUser(container.getUser())
+                .setContainerId(containerId)
+                .build());
       } else {
         LOG.warn("Unable to locate pid file for container " + containerIdStr);
       }
 
-    } catch (InterruptedIOException e) {
+    } catch (InterruptedException | InterruptedIOException e) {
       LOG.warn("Interrupted while waiting for exit code from " + containerId);
       notInterrupted = false;
     } catch (IOException e) {
@@ -100,14 +103,21 @@ public class RecoverPausedContainerLaunch extends ContainerLaunch {
       }
     }
 
-    LOG.warn("Recovered container exited with a non-zero exit code "
-        + retCode);
-    this.dispatcher.getEventHandler().handle(new ContainerExitEvent(
-        containerId,
-        ContainerEventType.CONTAINER_EXITED_WITH_FAILURE, retCode,
-        "Container exited with a non-zero exit code " + retCode));
+    if (retCode != 0) {
+      LOG.warn("Recovered container exited with a non-zero exit code "
+          + retCode);
+      this.dispatcher.getEventHandler().handle(new ContainerExitEvent(
+          containerId,
+          ContainerEventType.CONTAINER_EXITED_WITH_FAILURE, retCode,
+          "Container exited with a non-zero exit code " + retCode));
+      return retCode;
+    }
 
-    return retCode;
+    LOG.info("Recovered container " + containerId + " succeeded");
+    dispatcher.getEventHandler().handle(
+        new ContainerEvent(containerId,
+            ContainerEventType.CONTAINER_EXITED_WITH_SUCCESS));
+    return 0;
   }
 
   private File locatePidFile(String appIdStr, String containerIdStr) {

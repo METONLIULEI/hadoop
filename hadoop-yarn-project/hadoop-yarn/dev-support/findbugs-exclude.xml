@@ -67,11 +67,6 @@
   </Match>
   <Match>
     <Class name="org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptMetrics" />
-    <Method name="getLocalityStatistics" />
-    <Bug pattern="EI_EXPOSE_REP" />
-  </Match>
-  <Match>
-    <Class name="org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptMetrics" />
     <Method name="incNumAllocatedContainers"/>
     <Bug pattern="VO_VOLATILE_INCREMENT" />
   </Match>
@@ -116,6 +111,18 @@
     <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.launcher.ContainersLauncher" />
     <Method name="handle" />
     <Bug pattern="BC_UNCONFIRMED_CAST" />
+  </Match>
+
+  <!-- Ignore exposed internal representations -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.api.records.Resource" />
+    <Method name="getResources" />
+    <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptMetrics" />
+    <Method name="getLocalityStatistics" />
+    <Bug pattern="EI_EXPOSE_REP" />
   </Match>
 
   <!-- Object cast is based on the event type -->
@@ -176,6 +183,18 @@
   </Match>
   <Match>
     <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.FairOrderingPolicy$FairComparator" />
+    <Bug pattern="SE_COMPARATOR_SHOULD_BE_SERIALIZABLE" />
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.policies.DominantResourceFairnessPolicy$DominantResourceFairnessComparator" />
+    <Bug pattern="SE_COMPARATOR_SHOULD_BE_SERIALIZABLE" />
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.policies.DominantResourceFairnessPolicy$DominantResourceFairnessComparator2" />
+    <Bug pattern="SE_COMPARATOR_SHOULD_BE_SERIALIZABLE" />
+  </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.policies.DominantResourceFairnessPolicy$DominantResourceFairnessComparatorN" />
     <Bug pattern="SE_COMPARATOR_SHOULD_BE_SERIALIZABLE" />
   </Match>
     <Match>
@@ -385,6 +404,10 @@
     <Class name="org.apache.hadoop.yarn.server.nodemanager.security.authorize.NMPolicyProvider" />
     <Bug pattern="EI_EXPOSE_REP" />
   </Match>
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.router.security.authorize.RouterPolicyProvider" />
+    <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
 
 
   <!-- Ignore EI_EXPOSE_REP2 in Log services -->
@@ -449,6 +472,10 @@
       <Bug pattern="DC_DOUBLECHECK" />
   </Match>
 
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.security.authorize.NMPolicyProvider"/>
+    <Bug pattern="DC_DOUBLECHECK" />
+  </Match>
   <!-- ApplicationClassLoader is deprecated and moved to hadoop-common; ignore
        warning on the identical name as it should be removed later -->
   <Match>
@@ -616,9 +643,77 @@
     <Bug pattern="MS_EXPOSE_REP" />
   </Match>
 
+  <!-- EQ_OVERRIDING_EQUALS_NOT_SYMMETRIC -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu.AssignedGpuDevice" />
+    <Method name="equals" />
+    <Bug pattern="EQ_OVERRIDING_EQUALS_NOT_SYMMETRIC" />
+  </Match>
+
+  <!-- Null pointer exception needs to be ignored here as Findbugs doesn't properly detect code logic -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.SingleConstraintAppPlacementAllocator" />
+    <Method name="validateAndSetSchedulingRequest" />
+    <Bug pattern="NP_NULL_ON_SOME_PATH" />
+  </Match>
+
+  <!-- Expose the reference to avoid performance overhead -->
   <Match>
     <Class name="org.apache.hadoop.yarn.api.records.Resource" />
     <Method name="getResources" />
     <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+
+  <!-- The called method signature is String emptyToNull(@Nullable String string) in guava 27, so this should be ignored -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService"/>
+    <Method name="getHealthReport" />
+    <Bug pattern="NP_NULL_PARAM_DEREF"/>
+  </Match>
+
+  <!-- The variable is not used, but it's defined for the document model. -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.timelineservice.documentstore.collection.document.entity.TimelineEventSubDoc"/>
+    <Method name="setValid" />
+    <Bug pattern="URF_UNREAD_FIELD"/>
+  </Match>
+
+  <!-- The variable is not used, but it's defined for the document model. -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.timelineservice.documentstore.collection.document.entity.TimelineMetricSubDoc"/>
+    <Method name="setValid" />
+    <Bug pattern="URF_UNREAD_FIELD"/>
+  </Match>
+
+  <!-- The called method signature is public boolean set(@Nullable V value) in guava 27, so this should be ignored -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore$UpdateAppTransition"/>
+    <Method name="transition" />
+    <Bug pattern="NP_NONNULL_PARAM_VIOLATION"/>
+  </Match>
+
+  <!-- The called method signature is public boolean set(@Nullable V value) in guava 27, so this should be ignored -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler"/>
+    <Method name="updateApplicationPriority" />
+    <Bug pattern="NP_NONNULL_PARAM_VIOLATION"/>
+  </Match>
+
+  <!-- Device files are always under /dev in production, but it's necessary to override in tests -->
+  <Match>
+    <Class name="org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.com.nec.NECVEPlugin"/>
+    <Method name="getDevices" />
+    <Bug pattern="DMI_HARDCODED_ABSOLUTE_FILENAME" />
+  </Match>
+
+  <!-- Suppress warning about anonymous class for mocking. -->
+  <Match>
+    <Class name="~org\.apache\.hadoop\.yarn\.server\.timelineservice\.reader\.TestTimelineReaderWebServicesHBaseStorage.*" />
+    <Bug pattern="UMAC_UNCALLABLE_METHOD_OF_ANONYMOUS_CLASS" />
+  </Match>
+
+  <!-- Generated files from JSON schema -->
+  <Match>
+    <Package name="org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.placement.schema" />
   </Match>
 </FindBugsFilter>

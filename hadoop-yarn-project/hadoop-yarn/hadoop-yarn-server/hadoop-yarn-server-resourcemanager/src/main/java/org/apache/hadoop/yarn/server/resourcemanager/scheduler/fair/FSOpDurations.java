@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.metrics2.MetricsCollector;
@@ -41,6 +41,7 @@ import org.apache.hadoop.metrics2.lib.MutableRate;
 @Metrics(context="fairscheduler-op-durations")
 public class FSOpDurations implements MetricsSource {
 
+  @Deprecated
   @Metric("Duration for a continuous scheduling run")
   MutableRate continuousSchedulingRun;
 
@@ -90,6 +91,7 @@ public class FSOpDurations implements MetricsSource {
     registry.snapshot(collector.addRecord(registry.info()), all);
   }
 
+  @Deprecated
   public void addContinuousSchedulingRunDuration(long value) {
     continuousSchedulingRun.add(value);
   }

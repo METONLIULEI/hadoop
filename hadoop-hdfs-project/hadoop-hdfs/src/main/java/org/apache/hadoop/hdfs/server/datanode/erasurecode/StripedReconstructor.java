@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.erasurecode;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
@@ -25,6 +26,7 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.datanode.CachingStrategy;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.util.StripedBlockUtil;
+import org.apache.hadoop.hdfs.util.StripedBlockUtil.BlockReadStats;
 import org.apache.hadoop.io.ByteBufferPool;
 import org.apache.hadoop.io.ElasticByteBufferPool;
 import org.apache.hadoop.io.erasurecode.CodecUtil;
@@ -222,7 +224,7 @@ abstract class StripedReconstructor {
     return cachingStrategy;
   }
 
-  CompletionService<Void> createReadService() {
+  CompletionService<BlockReadStats> createReadService() {
     return erasureCodingWorker.createReadService();
   }
 
@@ -273,5 +275,14 @@ abstract class StripedReconstructor {
 
   DataNode getDatanode() {
     return datanode;
+  }
+
+  public ErasureCodingWorker getErasureCodingWorker() {
+    return erasureCodingWorker;
+  }
+
+  @VisibleForTesting
+  static ByteBufferPool getBufferPool() {
+    return BUFFER_POOL;
   }
 }

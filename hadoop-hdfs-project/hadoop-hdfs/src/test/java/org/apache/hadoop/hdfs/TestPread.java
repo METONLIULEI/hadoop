@@ -58,7 +58,7 @@ import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.slf4j.LoggerFactory;
 import org.slf4j.Logger;
 
@@ -676,11 +676,10 @@ public class TestPread {
       Path p = new Path("/test");
       String data = "testingmissingblock";
       DFSTestUtil.writeFile(dfs, p, data);
-
+      DFSTestUtil.waitForReplication(dfs, p, (short) 2, 10000);
       FSDataInputStream in = dfs.open(p);
       List<LocatedBlock> blocks = DFSTestUtil.getAllBlocks(in);
       LocatedBlock lb = blocks.get(0);
-      DFSTestUtil.waitForReplication(cluster, lb.getBlock(), 1, 2, 0);
       blocks = DFSTestUtil.getAllBlocks(in);
       DatanodeInfo[] locations = null;
       for (LocatedBlock locatedBlock : blocks) {

@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
@@ -89,6 +89,13 @@ public final class ReencryptionUpdater implements Runnable {
     ZoneSubmissionTracker() {
       submissionDone = false;
       tasks = new LinkedList<>();
+      numCheckpointed = 0;
+      numFutureDone = 0;
+    }
+
+    void reset() {
+      submissionDone = false;
+      tasks.clear();
       numCheckpointed = 0;
       numFutureDone = 0;
     }
@@ -238,12 +245,12 @@ public final class ReencryptionUpdater implements Runnable {
   void markZoneSubmissionDone(final long zoneId)
       throws IOException, InterruptedException {
     final ZoneSubmissionTracker tracker = handler.getTracker(zoneId);
-    if (tracker != null) {
+    if (tracker != null && !tracker.getTasks().isEmpty()) {
       tracker.submissionDone = true;
     } else {
       // Caller thinks submission is done, but no tasks submitted - meaning
       // no files in the EZ need to be re-encrypted. Complete directly.
-      handler.addDummyTracker(zoneId);
+      handler.addDummyTracker(zoneId, tracker);
     }
   }
 
@@ -289,6 +296,7 @@ public final class ReencryptionUpdater implements Runnable {
       LOG.debug(
           "Updating file xattrs for re-encrypting zone {}," + " starting at {}",
           zoneNodePath, task.batch.getFirstFilePath());
+      final int batchSize = task.batch.size();
       for (Iterator<FileEdekInfo> it = task.batch.getBatch().iterator();
            it.hasNext();) {
         FileEdekInfo entry = it.next();
@@ -342,7 +350,7 @@ public final class ReencryptionUpdater implements Runnable {
       }
 
       LOG.info("Updated xattrs on {}({}) files in zone {} for re-encryption,"
-              + " starting:{}.", task.numFilesUpdated, task.batch.size(),
+              + " starting:{}.", task.numFilesUpdated, batchSize,
           zoneNodePath, task.batch.getFirstFilePath());
     }
     task.processed = true;
@@ -375,29 +383,34 @@ public final class ReencryptionUpdater implements Runnable {
     final LinkedList<Future> tasks = tracker.getTasks();
     final List<XAttr> xAttrs = Lists.newArrayListWithCapacity(1);
     ListIterator<Future> iter = tasks.listIterator();
-    while (iter.hasNext()) {
-      Future<ReencryptionTask> curr = iter.next();
-      if (!curr.isDone() || !curr.get().processed) {
-        // still has earlier tasks not completed, skip here.
-        break;
+    synchronized (handler) {
+      while (iter.hasNext()) {
+        Future<ReencryptionTask> curr = iter.next();
+        if (curr.isCancelled()) {
+          break;
+        }
+        if (!curr.isDone() || !curr.get().processed) {
+          // still has earlier tasks not completed, skip here.
+          break;
+        }
+        ReencryptionTask task = curr.get();
+        LOG.debug("Updating re-encryption checkpoint with completed task."
+            + " last: {} size:{}.", task.lastFile, task.batch.size());
+        assert zoneId == task.zoneId;
+        try {
+          final XAttr xattr = FSDirEncryptionZoneOp
+              .updateReencryptionProgress(dir, zoneNode, status, task.lastFile,
+                  task.numFilesUpdated, task.numFailures);
+          xAttrs.clear();
+          xAttrs.add(xattr);
+        } catch (IOException ie) {
+          LOG.warn("Failed to update re-encrypted progress to xattr" +
+                  " for zone {}", zonePath, ie);
+          ++task.numFailures;
+        }
+        ++tracker.numCheckpointed;
+        iter.remove();
       }
-      ReencryptionTask task = curr.get();
-      LOG.debug("Updating re-encryption checkpoint with completed task."
-          + " last: {} size:{}.", task.lastFile, task.batch.size());
-      assert zoneId == task.zoneId;
-      try {
-        final XAttr xattr = FSDirEncryptionZoneOp
-            .updateReencryptionProgress(dir, zoneNode, status, task.lastFile,
-                task.numFilesUpdated, task.numFailures);
-        xAttrs.clear();
-        xAttrs.add(xattr);
-      } catch (IOException ie) {
-        LOG.warn("Failed to update re-encrypted progress to xattr for zone {}",
-            zonePath, ie);
-        ++task.numFailures;
-      }
-      ++tracker.numCheckpointed;
-      iter.remove();
     }
     if (tracker.isCompleted()) {
       LOG.debug("Removed re-encryption tracker for zone {} because it completed"
@@ -411,12 +424,12 @@ public final class ReencryptionUpdater implements Runnable {
     final Future<ReencryptionTask> completed = batchService.take();
     throttle();
     checkPauseForTesting();
-    ReencryptionTask task = completed.get();
     if (completed.isCancelled()) {
-      LOG.debug("Skipped canceled re-encryption task for zone {}, last: {}",
-          task.zoneId, task.lastFile);
+      // Ignore canceled zones. The cancellation is edit-logged by the handler.
+      LOG.debug("Skipped a canceled re-encryption task");
       return;
     }
+    final ReencryptionTask task = completed.get();
 
     boolean shouldRetry;
     do {
@@ -453,7 +466,7 @@ public final class ReencryptionUpdater implements Runnable {
     final String zonePath;
     dir.writeLock();
     try {
-      handler.checkZoneReady(task.zoneId);
+      handler.getTraverser().checkINodeReady(task.zoneId);
       final INode zoneNode = dir.getInode(task.zoneId);
       if (zoneNode == null) {
         // ez removed.
@@ -465,7 +478,11 @@ public final class ReencryptionUpdater implements Runnable {
           task.batch.size(), task.batch.getFirstFilePath());
       final ZoneSubmissionTracker tracker =
           handler.getTracker(zoneNode.getId());
-      Preconditions.checkNotNull(tracker, "zone tracker not found " + zonePath);
+      if (tracker == null) {
+        // re-encryption canceled.
+        LOG.info("Re-encryption was canceled.");
+        return;
+      }
       tracker.numFutureDone++;
       EncryptionFaultInjector.getInstance().reencryptUpdaterProcessOneTask();
       processTaskEntries(zonePath, task);

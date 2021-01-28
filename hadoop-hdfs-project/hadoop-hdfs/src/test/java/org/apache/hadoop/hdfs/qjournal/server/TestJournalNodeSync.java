@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.qjournal.server;
 
-import com.google.common.base.Supplier;
-import com.google.common.collect.Lists;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -96,6 +96,13 @@ public class TestJournalNodeSync {
 
   @Test(timeout=30000)
   public void testJournalNodeSync() throws Exception {
+
+    //As by default 3 journal nodes are started;
+    for(int i=0; i<3; i++) {
+      Assert.assertEquals(true,
+          jCluster.getJournalNode(i).getJournalSyncerStatus("ns1"));
+    }
+
     File firstJournalDir = jCluster.getJournalDir(0, jid);
     File firstJournalCurrentDir = new StorageDirectory(firstJournalDir)
         .getCurrentDir();
@@ -334,7 +341,7 @@ public class TestJournalNodeSync {
     }
 
     // Format the JN
-    journal1.format(nsInfo);
+    journal1.format(nsInfo, false);
 
     // Roll some more edits
     for (int i = 4; i < 10; i++) {

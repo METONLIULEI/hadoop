@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.StorageType;
@@ -63,7 +63,7 @@ import static org.junit.Assert.fail;
  * This class tests INodeFile with striped feature.
  */
 public class TestStripedINodeFile {
-  public static final Log LOG = LogFactory.getLog(TestINodeFile.class);
+  public static final Logger LOG = LoggerFactory.getLogger(TestINodeFile.class);
 
   private static final PermissionStatus perm = new PermissionStatus(
       "userName", null, FsPermission.getDefault());
@@ -90,7 +90,7 @@ public class TestStripedINodeFile {
   public ExpectedException thrown = ExpectedException.none();
 
   @Before
-  public void init() {
+  public void init() throws IOException {
     Configuration conf = new HdfsConfiguration();
     ErasureCodingPolicyManager.getInstance().init(conf);
   }
@@ -393,8 +393,6 @@ public class TestStripedINodeFile {
     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1L);
     conf.setLong(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
         1L);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
-        false);
 
     // start 10 datanodes
     int numOfDatanodes = 10;

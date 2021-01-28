@@ -18,16 +18,19 @@
 
 package org.apache.hadoop.mapreduce;
 
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.spy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
@@ -46,7 +49,9 @@ import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
 import org.apache.hadoop.mapred.JobConf;
 import org.junit.Assert;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.verification.VerificationMode;
+
 
 /**
  * A class for unit testing JobResourceUploader.
@@ -220,7 +225,7 @@ public class TestJobResourceUploader {
           destinationPathPrefix + "tmpArchives1.tgz#tmpArchivesfragment1.tgz" };
 
   private String jobjarSubmitDir = "/jobjar-submit-dir";
-  private String expectedJobJar = jobjarSubmitDir + "/job.jar";
+  private String basicExpectedJobJar = jobjarSubmitDir + "/job.jar";
 
   @Test
   public void testPathsWithNoFragNoSchemeRelative() throws IOException {
@@ -236,7 +241,7 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader = new StubedUploader(jConf);
 
     runTmpResourcePathTest(uploader, rConf, jConf, expectedFilesNoFrags,
-        expectedArchivesNoFrags, expectedJobJar);
+        expectedArchivesNoFrags, basicExpectedJobJar);
   }
 
   @Test
@@ -254,7 +259,7 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader = new StubedUploader(jConf);
 
     runTmpResourcePathTest(uploader, rConf, jConf, expectedFilesNoFrags,
-        expectedArchivesNoFrags, expectedJobJar);
+        expectedArchivesNoFrags, basicExpectedJobJar);
   }
 
   @Test
@@ -272,7 +277,7 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader = new StubedUploader(jConf);
 
     runTmpResourcePathTest(uploader, rConf, jConf, expectedFilesWithFrags,
-        expectedArchivesWithFrags, expectedJobJar);
+        expectedArchivesWithFrags, basicExpectedJobJar);
   }
 
   @Test
@@ -290,7 +295,7 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader = new StubedUploader(jConf);
 
     runTmpResourcePathTest(uploader, rConf, jConf, expectedFilesWithFrags,
-        expectedArchivesWithFrags, expectedJobJar);
+        expectedArchivesWithFrags, basicExpectedJobJar);
   }
 
   @Test
@@ -308,7 +313,7 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader = new StubedUploader(jConf);
 
     runTmpResourcePathTest(uploader, rConf, jConf, expectedFilesWithFrags,
-        expectedArchivesWithFrags, expectedJobJar);
+        expectedArchivesWithFrags, basicExpectedJobJar);
   }
 
   @Test
@@ -326,7 +331,7 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader = new StubedUploader(jConf);
 
     runTmpResourcePathTest(uploader, rConf, jConf, expectedFilesNoFrags,
-        expectedArchivesNoFrags, expectedJobJar);
+        expectedArchivesNoFrags, basicExpectedJobJar);
   }
 
   @Test
@@ -344,7 +349,7 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader = new StubedUploader(jConf, true);
 
     runTmpResourcePathTest(uploader, rConf, jConf, expectedFilesWithWildcard,
-        expectedArchivesNoFrags, expectedJobJar);
+        expectedArchivesNoFrags, basicExpectedJobJar);
   }
 
   @Test
@@ -362,7 +367,7 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader = new StubedUploader(jConf, true);
 
     runTmpResourcePathTest(uploader, rConf, jConf, expectedFilesWithFrags,
-        expectedArchivesWithFrags, expectedJobJar);
+        expectedArchivesWithFrags, basicExpectedJobJar);
   }
 
   @Test
@@ -373,6 +378,58 @@ public class TestJobResourceUploader {
   @Test
   public void testErasureCodingDisabled() throws IOException {
     testErasureCodingSetting(false);
+  }
+
+  @Test
+  public void testOriginalPathEndsInSlash()
+      throws IOException, URISyntaxException {
+    testOriginalPathWithTrailingSlash(
+        new Path(new URI("file:/local/mapred/test/")),
+        new Path("hdfs://localhost:1234/home/hadoop/test/"));
+  }
+
+  @Test
+  public void testOriginalPathIsRoot() throws IOException, URISyntaxException {
+    testOriginalPathWithTrailingSlash(
+        new Path(new URI("file:/")),
+        new Path("hdfs://localhost:1234/home/hadoop/"));
+  }
+
+  private void testOriginalPathWithTrailingSlash(Path path,
+      Path expectedRemotePath) throws IOException, URISyntaxException {
+    Path dstPath = new Path("hdfs://localhost:1234/home/hadoop/");
+    DistributedFileSystem fs = mock(DistributedFileSystem.class);
+    when(fs.makeQualified(any(Path.class))).thenReturn(dstPath);
+    // make sure that FileUtils.copy() doesn't try to copy anything
+    when(fs.mkdirs(any(Path.class))).thenReturn(false);
+    when(fs.getUri()).thenReturn(dstPath.toUri());
+
+    JobResourceUploader uploader = new StubedUploader(fs, true, true);
+    JobConf jConf = new JobConf();
+    Path originalPath = spy(path);
+    FileSystem localFs = mock(FileSystem.class);
+    when(localFs.makeQualified(any(Path.class))).thenReturn(path);
+    FileStatus fileStatus = mock(FileStatus.class);
+    when(localFs.getFileStatus(any(Path.class))).thenReturn(fileStatus);
+    when(fileStatus.isDirectory()).thenReturn(true);
+    when(fileStatus.getPath()).thenReturn(originalPath);
+
+    doReturn(localFs).when(originalPath)
+      .getFileSystem(any(Configuration.class));
+    when(localFs.getUri()).thenReturn(path.toUri());
+
+    uploader.copyRemoteFiles(dstPath,
+        originalPath, jConf, (short) 1);
+
+    ArgumentCaptor<Path> pathCaptor = ArgumentCaptor.forClass(Path.class);
+    verify(fs, times(2)).makeQualified(pathCaptor.capture());
+    List<Path> paths = pathCaptor.getAllValues();
+    // first call is invoked on a path which was created by the test,
+    // but the second one is created in copyRemoteFiles()
+    Assert.assertEquals("Expected remote path",
+        expectedRemotePath, paths.get(0));
+    Assert.assertEquals("Expected remote path",
+        expectedRemotePath, paths.get(1));
   }
 
   private void testErasureCodingSetting(boolean defaultBehavior)
@@ -387,7 +444,7 @@ public class TestJobResourceUploader {
     DistributedFileSystem fs = mock(DistributedFileSystem.class);
     Path path = new Path("/");
     when(fs.makeQualified(any(Path.class))).thenReturn(path);
-    JobResourceUploader uploader = new StubedUploader(fs, true);
+    JobResourceUploader uploader = new StubedUploader(fs, true, false);
     Job job = Job.getInstance(jConf);
 
     uploader.uploadResources(job, new Path("/test"));
@@ -402,44 +459,39 @@ public class TestJobResourceUploader {
   private void runTmpResourcePathTest(JobResourceUploader uploader,
       ResourceConf rConf, JobConf jConf, String[] expectedFiles,
       String[] expectedArchives, String expectedJobJar) throws IOException {
-    rConf.setupJobConf(jConf);
-    // We use a pre and post job object here because we need the post job object
-    // to get the new values set during uploadResources, but we need the pre job
-    // to set the job jar because JobResourceUploader#uploadJobJar uses the Job
-    // interface not the JobConf. The post job is automatically created in
-    // validateResourcePaths.
-    Job jobPre = Job.getInstance(jConf);
-    uploadResources(uploader, jConf, jobPre);
-
-    validateResourcePaths(jConf, expectedFiles, expectedArchives,
-        expectedJobJar, jobPre);
+    Job job = rConf.setupJobConf(jConf);
+    uploadResources(uploader, job);
+    validateResourcePaths(job, expectedFiles, expectedArchives, expectedJobJar);
   }
 
-  private void uploadResources(JobResourceUploader uploader, JobConf jConf,
-      Job job) throws IOException {
-    Collection<String> files = jConf.getStringCollection("tmpfiles");
-    Collection<String> libjars = jConf.getStringCollection("tmpjars");
-    Collection<String> archives = jConf.getStringCollection("tmparchives");
-    String jobJar = jConf.getJar();
-    uploader.uploadFiles(jConf, files, new Path("/files-submit-dir"), null,
-        (short) 3);
-    uploader.uploadArchives(jConf, archives, new Path("/archives-submit-dir"),
-        null, (short) 3);
-    uploader.uploadLibJars(jConf, libjars, new Path("/libjars-submit-dir"),
-        null, (short) 3);
-    uploader.uploadJobJar(job, jobJar, new Path(jobjarSubmitDir), (short) 3);
-  }
-
-  private void validateResourcePaths(JobConf jConf, String[] expectedFiles,
-      String[] expectedArchives, String expectedJobJar, Job preJob)
+  private void uploadResources(JobResourceUploader uploader, Job job)
       throws IOException {
-    Job j = Job.getInstance(jConf);
-    validateResourcePathsSub(j.getCacheFiles(), expectedFiles);
-    validateResourcePathsSub(j.getCacheArchives(), expectedArchives);
+    Configuration conf = job.getConfiguration();
+    Collection<String> files = conf.getStringCollection("tmpfiles");
+    Collection<String> libjars = conf.getStringCollection("tmpjars");
+    Collection<String> archives = conf.getStringCollection("tmparchives");
+    Map<URI, FileStatus> statCache = new HashMap<>();
+    Map<String, Boolean> fileSCUploadPolicies = new HashMap<>();
+    String jobJar = job.getJar();
+    uploader.uploadFiles(job, files, new Path("/files-submit-dir"), null,
+        (short) 3, fileSCUploadPolicies, statCache);
+    uploader.uploadArchives(job, archives, new Path("/archives-submit-dir"),
+        null, (short) 3, fileSCUploadPolicies, statCache);
+    uploader.uploadLibJars(job, libjars, new Path("/libjars-submit-dir"), null,
+        (short) 3, fileSCUploadPolicies, statCache);
+    uploader.uploadJobJar(job, jobJar, new Path(jobjarSubmitDir), (short) 3,
+        statCache);
+  }
+
+  private void validateResourcePaths(Job job, String[] expectedFiles,
+      String[] expectedArchives, String expectedJobJar)
+      throws IOException {
+    validateResourcePathsSub(job.getCacheFiles(), expectedFiles);
+    validateResourcePathsSub(job.getCacheArchives(), expectedArchives);
     // We use a different job object here because the jobjar was set on a
     // different job object
     Assert.assertEquals("Job jar path is different than expected!",
-        expectedJobJar, preJob.getJar());
+        expectedJobJar, job.getJar());
   }
 
   private void validateResourcePathsSub(URI[] actualURIs,
@@ -645,7 +697,7 @@ public class TestJobResourceUploader {
       }
     }
 
-    private void setupJobConf(JobConf conf) {
+    private Job setupJobConf(JobConf conf) throws IOException {
       conf.set("tmpfiles",
           buildPathString("tmpFiles", this.numOfTmpFiles, ".txt"));
       conf.set("tmpjars",
@@ -675,6 +727,7 @@ public class TestJobResourceUploader {
       conf.setLong(MRJobConfig.MAX_RESOURCES_MB, this.maxResourcesMB);
       conf.setLong(MRJobConfig.MAX_SINGLE_RESOURCE_MB,
           this.maxSingleResourceMB);
+      return new Job(conf);
     }
 
     // We always want absolute paths with a scheme in the DistributedCache, so
@@ -732,6 +785,8 @@ public class TestJobResourceUploader {
   }
 
   private class StubedUploader extends JobResourceUploader {
+    private boolean callOriginalCopy = false;
+
     StubedUploader(JobConf conf) throws IOException {
       this(conf, false);
     }
@@ -740,8 +795,10 @@ public class TestJobResourceUploader {
       super(FileSystem.getLocal(conf), useWildcard);
     }
 
-    StubedUploader(FileSystem fs, boolean useWildcard) throws IOException {
+    StubedUploader(FileSystem fs, boolean useWildcard,
+        boolean callOriginalCopy) throws IOException {
       super(fs, useWildcard);
+      this.callOriginalCopy = callOriginalCopy;
     }
 
     @Override
@@ -761,7 +818,12 @@ public class TestJobResourceUploader {
     @Override
     Path copyRemoteFiles(Path parentDir, Path originalPath, Configuration conf,
         short replication) throws IOException {
-      return new Path(destinationPathPrefix + originalPath.getName());
+      if (callOriginalCopy) {
+        return super.copyRemoteFiles(
+            parentDir, originalPath, conf, replication);
+      } else {
+        return new Path(destinationPathPrefix + originalPath.getName());
+      }
     }
 
     @Override

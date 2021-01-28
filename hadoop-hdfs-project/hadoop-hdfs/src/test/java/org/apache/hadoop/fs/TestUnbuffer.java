@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.fs;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
@@ -33,8 +33,8 @@ import org.junit.rules.ExpectedException;
 import org.mockito.Mockito;
 
 public class TestUnbuffer {
-  private static final Log LOG =
-      LogFactory.getLog(TestUnbuffer.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestUnbuffer.class.getName());
 
   @Rule
   public ExpectedException exception = ExpectedException.none();
@@ -131,17 +131,27 @@ public class TestUnbuffer {
   }
 
   /**
-   * Test unbuffer method which throws an Exception with class name included.
+   * Test that a InputStream should throw an exception when not implementing
+   * CanUnbuffer
+   *
+   * This should throw an exception when the stream claims to have the
+   * unbuffer capability, but actually does not implement CanUnbuffer.
    */
   @Test
   public void testUnbufferException() {
-    FSInputStream in = Mockito.mock(FSInputStream.class);
-    FSDataInputStream fs = new FSDataInputStream(in);
+    abstract class BuggyStream
+            extends FSInputStream
+            implements StreamCapabilities {
+    }
+
+    BuggyStream bs = Mockito.mock(BuggyStream.class);
+    Mockito.when(bs.hasCapability(Mockito.anyString())).thenReturn(true);
 
     exception.expect(UnsupportedOperationException.class);
-    exception.expectMessage("this stream " + in.getClass().getName()
-        + " does not support unbuffering");
+    exception.expectMessage(
+            StreamCapabilitiesPolicy.CAN_UNBUFFER_NOT_IMPLEMENTED_MESSAGE);
 
+    FSDataInputStream fs = new FSDataInputStream(bs);
     fs.unbuffer();
   }
 }

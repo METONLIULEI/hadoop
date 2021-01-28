@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+syntax = "proto2";
 option java_package = "org.apache.hadoop.yarn.proto";
 option java_outer_classname = "YarnServerNodemanagerRecoveryProtos";
 option java_generic_services = true;
@@ -42,6 +43,7 @@ message DeletionServiceDeleteTaskProto {
   repeated string basedirs = 5;
   repeated int32 successorIds = 6;
   optional string taskType = 7;
+  optional string dockerContainerId = 8;
 }
 
 message LocalizedResourceProto {

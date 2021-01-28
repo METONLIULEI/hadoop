@@ -64,7 +64,9 @@ public abstract class BaseSLSRunnerTest {
 
   @After
   public void tearDown() throws InterruptedException {
-    sls.stop();
+    if (sls != null) {
+      sls.stop();
+    }
   }
 
   public void runSLS(Configuration conf, long timeout) throws Exception {
@@ -125,7 +127,7 @@ public abstract class BaseSLSRunnerTest {
       if (!exceptionList.isEmpty()) {
         sls.stop();
         Assert.fail("TestSLSRunner catched exception from child thread "
-            + "(TaskRunner.Task): " + exceptionList);
+            + "(TaskRunner.TaskDefinition): " + exceptionList);
         break;
       }
       timeout--;

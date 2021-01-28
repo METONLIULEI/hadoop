@@ -19,19 +19,28 @@ package org.apache.hadoop.hdfs;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileContext;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
+import org.apache.hadoop.io.IOUtils;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -39,34 +48,48 @@ import static org.junit.Assert.assertTrue;
  * FileSystem.listFiles for erasure coded files.
  */
 public class TestDistributedFileSystemWithECFile {
-  private final ErasureCodingPolicy ecPolicy =
-      StripedFileTestUtil.getDefaultECPolicy();
-  private final int cellSize = ecPolicy.getCellSize();
-  private final short dataBlocks = (short) ecPolicy.getNumDataUnits();
-  private final short parityBlocks = (short) ecPolicy.getNumParityUnits();
-  private final int numDNs = dataBlocks + parityBlocks;
-  private final int stripesPerBlock = 4;
-  private final int blockSize = stripesPerBlock * cellSize;
-  private final int blockGroupSize = blockSize * dataBlocks;
+  private ErasureCodingPolicy ecPolicy;
+  private int cellSize;
+  private short dataBlocks;
+  private short parityBlocks;
+  private int numDNs;
+  private int stripesPerBlock;
+  private int blockSize;
+  private int blockGroupSize;
 
   private MiniDFSCluster cluster;
   private FileContext fileContext;
   private DistributedFileSystem fs;
   private Configuration conf = new HdfsConfiguration();
 
+  public ErasureCodingPolicy getEcPolicy() {
+    return StripedFileTestUtil.getDefaultECPolicy();
+  }
+
+  @Rule
+  public final Timeout globalTimeout = new Timeout(60000 * 3);
+
   @Before
   public void setup() throws IOException {
+    ecPolicy = getEcPolicy();
+    cellSize = ecPolicy.getCellSize();
+    dataBlocks = (short) ecPolicy.getNumDataUnits();
+    parityBlocks = (short) ecPolicy.getNumParityUnits();
+    numDNs = dataBlocks + parityBlocks;
+    stripesPerBlock = 4;
+    blockSize = stripesPerBlock * cellSize;
+    blockGroupSize = blockSize * dataBlocks;
+
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
     conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
         false);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDNs).build();
     fileContext = FileContext.getFileContext(cluster.getURI(0), conf);
     fs = cluster.getFileSystem();
-    fs.enableErasureCodingPolicy(
-        StripedFileTestUtil.getDefaultECPolicy().getName());
+    fs.enableErasureCodingPolicy(ecPolicy.getName());
     fs.mkdirs(new Path("/ec"));
     cluster.getFileSystem().getClient().setErasureCodingPolicy("/ec",
-        StripedFileTestUtil.getDefaultECPolicy().getName());
+        ecPolicy.getName());
   }
 
   @After
@@ -121,7 +144,7 @@ public class TestDistributedFileSystemWithECFile {
 
   @Test(timeout=60000)
   public void testListECFilesSmallerThanOneStripe() throws Exception {
-    int dataBlocksNum = 3;
+    int dataBlocksNum = dataBlocks;
     createFile("/ec/smallstripe", cellSize * dataBlocksNum);
     RemoteIterator<LocatedFileStatus> iter =
         cluster.getFileSystem().listFiles(new Path("/ec"), true);
@@ -182,5 +205,92 @@ public class TestDistributedFileSystemWithECFile {
     assertTrue(lastBlock.getHosts().length == 1 + parityBlocks);
     assertTrue(lastBlock.getOffset() == blockGroupSize);
     assertTrue(lastBlock.getLength() == lastBlockSize);
+  }
+
+  @Test(timeout=60000)
+  public void testReplayEditLogsForReplicatedFile() throws Exception {
+    cluster.shutdown();
+
+    ErasureCodingPolicy rs63 = SystemErasureCodingPolicies.getByID(
+        SystemErasureCodingPolicies.RS_6_3_POLICY_ID
+    );
+    ErasureCodingPolicy rs32 = SystemErasureCodingPolicies.getByID(
+        SystemErasureCodingPolicies.RS_3_2_POLICY_ID
+    );
+    // Test RS(6,3) as default policy
+    int numDataNodes = rs63.getNumDataUnits() + rs63.getNumParityUnits();
+    cluster = new MiniDFSCluster.Builder(conf)
+        .nnTopology(MiniDFSNNTopology.simpleHATopology())
+        .numDataNodes(numDataNodes)
+        .build();
+
+    cluster.transitionToActive(0);
+    fs = cluster.getFileSystem(0);
+    fs.enableErasureCodingPolicy(rs63.getName());
+    fs.enableErasureCodingPolicy(rs32.getName());
+
+    Path dir = new Path("/ec");
+    fs.mkdirs(dir);
+    fs.setErasureCodingPolicy(dir, rs63.getName());
+
+    // Create an erasure coded file with the default policy.
+    Path ecFile = new Path(dir, "ecFile");
+    createFile(ecFile.toString(), 10);
+    // Create a replicated file.
+    Path replicatedFile = new Path(dir, "replicated");
+    try (FSDataOutputStream out = fs.createFile(replicatedFile)
+      .replicate().build()) {
+      out.write(123);
+    }
+    // Create an EC file with a different policy.
+    Path ecFile2 = new Path(dir, "RS-3-2");
+    try (FSDataOutputStream out = fs.createFile(ecFile2)
+         .ecPolicyName(rs32.getName()).build()) {
+      out.write(456);
+    }
+
+    cluster.transitionToStandby(0);
+    cluster.transitionToActive(1);
+
+    fs = cluster.getFileSystem(1);
+    assertNull(fs.getErasureCodingPolicy(replicatedFile));
+    assertEquals(rs63, fs.getErasureCodingPolicy(ecFile));
+    assertEquals(rs32, fs.getErasureCodingPolicy(ecFile2));
+  }
+
+  @SuppressWarnings("deprecation")
+  @Test
+  public void testStatistics() throws Exception {
+    final String fileName = "/ec/file";
+    final int size = 3200;
+    createFile(fileName, size);
+    InputStream in = null;
+    try {
+      in = fs.open(new Path(fileName));
+      IOUtils.copyBytes(in, System.out, 4096, false);
+    } finally {
+      IOUtils.closeStream(in);
+    }
+
+    // verify stats are correct
+    Long totalBytesRead = 0L;
+    Long ecBytesRead = 0L;
+    for (FileSystem.Statistics stat : FileSystem.getAllStatistics()) {
+      totalBytesRead += stat.getBytesRead();
+      ecBytesRead += stat.getBytesReadErasureCoded();
+    }
+    assertEquals(Long.valueOf(size), totalBytesRead);
+    assertEquals(Long.valueOf(size), ecBytesRead);
+
+    // verify thread local stats are correct
+    Long totalBytesReadThread = 0L;
+    Long ecBytesReadThread = 0L;
+    for (FileSystem.Statistics stat : FileSystem.getAllStatistics()) {
+      FileSystem.Statistics.StatisticsData data = stat.getThreadStatistics();
+      totalBytesReadThread += data.getBytesRead();
+      ecBytesReadThread += data.getBytesReadErasureCoded();
+    }
+    assertEquals(Long.valueOf(size), totalBytesReadThread);
+    assertEquals(Long.valueOf(size), ecBytesReadThread);
   }
 }

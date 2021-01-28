@@ -21,7 +21,7 @@ package org.apache.hadoop.mapreduce.lib.output;
 import java.io.IOException;
 import java.text.NumberFormat;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -328,12 +328,14 @@ public abstract class FileOutputFormat<K, V> extends OutputFormat<K, V> {
     job.getConfiguration().set(BASE_OUTPUT_NAME, name);
   }
 
-  public synchronized 
-     OutputCommitter getOutputCommitter(TaskAttemptContext context
-                                        ) throws IOException {
+  public synchronized
+      OutputCommitter getOutputCommitter(TaskAttemptContext context)
+      throws IOException {
     if (committer == null) {
       Path output = getOutputPath(context);
-      committer = new FileOutputCommitter(output, context);
+      committer = PathOutputCommitterFactory.getCommitterFactory(
+          output,
+          context.getConfiguration()).createOutputCommitter(output, context);
     }
     return committer;
   }

@@ -26,6 +26,7 @@ public enum SchedulerEventType {
   NODE_UPDATE,
   NODE_RESOURCE_UPDATE,
   NODE_LABELS_UPDATE,
+  NODE_ATTRIBUTES_UPDATE,
 
   // Source: RMApp
   APP_ADDED,
@@ -51,5 +52,8 @@ public enum SchedulerEventType {
   MARK_CONTAINER_FOR_KILLABLE,
 
   // Cancel a killable container
-  MARK_CONTAINER_FOR_NONKILLABLE
+  MARK_CONTAINER_FOR_NONKILLABLE,
+
+  //Queue Management Change
+  MANAGE_QUEUE
 }

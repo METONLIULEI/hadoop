@@ -23,7 +23,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hadoop.metrics2.source.JvmMetrics;
 import org.apache.hadoop.service.CompositeService;
+import org.apache.hadoop.util.JvmPauseMonitor;
 import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.YarnUncaughtExceptionHandler;
@@ -37,10 +40,11 @@ import org.apache.hadoop.yarn.webapp.WebApp;
 import org.apache.hadoop.yarn.webapp.WebApps;
 import org.apache.hadoop.yarn.webapp.WebApps.Builder;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+import org.apache.hadoop.yarn.webapp.util.WebServiceClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * The router is a stateless YARN component which is the entry point to the
@@ -63,8 +67,11 @@ public class Router extends CompositeService {
   private static CompositeServiceShutdownHook routerShutdownHook;
   private Configuration conf;
   private AtomicBoolean isStopping = new AtomicBoolean(false);
-  private RouterClientRMService clientRMProxyService;
-  private RouterRMAdminService rmAdminProxyService;
+  private JvmPauseMonitor pauseMonitor;
+  @VisibleForTesting
+  protected RouterClientRMService clientRMProxyService;
+  @VisibleForTesting
+  protected RouterRMAdminService rmAdminProxyService;
   private WebApp webApp;
   @VisibleForTesting
   protected String webAppAddress;
@@ -73,6 +80,8 @@ public class Router extends CompositeService {
    * Priority of the Router shutdown hook.
    */
   public static final int SHUTDOWN_HOOK_PRIORITY = 30;
+
+  private static final String METRICS_NAME = "Router";
 
   public Router() {
     super(Router.class.getName());
@@ -95,6 +104,14 @@ public class Router extends CompositeService {
     webAppAddress = WebAppUtils.getWebAppBindURL(this.conf,
         YarnConfiguration.ROUTER_BIND_HOST,
         WebAppUtils.getRouterWebAppURLWithoutScheme(this.conf));
+    // Metrics
+    DefaultMetricsSystem.initialize(METRICS_NAME);
+    JvmMetrics jm = JvmMetrics.initSingleton("Router", null);
+    pauseMonitor = new JvmPauseMonitor();
+    addService(pauseMonitor);
+    jm.setPauseMonitor(pauseMonitor);
+
+    WebServiceClient.initialize(config);
     super.serviceInit(conf);
   }
 
@@ -118,6 +135,8 @@ public class Router extends CompositeService {
       return;
     }
     super.serviceStop();
+    DefaultMetricsSystem.shutdown();
+    WebServiceClient.destroy();
   }
 
   protected void shutDown() {

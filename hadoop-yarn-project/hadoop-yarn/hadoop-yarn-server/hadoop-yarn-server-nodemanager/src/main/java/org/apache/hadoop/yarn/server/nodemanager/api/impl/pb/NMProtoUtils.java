@@ -22,6 +22,7 @@ import org.apache.hadoop.yarn.server.nodemanager.DeletionService;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.recovery.DeletionTaskRecoveryInfo;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.task.DeletionTask;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.task.DeletionTaskType;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.task.DockerContainerDeletionTask;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.task.FileDeletionTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +54,11 @@ public final class NMProtoUtils {
       if (proto.getTaskType().equals(DeletionTaskType.FILE.name())) {
         LOG.debug("Converting recovered FileDeletionTask");
         return convertProtoToFileDeletionTask(proto, deletionService, taskId);
+      } else if (proto.getTaskType().equals(
+          DeletionTaskType.DOCKER_CONTAINER.name())) {
+        LOG.debug("Converting recovered DockerContainerDeletionTask");
+        return convertProtoToDockerContainerDeletionTask(proto, deletionService,
+            taskId);
       }
     }
     LOG.debug("Unable to get task type, trying FileDeletionTask");
@@ -62,7 +68,7 @@ public final class NMProtoUtils {
   /**
    * Convert the Protobuf representation into the {@link FileDeletionTask}.
    *
-   * @param proto the Protobuf representation of the {@link FileDeletionTask}
+   * @param proto the Protobuf representation of the {@link FileDeletionTask}.
    * @param deletionService the {@link DeletionService}.
    * @param taskId the ID of the {@link DeletionTask}.
    * @return the populated {@link FileDeletionTask}.
@@ -85,6 +91,25 @@ public final class NMProtoUtils {
     }
     return new FileDeletionTask(taskId, deletionService, user, subdir,
         basePaths);
+  }
+
+  /**
+   * Convert the Protobuf format into the {@link DockerContainerDeletionTask}.
+   *
+   * @param proto Protobuf format of the {@link DockerContainerDeletionTask}.
+   * @param deletionService the {@link DeletionService}.
+   * @param taskId the ID of the {@link DeletionTask}.
+   * @return the populated {@link DockerContainerDeletionTask}.
+   */
+  public static DockerContainerDeletionTask
+      convertProtoToDockerContainerDeletionTask(
+      DeletionServiceDeleteTaskProto proto, DeletionService deletionService,
+      int taskId) {
+    String user = proto.hasUser() ? proto.getUser() : null;
+    String containerId =
+        proto.hasDockerContainerId() ? proto.getDockerContainerId() : null;
+    return new DockerContainerDeletionTask(taskId, deletionService, user,
+        containerId);
   }
 
   /**

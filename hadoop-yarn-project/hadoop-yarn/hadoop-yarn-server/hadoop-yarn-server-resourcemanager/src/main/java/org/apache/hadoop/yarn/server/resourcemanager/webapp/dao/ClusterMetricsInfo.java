@@ -26,6 +26,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.ParentQueue;
 
 @XmlRootElement(name = "clusterMetrics")
 @XmlAccessorType(XmlAccessType.FIELD)
@@ -41,10 +42,12 @@ public class ClusterMetricsInfo {
   private long reservedMB;
   private long availableMB;
   private long allocatedMB;
+  private long pendingMB;
 
   private long reservedVirtualCores;
   private long availableVirtualCores;
   private long allocatedVirtualCores;
+  private long pendingVirtualCores;
 
   private int containersAllocated;
   private int containersReserved;
@@ -52,6 +55,8 @@ public class ClusterMetricsInfo {
 
   private long totalMB;
   private long totalVirtualCores;
+  private int utilizedMBPercent;
+  private int utilizedVirtualCoresPercent;
   private int totalNodes;
   private int lostNodes;
   private int unhealthyNodes;
@@ -60,6 +65,20 @@ public class ClusterMetricsInfo {
   private int rebootedNodes;
   private int activeNodes;
   private int shutdownNodes;
+
+  // Total used resource of the cluster, including all partitions
+  private ResourceInfo totalUsedResourcesAcrossPartition;
+
+  // Total registered resources of the cluster, including all partitions
+  private ResourceInfo totalClusterResourcesAcrossPartition;
+
+  // Total reserved resources of the cluster, including all partitions.
+  private ResourceInfo totalReservedResourcesAcrossPartition;
+
+  // Total allocated containers across all partitions.
+  private int totalAllocatedContainersAcrossPartition;
+
+  private boolean crossPartitionMetricsAvailable = false;
 
   public ClusterMetricsInfo() {
   } // JAXB needs this
@@ -82,23 +101,49 @@ public class ClusterMetricsInfo {
     this.reservedMB = metrics.getReservedMB();
     this.availableMB = metrics.getAvailableMB();
     this.allocatedMB = metrics.getAllocatedMB();
+    this.pendingMB = metrics.getPendingMB();
 
     this.reservedVirtualCores = metrics.getReservedVirtualCores();
     this.availableVirtualCores = metrics.getAvailableVirtualCores();
     this.allocatedVirtualCores = metrics.getAllocatedVirtualCores();
+    this.pendingVirtualCores = metrics.getPendingVirtualCores();
 
     this.containersAllocated = metrics.getAllocatedContainers();
     this.containersPending = metrics.getPendingContainers();
     this.containersReserved = metrics.getReservedContainers();
 
     if (rs instanceof CapacityScheduler) {
+      CapacityScheduler cs = (CapacityScheduler) rs;
       this.totalMB = availableMB + allocatedMB + reservedMB;
       this.totalVirtualCores =
-          availableVirtualCores + allocatedVirtualCores + containersReserved;
+          availableVirtualCores + allocatedVirtualCores + reservedVirtualCores;
+      // TODO, add support of other schedulers to get total used resources
+      // across partition.
+      if (cs.getRootQueue() != null
+          && cs.getRootQueue().getQueueResourceUsage() != null
+          && cs.getRootQueue().getQueueResourceUsage().getAllUsed() != null) {
+        totalUsedResourcesAcrossPartition = new ResourceInfo(
+            cs.getRootQueue().getQueueResourceUsage().getAllUsed());
+        totalClusterResourcesAcrossPartition = new ResourceInfo(
+            cs.getClusterResource());
+        totalReservedResourcesAcrossPartition = new ResourceInfo(
+            cs.getRootQueue().getQueueResourceUsage().getAllReserved());
+        totalAllocatedContainersAcrossPartition =
+            ((ParentQueue) cs.getRootQueue()).getNumContainers();
+        crossPartitionMetricsAvailable = true;
+      }
     } else {
       this.totalMB = availableMB + allocatedMB;
       this.totalVirtualCores = availableVirtualCores + allocatedVirtualCores;
     }
+    long baseMem = this.totalMB;
+    this.utilizedMBPercent = baseMem <= 0 ? 0 :
+        (int) (clusterMetrics.getUtilizedMB() * 100 / baseMem);
+    long baseCores = this.totalVirtualCores;
+    this.utilizedVirtualCoresPercent = baseCores <= 0 ? 0 :
+        (int) (clusterMetrics.getUtilizedVirtualCores() * 100 /
+            baseCores);
+
     this.activeNodes = clusterMetrics.getNumActiveNMs();
     this.lostNodes = clusterMetrics.getNumLostNMs();
     this.unhealthyNodes = clusterMetrics.getUnhealthyNMs();
@@ -146,6 +191,10 @@ public class ClusterMetricsInfo {
     return this.allocatedMB;
   }
 
+  public long getPendingMB() {
+    return this.pendingMB;
+  }
+
   public long getReservedVirtualCores() {
     return this.reservedVirtualCores;
   }
@@ -156,6 +205,10 @@ public class ClusterMetricsInfo {
 
   public long getAllocatedVirtualCores() {
     return this.allocatedVirtualCores;
+  }
+
+  public long getPendingVirtualCores() {
+    return this.pendingVirtualCores;
   }
 
   public int getContainersAllocated() {
@@ -208,6 +261,14 @@ public class ClusterMetricsInfo {
 
   public int getShutdownNodes() {
     return this.shutdownNodes;
+  }
+
+  public int getUtilizedMBPercent() {
+    return utilizedMBPercent;
+  }
+
+  public int getUtilizedVirtualCoresPercent() {
+    return utilizedVirtualCoresPercent;
   }
 
   public void setContainersReserved(int containersReserved) {
@@ -310,4 +371,31 @@ public class ClusterMetricsInfo {
     this.shutdownNodes = shutdownNodes;
   }
 
+  public ResourceInfo getTotalUsedResourcesAcrossPartition() {
+    return totalUsedResourcesAcrossPartition;
+  }
+
+  public void setUtilizedMBPercent(int utilizedMBPercent) {
+    this.utilizedMBPercent = utilizedMBPercent;
+  }
+
+  public void setUtilizedVirtualCoresPercent(int utilizedVirtualCoresPercent) {
+    this.utilizedVirtualCoresPercent = utilizedVirtualCoresPercent;
+  }
+
+  public ResourceInfo getTotalClusterResourcesAcrossPartition() {
+    return totalClusterResourcesAcrossPartition;
+  }
+
+  public ResourceInfo getTotalReservedResourcesAcrossPartition() {
+    return totalReservedResourcesAcrossPartition;
+  }
+
+  public int getTotalAllocatedContainersAcrossPartition() {
+    return totalAllocatedContainersAcrossPartition;
+  }
+
+  public boolean getCrossPartitionMetricsAvailable() {
+    return crossPartitionMetricsAvailable;
+  }
 }

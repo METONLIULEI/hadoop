@@ -25,8 +25,16 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.runtime.LinuxContainerRuntime;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerExecContext;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerReapContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -353,7 +361,7 @@ public class TestLinuxContainerExecutor {
         dirsHandler
           .getLocalPathForWrite(ResourceLocalizationService.NM_PRIVATE_DIR
               + Path.SEPARATOR
-              + String.format(ContainerLocalizer.TOKEN_FILE_NAME_FMT, locId));
+              + String.format(ContainerExecutor.TOKEN_FILE_NAME_FMT, locId));
     files.create(nmPrivateContainerTokensPath, EnumSet.of(CREATE, OVERWRITE));
     Configuration config = new YarnConfiguration(conf);
     InetSocketAddress nmAddr =
@@ -366,7 +374,7 @@ public class TestLinuxContainerExecutor {
       @Override
       public void buildMainArgs(List<String> command, String user,
           String appId, String locId, InetSocketAddress nmAddr,
-          List<String> localDirs) {
+          String tokenFileName, List<String> localDirs) {
         MockContainerLocalizer.buildMainArgs(command, user, appId, locId,
           nmAddr, localDirs);
       }
@@ -387,7 +395,7 @@ public class TestLinuxContainerExecutor {
         dirsHandler
           .getLocalPathForWrite(ResourceLocalizationService.NM_PRIVATE_DIR
               + Path.SEPARATOR
-              + String.format(ContainerLocalizer.TOKEN_FILE_NAME_FMT, locId2));
+              + String.format(ContainerExecutor.TOKEN_FILE_NAME_FMT, locId2));
     files.create(nmPrivateContainerTokensPath2, EnumSet.of(CREATE, OVERWRITE));
     exec.startLocalizer(new LocalizerStartContext.Builder()
             .setNmPrivateContainerTokens(nmPrivateContainerTokensPath2)
@@ -628,7 +636,7 @@ public class TestLinuxContainerExecutor {
     LinuxContainerExecutor lce = new LinuxContainerExecutor();
     lce.setConf(conf);
     try {
-      lce.init();
+      lce.init(null);
     } catch (IOException e) {
       // expected if LCE isn't setup right, but not necessary for this test
     }
@@ -649,6 +657,75 @@ public class TestLinuxContainerExecutor {
         TestResourceHandler.postExecContainers.contains(cid));
   }
 
+  @Test
+  public void testRemoveDockerContainer() throws Exception {
+    ApplicationId appId = ApplicationId.newInstance(12345, 67890);
+    ApplicationAttemptId attemptId =
+        ApplicationAttemptId.newInstance(appId, 54321);
+    String cid = ContainerId.newContainerId(attemptId, 9876).toString();
+    LinuxContainerExecutor lce = mock(LinuxContainerExecutor.class);
+    lce.removeDockerContainer(cid);
+    verify(lce, times(1)).removeDockerContainer(cid);
+  }
+
+  @Test
+  public void testReapContainer() throws Exception {
+    Container container = mock(Container.class);
+    LinuxContainerRuntime containerRuntime = mock(LinuxContainerRuntime.class);
+    LinuxContainerExecutor lce = spy(new LinuxContainerExecutor(
+        containerRuntime));
+    ContainerReapContext.Builder builder =  new ContainerReapContext.Builder();
+    builder.setContainer(container).setUser("foo");
+    ContainerReapContext ctx = builder.build();
+    lce.reapContainer(ctx);
+    verify(lce, times(1)).reapContainer(ctx);
+    verify(lce, times(1)).postComplete(any());
+  }
+
+  @Test
+  public void testRelaunchContainer() throws Exception {
+    Container container = mock(Container.class);
+    LinuxContainerExecutor lce = mock(LinuxContainerExecutor.class);
+    ContainerStartContext.Builder builder =
+        new ContainerStartContext.Builder();
+    builder.setContainer(container).setUser("foo");
+    ContainerStartContext ctx = builder.build();
+    lce.relaunchContainer(ctx);
+    verify(lce, times(1)).relaunchContainer(ctx);
+  }
+
+  @Test
+  public void testExecContainer() throws Exception {
+    Container container = mock(Container.class);
+    LinuxContainerExecutor lce = mock(LinuxContainerExecutor.class);
+    ContainerExecContext.Builder builder =
+        new ContainerExecContext.Builder();
+    builder.setUser("foo").setAppId("app1").setContainer(container);
+    ContainerExecContext ctx = builder.build();
+    lce.execContainer(ctx);
+    verify(lce, times(1)).execContainer(ctx);
+  }
+
+  @Test
+  public void testUpdateYarnSysFS() throws Exception {
+    String user = System.getProperty("user.name");
+    String appId="app-1";
+    String spec="";
+    Context ctx = mock(Context.class);
+    LinuxContainerExecutor lce = mock(LinuxContainerExecutor.class);
+    lce.updateYarnSysFS(ctx, user, appId, spec);
+    verify(lce, times(1)).updateYarnSysFS(ctx, user, appId, spec);
+  }
+
+  @Test
+  public void testGetLocalResources() throws Exception {
+    Container container = mock(Container.class);
+    LinuxContainerExecutor lce = mock(LinuxContainerExecutor.class);
+    lce.getLocalResources(container);
+    verify(lce, times(1)).getLocalResources(container);
+  }
+
+  @Deprecated
   private static class TestResourceHandler implements LCEResourcesHandler {
     static Set<ContainerId> postExecContainers = new HashSet<ContainerId>();
 

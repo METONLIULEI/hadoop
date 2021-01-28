@@ -36,7 +36,7 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineWriter;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -220,7 +220,7 @@ public class TimelineCollectorManager extends CompositeService {
 
   @Override
   protected void serviceStop() throws Exception {
-    if (collectors != null && collectors.size() > 1) {
+    if (collectors != null && collectors.size() > 0) {
       synchronized (collectors) {
         for (TimelineCollector c : collectors.values()) {
           c.serviceStop();

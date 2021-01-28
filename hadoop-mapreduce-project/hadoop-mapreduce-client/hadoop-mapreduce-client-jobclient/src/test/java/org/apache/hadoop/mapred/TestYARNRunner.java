@@ -19,12 +19,13 @@
 package org.apache.hadoop.mapred;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -44,9 +45,9 @@ import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -96,6 +97,7 @@ import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueInfo;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
@@ -106,30 +108,64 @@ import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.utils.BuilderUtils;
 import org.apache.hadoop.yarn.util.Records;
+import org.apache.hadoop.yarn.util.resource.CustomResourceTypesConfigurationProvider;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.log4j.Appender;
+import org.apache.log4j.AppenderSkeleton;
 import org.apache.log4j.Layout;
-import org.apache.log4j.Logger;
+import org.apache.log4j.Level;
 import org.apache.log4j.SimpleLayout;
 import org.apache.log4j.WriterAppender;
+import org.apache.log4j.spi.LoggingEvent;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 
 /**
  * Test YarnRunner and make sure the client side plugin works
  * fine
  */
 public class TestYARNRunner {
-  private static final Log LOG = LogFactory.getLog(TestYARNRunner.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestYARNRunner.class);
   private static final RecordFactory recordFactory = RecordFactoryProvider.getRecordFactory(null);
 
   // prefix before <LOG_DIR>/profile.out
   private static final String PROFILE_PARAMS =
       MRJobConfig.DEFAULT_TASK_PROFILE_PARAMS.substring(0,
           MRJobConfig.DEFAULT_TASK_PROFILE_PARAMS.lastIndexOf("%"));
+  private static final String CUSTOM_RESOURCE_NAME = "a-custom-resource";
+
+  private static class TestAppender extends AppenderSkeleton {
+
+    private final List<LoggingEvent> logEvents = new CopyOnWriteArrayList<>();
+
+    @Override
+    public boolean requiresLayout() {
+      return false;
+    }
+
+    @Override
+    public void close() {
+    }
+
+    @Override
+    protected void append(LoggingEvent arg0) {
+      logEvents.add(arg0);
+    }
+
+    private List<LoggingEvent> getLogEvents() {
+      return logEvents;
+    }
+  }
 
   private YARNRunner yarnRunner;
   private ResourceMgrDelegate resourceMgrDelegate;
@@ -142,6 +178,11 @@ public class TestYARNRunner {
   private ApplicationSubmissionContext submissionContext;
   private  ClientServiceDelegate clientDelegate;
   private static final String failString = "Rejected job";
+
+  @BeforeClass
+  public static void setupBeforeClass() {
+    ResourceUtils.resetResourceTypes(new Configuration());
+  }
 
   @Before
   public void setUp() throws Exception {
@@ -175,6 +216,7 @@ public class TestYARNRunner {
   @After
   public void cleanup() {
     FileUtil.fullyDelete(testWorkDir);
+    ResourceUtils.resetResourceTypes(new Configuration());
   }
 
   @Test(timeout=20000)
@@ -206,7 +248,8 @@ public class TestYARNRunner {
         .thenReturn(
             ApplicationReport.newInstance(appId, null, "tmp", "tmp", "tmp",
                 "tmp", 0, null, YarnApplicationState.FINISHED, "tmp", "tmp",
-                0l, 0l, FinalApplicationStatus.SUCCEEDED, null, null, 0f,
+                0L, 0L, 0L,
+                 FinalApplicationStatus.SUCCEEDED, null, null, 0f,
                 "tmp", null));
     yarnRunner.killJob(jobId);
     verify(clientDelegate).killJob(jobId);
@@ -508,7 +551,8 @@ public class TestYARNRunner {
   }
   @Test(timeout=20000)
   public void testWarnCommandOpts() throws Exception {
-    Logger logger = Logger.getLogger(YARNRunner.class);
+    org.apache.log4j.Logger logger =
+        org.apache.log4j.Logger.getLogger(YARNRunner.class);
     
     ByteArrayOutputStream bout = new ByteArrayOutputStream();
     Layout layout = new SimpleLayout();
@@ -574,9 +618,9 @@ public class TestYARNRunner {
     ApplicationSubmissionContext appSubCtx =
         buildSubmitContext(yarnRunner, jobConf);
 
-    assertEquals(appSubCtx.getNodeLabelExpression(), "GPU");
-    assertEquals(appSubCtx.getAMContainerResourceRequests().get(0)
-        .getNodeLabelExpression(), "highMem");
+    assertThat(appSubCtx.getNodeLabelExpression()).isEqualTo("GPU");
+    assertThat(appSubCtx.getAMContainerResourceRequests().get(0)
+        .getNodeLabelExpression()).isEqualTo("highMem");
   }
 
   @Test
@@ -744,15 +788,22 @@ public class TestYARNRunner {
 
   @Test
   public void testAMStandardEnvWithDefaultLibPath() throws Exception {
-    testAMStandardEnv(false);
+    testAMStandardEnv(false, false);
   }
 
   @Test
   public void testAMStandardEnvWithCustomLibPath() throws Exception {
-    testAMStandardEnv(true);
+    testAMStandardEnv(true, false);
   }
 
-  private void testAMStandardEnv(boolean customLibPath) throws Exception {
+  @Test
+  public void testAMStandardEnvWithCustomLibPathWithSeparateEnvProps()
+      throws Exception {
+    testAMStandardEnv(true, true);
+  }
+
+  private void testAMStandardEnv(boolean customLibPath,
+      boolean useSeparateEnvProps) throws Exception {
     // the Windows behavior is different and this test currently doesn't really
     // apply
     // MAPREDUCE-6588 should revisit this test
@@ -765,9 +816,16 @@ public class TestYARNRunner {
     String pathKey = Environment.LD_LIBRARY_PATH.name();
 
     if (customLibPath) {
-      jobConf.set(MRJobConfig.MR_AM_ADMIN_USER_ENV, pathKey + "=" +
-          ADMIN_LIB_PATH);
-      jobConf.set(MRJobConfig.MR_AM_ENV, pathKey + "=" + USER_LIB_PATH);
+      if (useSeparateEnvProps) {
+        // Specify these as individual variables instead of k=v lists
+        jobConf.set(MRJobConfig.MR_AM_ADMIN_USER_ENV + "." + pathKey,
+            ADMIN_LIB_PATH);
+        jobConf.set(MRJobConfig.MR_AM_ENV + "." + pathKey, USER_LIB_PATH);
+      } else {
+        jobConf.set(MRJobConfig.MR_AM_ADMIN_USER_ENV, pathKey + "=" +
+            ADMIN_LIB_PATH);
+        jobConf.set(MRJobConfig.MR_AM_ENV, pathKey + "=" + USER_LIB_PATH);
+      }
     }
     jobConf.set(MRJobConfig.MAPRED_ADMIN_USER_SHELL, USER_SHELL);
 
@@ -880,5 +938,100 @@ public class TestYARNRunner {
     Assert.assertTrue(confSent.get("hadoop.tmp.dir") == null || !confSent
         .get("hadoop.tmp.dir").equals("testconfdir"));
     UserGroupInformation.reset();
+  }
+
+  @Test
+  public void testCustomAMRMResourceType() throws Exception {
+    initResourceTypes();
+
+    JobConf jobConf = new JobConf();
+
+    jobConf.setInt(MRJobConfig.MR_AM_RESOURCE_PREFIX +
+        CUSTOM_RESOURCE_NAME, 5);
+    jobConf.setInt(MRJobConfig.MR_AM_CPU_VCORES, 3);
+
+    yarnRunner = new YARNRunner(jobConf);
+
+    submissionContext = buildSubmitContext(yarnRunner, jobConf);
+
+    List<ResourceRequest> resourceRequests =
+        submissionContext.getAMContainerResourceRequests();
+
+    Assert.assertEquals(1, resourceRequests.size());
+    ResourceRequest resourceRequest = resourceRequests.get(0);
+
+    ResourceInformation resourceInformation = resourceRequest.getCapability()
+        .getResourceInformation(CUSTOM_RESOURCE_NAME);
+    Assert.assertEquals("Expecting the default unit (G)",
+        "G", resourceInformation.getUnits());
+    Assert.assertEquals(5L, resourceInformation.getValue());
+    Assert.assertEquals(3, resourceRequest.getCapability().getVirtualCores());
+  }
+
+  @Test
+  public void testAMRMemoryRequest() throws Exception {
+    for (String memoryName : ImmutableList.of(
+        MRJobConfig.RESOURCE_TYPE_NAME_MEMORY,
+        MRJobConfig.RESOURCE_TYPE_ALTERNATIVE_NAME_MEMORY)) {
+      JobConf jobConf = new JobConf();
+      jobConf.set(MRJobConfig.MR_AM_RESOURCE_PREFIX + memoryName, "3 Gi");
+
+      yarnRunner = new YARNRunner(jobConf);
+
+      submissionContext = buildSubmitContext(yarnRunner, jobConf);
+
+      List<ResourceRequest> resourceRequests =
+          submissionContext.getAMContainerResourceRequests();
+
+      Assert.assertEquals(1, resourceRequests.size());
+      ResourceRequest resourceRequest = resourceRequests.get(0);
+
+      long memorySize = resourceRequest.getCapability().getMemorySize();
+      Assert.assertEquals(3072, memorySize);
+    }
+  }
+
+  @Test
+  public void testAMRMemoryRequestOverriding() throws Exception {
+    for (String memoryName : ImmutableList.of(
+        MRJobConfig.RESOURCE_TYPE_NAME_MEMORY,
+        MRJobConfig.RESOURCE_TYPE_ALTERNATIVE_NAME_MEMORY)) {
+      TestAppender testAppender = new TestAppender();
+      org.apache.log4j.Logger  logger =
+          org.apache.log4j.Logger.getLogger(YARNRunner.class);
+      logger.addAppender(testAppender);
+      try {
+        JobConf jobConf = new JobConf();
+        jobConf.set(MRJobConfig.MR_AM_RESOURCE_PREFIX + memoryName, "3 Gi");
+        jobConf.setInt(MRJobConfig.MR_AM_VMEM_MB, 2048);
+
+        yarnRunner = new YARNRunner(jobConf);
+
+        submissionContext = buildSubmitContext(yarnRunner, jobConf);
+
+        List<ResourceRequest> resourceRequests =
+            submissionContext.getAMContainerResourceRequests();
+
+        Assert.assertEquals(1, resourceRequests.size());
+        ResourceRequest resourceRequest = resourceRequests.get(0);
+
+        long memorySize = resourceRequest.getCapability().getMemorySize();
+        Assert.assertEquals(3072, memorySize);
+        assertTrue(testAppender.getLogEvents().stream().anyMatch(
+            e -> e.getLevel() == Level.WARN && ("Configuration " +
+                "yarn.app.mapreduce.am.resource." + memoryName + "=3Gi is " +
+                "overriding the yarn.app.mapreduce.am.resource.mb=2048 " +
+                "configuration").equals(e.getMessage())));
+      } finally {
+        logger.removeAppender(testAppender);
+      }
+    }
+  }
+
+  private void initResourceTypes() {
+    CustomResourceTypesConfigurationProvider.initResourceTypes(
+        ImmutableMap.<String, String>builder()
+        .put(CUSTOM_RESOURCE_NAME, "G")
+        .build());
   }
 }

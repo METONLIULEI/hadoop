@@ -20,13 +20,14 @@ package org.apache.hadoop.yarn.server;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.Map;
+import java.util.Set;
+import java.util.LinkedHashSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+
+import org.apache.commons.lang3.StringUtils;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -35,7 +36,7 @@ import org.apache.hadoop.fs.FileContext;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.ha.HAServiceProtocol;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
-import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.net.ServerSocketUtil;
 import org.apache.hadoop.service.AbstractService;
@@ -69,7 +70,6 @@ import org.apache.hadoop.yarn.server.nodemanager.ContainerExecutor;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.DeletionService;
 import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
-import org.apache.hadoop.yarn.server.nodemanager.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.NodeManager;
 import org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdater;
 import org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdaterImpl;
@@ -79,8 +79,7 @@ import org.apache.hadoop.yarn.server.nodemanager.amrmproxy.RequestInterceptor;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.ContainerManagerImpl;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor.ContainersMonitor;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor.ContainersMonitorImpl;
-
-
+import org.apache.hadoop.yarn.server.nodemanager.health.NodeHealthCheckerService;
 import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceTrackerService;
@@ -89,6 +88,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptE
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptRegistrationEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.event.RMAppAttemptUnregistrationEvent;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
+import org.apache.hadoop.yarn.server.security.http.RMAuthenticationFilterInitializer;
 import org.apache.hadoop.yarn.server.timeline.MemoryTimelineStore;
 import org.apache.hadoop.yarn.server.timeline.TimelineStore;
 import org.apache.hadoop.yarn.server.timeline.recovery.MemoryTimelineStateStore;
@@ -97,7 +97,7 @@ import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -250,6 +250,15 @@ public class MiniYARNCluster extends CompositeService {
     useFixedPorts = conf.getBoolean(
         YarnConfiguration.YARN_MINICLUSTER_FIXED_PORTS,
         YarnConfiguration.DEFAULT_YARN_MINICLUSTER_FIXED_PORTS);
+
+    if (!useFixedPorts) {
+      String hostname = MiniYARNCluster.getHostname();
+      conf.set(YarnConfiguration.TIMELINE_SERVICE_ADDRESS, hostname + ":0");
+
+      conf.set(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
+          hostname + ":" + ServerSocketUtil.getPort(9188, 10));
+    }
+
     useRpc = conf.getBoolean(YarnConfiguration.YARN_MINICLUSTER_USE_RPC,
         YarnConfiguration.DEFAULT_YARN_MINICLUSTER_USE_RPC);
     failoverTimeout = conf.getInt(YarnConfiguration.RM_ZK_TIMEOUT_MS,
@@ -302,7 +311,13 @@ public class MiniYARNCluster extends CompositeService {
         YarnConfiguration.DEFAULT_TIMELINE_SERVICE_ENABLED) || enableAHS) {
         addService(new ApplicationHistoryServerWrapper());
     }
-    
+    // to ensure that any FileSystemNodeAttributeStore started by the RM always
+    // uses a unique path, if unset, force it under the test dir.
+    if (conf.get(YarnConfiguration.FS_NODE_ATTRIBUTE_STORE_ROOT_DIR) == null) {
+      File nodeAttrDir = new File(getTestWorkDir(), "nodeattributes");
+      conf.set(YarnConfiguration.FS_NODE_ATTRIBUTE_STORE_ROOT_DIR,
+          nodeAttrDir.getCanonicalPath());
+    }
     super.serviceInit(
         conf instanceof YarnConfiguration ? conf : new YarnConfiguration(conf));
   }
@@ -455,21 +470,7 @@ public class MiniYARNCluster extends CompositeService {
   }
 
   public static String getHostname() {
-    try {
-      String hostname = InetAddress.getLocalHost().getHostName();
-      // Create InetSocketAddress to see whether it is resolved or not.
-      // If not, just return "localhost".
-      InetSocketAddress addr =
-          NetUtils.createSocketAddrForHost(hostname, 1);
-      if (addr.isUnresolved()) {
-        return "localhost";
-      } else {
-        return hostname;
-      }
-    }
-    catch (UnknownHostException ex) {
-      throw new RuntimeException(ex);
-    }
+    return "localhost";
   }
 
   private class ResourceManagerWrapper extends AbstractService {
@@ -567,7 +568,9 @@ public class MiniYARNCluster extends CompositeService {
       config.set(YarnConfiguration.NM_LOCALIZER_ADDRESS,
           MiniYARNCluster.getHostname() + ":0");
       config.set(YarnConfiguration.NM_COLLECTOR_SERVICE_ADDRESS,
-          MiniYARNCluster.getHostname() + ":0");
+          MiniYARNCluster.getHostname() + ":" +
+              ServerSocketUtil.getPort(
+                  YarnConfiguration.DEFAULT_NM_COLLECTOR_SERVICE_PORT, 10));
       WebAppUtils
           .setNMWebAppHostNameAndPort(config,
               MiniYARNCluster.getHostname(), 0);
@@ -643,9 +646,8 @@ public class MiniYARNCluster extends CompositeService {
       if(nodeStatus == null) {
         return currentStatus;
       } else {
-        // Increment response ID, the RMNodeStatusEvent will not get recorded
-        // for a duplicate heartbeat
-        nodeStatus.setResponseId(nodeStatus.getResponseId() + 1);
+        // Use the same responseId for the custom node status
+        nodeStatus.setResponseId(currentStatus.getResponseId());
         return nodeStatus;
       }
     }
@@ -807,18 +809,32 @@ public class MiniYARNCluster extends CompositeService {
       }
       conf.setClass(YarnConfiguration.TIMELINE_SERVICE_STATE_STORE_CLASS,
           MemoryTimelineStateStore.class, TimelineStateStore.class);
-      if (!useFixedPorts) {
-        String hostname = MiniYARNCluster.getHostname();
-        conf.set(YarnConfiguration.TIMELINE_SERVICE_ADDRESS, hostname + ":0");
-        conf.set(YarnConfiguration.TIMELINE_SERVICE_WEBAPP_ADDRESS,
-            hostname + ":" + ServerSocketUtil.getPort(9188, 10));
-      }
       appHistoryServer.init(conf);
       super.serviceInit(conf);
     }
 
     @Override
     protected synchronized void serviceStart() throws Exception {
+
+      // Removing RMAuthenticationFilter as it conflitcs with
+      // TimelineAuthenticationFilter
+      Configuration conf = getConfig();
+      String filterInitializerConfKey = "hadoop.http.filter.initializers";
+      String initializers = conf.get(filterInitializerConfKey, "");
+      String[] parts = initializers.split(",");
+      Set<String> target = new LinkedHashSet<String>();
+      for (String filterInitializer : parts) {
+        filterInitializer = filterInitializer.trim();
+        if (filterInitializer.equals(
+            RMAuthenticationFilterInitializer.class.getName())
+            || filterInitializer.isEmpty()) {
+          continue;
+        }
+        target.add(filterInitializer);
+      }
+      initializers = StringUtils.join(target, ",");
+      conf.set(filterInitializerConfKey, initializers);
+
       appHistoryServer.start();
       if (appHistoryServer.getServiceState() != STATE.STARTED) {
         // AHS could have failed.
@@ -959,9 +975,10 @@ public class MiniYARNCluster extends CompositeService {
     protected void initializePipeline(ApplicationAttemptId applicationAttemptId,
         String user, Token<AMRMTokenIdentifier> amrmToken,
         Token<AMRMTokenIdentifier> localToken,
-        Map<String, byte[]> recoveredDataMap, boolean isRecovery) {
+        Map<String, byte[]> recoveredDataMap, boolean isRecovery,
+        Credentials credentials) {
       super.initializePipeline(applicationAttemptId, user, amrmToken,
-          localToken, recoveredDataMap, isRecovery);
+          localToken, recoveredDataMap, isRecovery, credentials);
       RequestInterceptor rt = getPipelines()
           .get(applicationAttemptId.getApplicationId()).getRootInterceptor();
       // The DefaultRequestInterceptor will generally be the last

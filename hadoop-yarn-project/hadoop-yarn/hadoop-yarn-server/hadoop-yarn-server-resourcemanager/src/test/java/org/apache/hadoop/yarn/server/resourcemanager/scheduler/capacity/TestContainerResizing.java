@@ -24,8 +24,8 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Container;
@@ -42,9 +42,12 @@ import org.apache.hadoop.yarn.event.DrainDispatcher;
 import org.apache.hadoop.yarn.server.resourcemanager.MockAM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmissionData;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerEvent;
@@ -58,16 +61,16 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica
     .FiCaSchedulerNode;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.PlacementSet;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.CandidateNodeSet;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
 public class TestContainerResizing {
-  private static final Log LOG = LogFactory.getLog(TestContainerResizing.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestContainerResizing.class);
   private final int GB = 1024;
 
   private YarnConfiguration conf;
@@ -88,13 +91,14 @@ public class TestContainerResizing {
 
     @Override
     public CSAssignment allocateContainersToNode(
-        PlacementSet<FiCaSchedulerNode> ps, boolean withNodeHeartbeat) {
+        CandidateNodeSet<FiCaSchedulerNode> candidates,
+        boolean withNodeHeartbeat) {
       try {
         Thread.sleep(1000);
       } catch(InterruptedException e) {
         LOG.debug("Thread interrupted.");
       }
-      return super.allocateContainersToNode(ps, withNodeHeartbeat);
+      return super.allocateContainersToNode(candidates, withNodeHeartbeat);
     }
   }
 
@@ -123,7 +127,15 @@ public class TestContainerResizing {
     MockNM nm1 = rm1.registerNode("h1:1234", 20 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     ContainerId containerId1 =
@@ -181,7 +193,15 @@ public class TestContainerResizing {
     MockNM nm1 = rm1.registerNode("h1:1234", 20 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(3 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(3 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
         rm1, app1.getApplicationId());
@@ -204,7 +224,7 @@ public class TestContainerResizing {
     verifyContainerDecreased(response, containerId1, 1 * GB);
 
     // Wait for scheduler to finish processing kill events..
-    dispatcher.waitForEventThreadToWait();
+    dispatcher.await();
 
     checkUsedResource(rm1, "default", 1 * GB, null);
     Assert.assertEquals(1 * GB,
@@ -246,7 +266,15 @@ public class TestContainerResizing {
     MockNM nm2 = rm1.registerNode("h2:1234", 8 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
@@ -347,7 +375,15 @@ public class TestContainerResizing {
     MockNM nm1 = rm1.registerNode("h1:1234", 8 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
@@ -422,7 +458,15 @@ public class TestContainerResizing {
     MockNM nm2 = rm1.registerNode("h2:1234", 8 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
@@ -536,7 +580,15 @@ public class TestContainerResizing {
     MockNM nm2 = rm1.registerNode("h2:1234", 8 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(2 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(2 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
@@ -605,7 +657,7 @@ public class TestContainerResizing {
     // Trigger a node heartbeat..
     cs.handle(new NodeUpdateSchedulerEvent(rmNode1));
 
-    dispatcher.waitForEventThreadToWait();
+    dispatcher.await();
     /* Check statuses after reservation satisfied */
     // Increase request should be unreserved
     Assert.assertTrue(app.getReservedContainers().isEmpty());
@@ -653,7 +705,15 @@ public class TestContainerResizing {
     MockNM nm2 = rm1.registerNode("h2:1234", 8 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
@@ -714,7 +774,7 @@ public class TestContainerResizing {
     am1.allocate(null, null);
 
     // Wait for scheduler to process all events.
-    dispatcher.waitForEventThreadToWait();
+    dispatcher.await();
 
     /* Check statuses after reservation satisfied */
     // Increase request should be unreserved
@@ -739,11 +799,14 @@ public class TestContainerResizing {
   @Test
   public void testIncreaseContainerUnreservedWhenApplicationCompleted()
       throws Exception {
+    // Disable relaunch app attempt on failure, in order to check
+    // resource usages for current app only.
+    conf.setInt(YarnConfiguration.RM_AM_MAX_ATTEMPTS, 1);
     /**
      * Similar to testIncreaseContainerUnreservedWhenContainerCompleted, when
      * application finishes, reserved increase container should be cancelled
      */
-    MockRM rm1 = new MockRM() {
+    MockRM rm1 = new MockRM(conf) {
       @Override
       public RMNodeLabelsManager createNodeLabelManager() {
         return mgr;
@@ -754,7 +817,15 @@ public class TestContainerResizing {
     MockNM nm2 = rm1.registerNode("h2:1234", 8 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
@@ -806,9 +877,14 @@ public class TestContainerResizing {
     Assert.assertEquals(6 * GB,
         app.getAppAttemptResourceUsage().getReserved().getMemorySize());
 
-    // Kill the application
-    cs.handle(new AppAttemptRemovedSchedulerEvent(am1.getApplicationAttemptId(),
-        RMAppAttemptState.KILLED, false));
+    // Kill the application by killing the AM container
+    ContainerId amContainer =
+        ContainerId.newContainerId(am1.getApplicationAttemptId(), 1);
+    cs.killContainer(cs.getRMContainer(amContainer));
+    rm1.waitForState(am1.getApplicationAttemptId(),
+        RMAppAttemptState.FAILED);
+    rm1.waitForState(am1.getApplicationAttemptId().getApplicationId(),
+        RMAppState.FAILED);
 
     /* Check statuses after reservation satisfied */
     // Increase request should be unreserved
@@ -873,7 +949,15 @@ public class TestContainerResizing {
     MockNM nm1 = rm1.registerNode("h1:1234", 10 * GB);
 
     // app1 -> a1
-    RMApp app1 = rm1.submitApp(1 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(1 * GB, rm1)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm1, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm1, nm1);
 
     FiCaSchedulerApp app = TestUtils.getFiCaSchedulerApp(
@@ -954,7 +1038,15 @@ public class TestContainerResizing {
     // register a node
     MockNM nm = rm.registerNode("h1:1234", 20 * GB);
     // submit an application -> app1
-    RMApp app1 = rm.submitApp(3 * GB, "app", "user", null, "default");
+    MockRMAppSubmissionData data =
+        MockRMAppSubmissionData.Builder.createWithMemory(3 * GB, rm)
+            .withAppName("app")
+            .withUser("user")
+            .withAcls(null)
+            .withQueue("default")
+            .withUnmanagedAM(false)
+            .build();
+    RMApp app1 = MockRMAppSubmitter.submit(rm, data);
     MockAM am1 = MockRM.launchAndRegisterAM(app1, rm, nm);
     // making sure resource is allocated
     checkUsedResource(rm, "default", 3 * GB, null);

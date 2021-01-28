@@ -18,17 +18,17 @@
 
 package org.apache.hadoop.yarn.webapp.hamlet;
 
-import com.google.common.base.Joiner;
-import static com.google.common.base.Preconditions.*;
-import com.google.common.base.Splitter;
-import com.google.common.collect.Iterables;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import static org.apache.hadoop.thirdparty.com.google.common.base.Preconditions.*;
+import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterables;
 
 import java.io.PrintWriter;
 import java.util.EnumSet;
 import static java.util.EnumSet.*;
 import java.util.Iterator;
 
-import static org.apache.commons.lang.StringEscapeUtils.*;
+import static org.apache.commons.text.StringEscapeUtils.*;
 import static org.apache.hadoop.yarn.webapp.hamlet.HamletImpl.EOpt.*;
 
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -106,7 +106,7 @@ public class HamletImpl extends HamletSpec {
         if (!opts.contains(PRE)) {
           indent(opts);
         }
-        out.print(quote ? escapeHtml(String.valueOf(s))
+        out.print(quote ? escapeHtml4(String.valueOf(s))
                         : String.valueOf(s));
         if (!opts.contains(INLINE) && !opts.contains(PRE)) {
           out.println();
@@ -309,7 +309,7 @@ public class HamletImpl extends HamletSpec {
     sb.setLength(0);
     sb.append(' ').append(name);
     if (value != null) {
-      sb.append("=\"").append(escapeHtml(value)).append("\"");
+      sb.append("=\"").append(escapeHtml4(value)).append("\"");
     }
     out.print(sb.toString());
   }

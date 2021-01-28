@@ -49,7 +49,7 @@ import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.util.Clock;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.yarn.event.Event;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,8 +100,6 @@ public class DefaultSpeculator extends AbstractService implements
   private AppContext context;
   private Thread speculationBackgroundThread = null;
   private volatile boolean stopped = false;
-  private BlockingQueue<SpeculatorEvent> eventQueue
-      = new LinkedBlockingQueue<SpeculatorEvent>();
   private TaskRuntimeEstimator estimator;
 
   private BlockingQueue<Object> scanControl = new LinkedBlockingQueue<Object>();
@@ -247,7 +245,7 @@ public class DefaultSpeculator extends AbstractService implements
   // This section is not part of the Speculator interface; it's used only for
   //  testing
   public boolean eventQueueEmpty() {
-    return eventQueue.isEmpty();
+    return scanControl.isEmpty();
   }
 
   // This interface is intended to be used only for test cases.
@@ -418,7 +416,8 @@ public class DefaultSpeculator extends AbstractService implements
           if (estimatedRunTime == data.getEstimatedRunTime()
               && progress == data.getProgress()) {
             // Previous stats are same as same stats
-            if (data.notHeartbeatedInAWhile(now)) {
+            if (data.notHeartbeatedInAWhile(now)
+                || estimator.hasStagnatedProgress(runningTaskAttemptID, now)) {
               // Stats have stagnated for a while, simulate heart-beat.
               TaskAttemptStatus taskAttemptStatus = new TaskAttemptStatus();
               taskAttemptStatus.id = runningTaskAttemptID;

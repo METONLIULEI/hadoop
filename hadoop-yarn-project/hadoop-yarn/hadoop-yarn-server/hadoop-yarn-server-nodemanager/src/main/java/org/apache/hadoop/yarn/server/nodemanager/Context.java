@@ -30,10 +30,13 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.server.api.protocolrecords.LogAggregationReport;
 import org.apache.hadoop.yarn.server.api.records.AppCollectorData;
 import org.apache.hadoop.yarn.server.api.records.NodeHealthStatus;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.AuxServices;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.ContainerManager;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.Application;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
-
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.ResourcePluginManager;
+import org.apache.hadoop.yarn.server.nodemanager.logaggregation.tracker.NMLogAggregationStatusTracker;
+import org.apache.hadoop.yarn.server.nodemanager.metrics.NodeManagerMetrics;
 import org.apache.hadoop.yarn.server.nodemanager.recovery.NMStateStoreService;
 import org.apache.hadoop.yarn.server.scheduler.OpportunisticContainerAllocator;
 import org.apache.hadoop.yarn.server.nodemanager.security.NMContainerTokenSecretManager;
@@ -119,7 +122,24 @@ public interface Context {
 
   NMTimelinePublisher getNMTimelinePublisher();
 
+  NMLogAggregationStatusTracker getNMLogAggregationStatusTracker();
+
   ContainerExecutor getContainerExecutor();
 
   ContainerStateTransitionListener getContainerStateTransitionListener();
+
+  ResourcePluginManager getResourcePluginManager();
+
+  NodeManagerMetrics getNodeManagerMetrics();
+
+  /**
+   * Get the {@code DeletionService} associated with the NM.
+   *
+   * @return the NM {@code DeletionService}.
+   */
+  DeletionService getDeletionService();
+
+  void setAuxServices(AuxServices auxServices);
+
+  AuxServices getAuxServices();
 }

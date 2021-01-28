@@ -45,6 +45,14 @@
     <name>yarn.sls.am.type.mapreduce</name>
     <value>org.apache.hadoop.yarn.sls.appmaster.MRAMSimulator</value>
   </property>
+  <property>
+    <name>yarn.sls.am.type.stream</name>
+    <value>org.apache.hadoop.yarn.sls.appmaster.StreamAMSimulator</value>
+  </property>
+  <property>
+    <name>yarn.sls.am.type.dag</name>
+    <value>org.apache.hadoop.yarn.sls.appmaster.DAGAMSimulator</value>
+  </property>
 
   <!-- Containers configuration -->
   <property>

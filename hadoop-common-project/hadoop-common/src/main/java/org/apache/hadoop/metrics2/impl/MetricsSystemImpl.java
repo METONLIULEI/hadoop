@@ -30,10 +30,10 @@ import java.util.Timer;
 import java.util.TimerTask;
 import javax.management.ObjectName;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.annotations.VisibleForTesting;
-import static com.google.common.base.Preconditions.*;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import static org.apache.hadoop.thirdparty.com.google.common.base.Preconditions.*;
 
 import org.apache.commons.configuration2.PropertiesConfiguration;
 import org.apache.commons.math3.util.ArithmeticUtils;
@@ -273,7 +273,11 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
   T register(final String name, final String description, final T sink) {
     LOG.debug(name +", "+ description);
     if (allSinks.containsKey(name)) {
-      LOG.warn("Sink "+ name +" already exists!");
+      if(sinks.get(name) == null) {
+        registerSink(name, description, sink);
+      } else {
+        LOG.warn("Sink "+ name +" already exists!");
+      }
       return sink;
     }
     allSinks.put(name, sink);
@@ -519,7 +523,7 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
         conf.getFilter(SOURCE_FILTER_KEY),
         conf.getFilter(RECORD_FILTER_KEY),
         conf.getFilter(METRIC_FILTER_KEY),
-        conf.getInt(PERIOD_KEY, PERIOD_DEFAULT),
+        conf.getInt(PERIOD_KEY, PERIOD_DEFAULT) * 1000,
         conf.getInt(QUEUE_CAPACITY_KEY, QUEUE_CAPACITY_DEFAULT),
         conf.getInt(RETRY_DELAY_KEY, RETRY_DELAY_DEFAULT),
         conf.getFloat(RETRY_BACKOFF_KEY, RETRY_BACKOFF_DEFAULT),
@@ -616,6 +620,11 @@ public class MetricsSystemImpl extends MetricsSystem implements MetricsSource {
   @VisibleForTesting
   MetricsSourceAdapter getSourceAdapter(String name) {
     return sources.get(name);
+  }
+
+  @VisibleForTesting
+  public MetricsSinkAdapter getSinkAdapter(String name) {
+    return sinks.get(name);
   }
 
   private InitMode initMode() {

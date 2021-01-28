@@ -19,17 +19,17 @@ package org.apache.hadoop.hdfs.web;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.fs.ContentSummary;
-import org.apache.hadoop.fs.ContentSummary.Builder;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FsServerDefaults;
 import org.apache.hadoop.fs.MD5MD5CRC32CastagnoliFileChecksum;
 import org.apache.hadoop.fs.MD5MD5CRC32FileChecksum;
 import org.apache.hadoop.fs.MD5MD5CRC32GzipFileChecksum;
+import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.XAttrCodec;
 import org.apache.hadoop.fs.permission.AclEntry;
@@ -38,6 +38,10 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
+import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
+import org.apache.hadoop.hdfs.protocol.SnapshotStatus;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo.DatanodeInfoBuilder;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
@@ -47,9 +51,11 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
+import org.apache.hadoop.io.erasurecode.ECSchema;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
+import org.apache.hadoop.util.ChunkedArrayList;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.StringUtils;
 
@@ -64,7 +70,10 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 
-class JsonUtilClient {
+/**
+ * Utility methods used in WebHDFS/HttpFS JSON conversion.
+ */
+public class JsonUtilClient {
   static final DatanodeInfo[] EMPTY_DATANODE_INFO_ARRAY = {};
   static final String UNSUPPPORTED_EXCEPTION_STR =
       UnsupportedOperationException.class.getName();
@@ -107,7 +116,7 @@ class JsonUtilClient {
   }
 
   /** Convert a Json map to a HdfsFileStatus object. */
-  static HdfsFileStatus toFileStatus(final Map<?, ?> json,
+  public static HdfsFileStatus toFileStatus(final Map<?, ?> json,
       boolean includesType) {
     if (json == null) {
       return null;
@@ -129,6 +138,7 @@ class JsonUtilClient {
     Boolean aclBit = (Boolean) m.get("aclBit");
     Boolean encBit = (Boolean) m.get("encBit");
     Boolean erasureBit  = (Boolean) m.get("ecBit");
+    Boolean snapshotEnabledBit  = (Boolean) m.get("snapshotEnabled");
     EnumSet<HdfsFileStatus.Flags> f =
         EnumSet.noneOf(HdfsFileStatus.Flags.class);
     if (aclBit != null && aclBit) {
@@ -139,6 +149,23 @@ class JsonUtilClient {
     }
     if (erasureBit != null && erasureBit) {
       f.add(HdfsFileStatus.Flags.HAS_EC);
+    }
+    if (snapshotEnabledBit != null && snapshotEnabledBit) {
+      f.add(HdfsFileStatus.Flags.SNAPSHOT_ENABLED);
+    }
+
+    Map<String, Object> ecPolicyObj = (Map) m.get("ecPolicyObj");
+    ErasureCodingPolicy ecPolicy = null;
+    if (ecPolicyObj != null) {
+      Map<String, String> extraOptions = (Map) ecPolicyObj.get("extraOptions");
+      ECSchema ecSchema = new ECSchema((String) ecPolicyObj.get("codecName"),
+          (int) ((Number) ecPolicyObj.get("numDataUnits")).longValue(),
+          (int) ((Number) ecPolicyObj.get("numParityUnits")).longValue(),
+          extraOptions);
+      ecPolicy = new ErasureCodingPolicy((String) ecPolicyObj.get("name"),
+          ecSchema, (int) ((Number) ecPolicyObj.get("cellSize")).longValue(),
+          (byte) (int) ((Number) ecPolicyObj.get("id")).longValue());
+
     }
 
     final long aTime = ((Number) m.get("accessTime")).longValue();
@@ -152,11 +179,24 @@ class JsonUtilClient {
     final byte storagePolicy = m.containsKey("storagePolicy") ?
         (byte) ((Number) m.get("storagePolicy")).longValue() :
         HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED;
-    return new HdfsFileStatus(len,
-        type == WebHdfsConstants.PathType.DIRECTORY, replication, blockSize,
-        mTime, aTime, permission, f, owner, group, symlink,
-        DFSUtilClient.string2Bytes(localName), fileId, childrenNum,
-        null, storagePolicy, null);
+    return new HdfsFileStatus.Builder()
+      .length(len)
+      .isdir(type == WebHdfsConstants.PathType.DIRECTORY)
+      .replication(replication)
+      .blocksize(blockSize)
+      .mtime(mTime)
+      .atime(aTime)
+      .perm(permission)
+      .flags(f)
+      .owner(owner)
+      .group(group)
+      .symlink(symlink)
+      .path(DFSUtilClient.string2Bytes(localName))
+      .fileId(fileId)
+      .children(childrenNum)
+      .storagePolicy(storagePolicy)
+      .ecPolicy(ecPolicy)
+      .build();
   }
 
   static HdfsFileStatus[] toHdfsFileStatusArray(final Map<?, ?> json) {
@@ -389,30 +429,87 @@ class JsonUtilClient {
       return null;
     }
 
-    final Map<?, ?> m = (Map<?, ?>)json.get(
-        ContentSummary.class.getSimpleName());
+    final Map<?, ?> m = (Map<?, ?>)
+        json.get(ContentSummary.class.getSimpleName());
     final long length = ((Number) m.get("length")).longValue();
     final long fileCount = ((Number) m.get("fileCount")).longValue();
     final long directoryCount = ((Number) m.get("directoryCount")).longValue();
+    final String ecPolicy = ((String) m.get("ecPolicy"));
+    ContentSummary.Builder builder = new ContentSummary.Builder()
+        .length(length)
+        .fileCount(fileCount)
+        .directoryCount(directoryCount)
+        .erasureCodingPolicy(ecPolicy);
+    builder = buildQuotaUsage(builder, m, ContentSummary.Builder.class);
+    if (m.get("snapshotLength") != null) {
+      long snapshotLength = ((Number) m.get("snapshotLength")).longValue();
+      builder.snapshotLength(snapshotLength);
+    }
+    if (m.get("snapshotFileCount") != null) {
+      long snapshotFileCount =
+          ((Number) m.get("snapshotFileCount")).longValue();
+      builder.snapshotFileCount(snapshotFileCount);
+    }
+    if (m.get("snapshotDirectoryCount") != null) {
+      long snapshotDirectoryCount =
+          ((Number) m.get("snapshotDirectoryCount")).longValue();
+      builder.snapshotDirectoryCount(snapshotDirectoryCount);
+    }
+    if (m.get("snapshotSpaceConsumed") != null) {
+      long snapshotSpaceConsumed =
+          ((Number) m.get("snapshotSpaceConsumed")).longValue();
+      builder.snapshotSpaceConsumed(snapshotSpaceConsumed);
+    }
+    return builder.build();
+  }
+
+  /** Convert a JSON map to a QuotaUsage. */
+  static QuotaUsage toQuotaUsage(final Map<?, ?> json) {
+    if (json == null) {
+      return null;
+    }
+
+    final Map<?, ?> m = (Map<?, ?>) json.get(QuotaUsage.class.getSimpleName());
+    QuotaUsage.Builder builder = new QuotaUsage.Builder();
+    builder = buildQuotaUsage(builder, m, QuotaUsage.Builder.class);
+    return builder.build();
+  }
+
+  /**
+   * Given a builder for QuotaUsage, parse the provided map and
+   * construct the relevant fields. Return the updated builder.
+   */
+  private static <T extends QuotaUsage.Builder> T buildQuotaUsage(
+      T builder, Map<?, ?> m, Class<T> type) {
     final long quota = ((Number) m.get("quota")).longValue();
     final long spaceConsumed = ((Number) m.get("spaceConsumed")).longValue();
     final long spaceQuota = ((Number) m.get("spaceQuota")).longValue();
     final Map<?, ?> typem = (Map<?, ?>) m.get("typeQuota");
 
-    Builder contentSummaryBuilder = new ContentSummary.Builder().length(length)
-        .fileCount(fileCount).directoryCount(directoryCount).quota(quota)
-        .spaceConsumed(spaceConsumed).spaceQuota(spaceQuota);
+    T result = type.cast(builder
+        .quota(quota)
+        .spaceConsumed(spaceConsumed)
+        .spaceQuota(spaceQuota));
+
+    // ContentSummary doesn't set this so check before using it
+    if (m.get("fileAndDirectoryCount") != null) {
+      final long fileAndDirectoryCount =
+          ((Number) m.get("fileAndDirectoryCount")).longValue();
+      result = type.cast(result.fileAndDirectoryCount(fileAndDirectoryCount));
+    }
+
     if (typem != null) {
       for (StorageType t : StorageType.getTypesSupportingQuota()) {
-        Map<?, ?> type = (Map<?, ?>) typem.get(t.toString());
-        if (type != null) {
-          contentSummaryBuilder = contentSummaryBuilder.typeQuota(t,
-              ((Number) type.get("quota")).longValue()).typeConsumed(t,
-              ((Number) type.get("consumed")).longValue());
+        Map<?, ?> typeQuota = (Map<?, ?>) typem.get(t.toString());
+        if (typeQuota != null) {
+          result = type.cast(result.typeQuota(t,
+              ((Number) typeQuota.get("quota")).longValue()).typeConsumed(t,
+              ((Number) typeQuota.get("consumed")).longValue()));
         }
       }
     }
-    return contentSummaryBuilder.build();
+
+    return result;
   }
 
   /** Convert a Json map to a MD5MD5CRC32FileChecksum. */
@@ -638,6 +735,20 @@ class JsonUtilClient {
         replicationFallbacks, copyOnCreateFile.booleanValue());
   }
 
+  public static ErasureCodingPolicy toECPolicy(Map<?, ?> m) {
+    if (m == null) {
+      return null;
+    }
+    byte id = ((Number) m.get("id")).byteValue();
+    String name = (String) m.get("name");
+    String codec = (String) m.get("codecName");
+    int cellsize = ((Number) m.get("cellSize")).intValue();
+    int dataunits = ((Number) m.get("numDataUnits")).intValue();
+    int parityunits = ((Number) m.get("numParityUnits")).intValue();
+    ECSchema ecs = new ECSchema(codec, dataunits, parityunits);
+    return new ErasureCodingPolicy(name, ecs, cellsize, id);
+  }
+
   private static StorageType[] toStorageTypes(List<?> list) {
     if (list == null) {
       return null;
@@ -681,5 +792,120 @@ class JsonUtilClient {
         writePacketSize, replication, fileBufferSize,
         encryptDataTransfer, trashInterval, type, keyProviderUri,
         storagepolicyId);
+  }
+
+  public static SnapshotDiffReport toSnapshotDiffReport(final Map<?, ?> json) {
+    if (json == null) {
+      return null;
+    }
+    Map<?, ?> m =
+        (Map<?, ?>) json.get(SnapshotDiffReport.class.getSimpleName());
+    String snapshotRoot = (String) m.get("snapshotRoot");
+    String fromSnapshot = (String) m.get("fromSnapshot");
+    String toSnapshot = (String) m.get("toSnapshot");
+    List<SnapshotDiffReport.DiffReportEntry> diffList =
+        toDiffList(getList(m, "diffList"));
+    return new SnapshotDiffReport(snapshotRoot, fromSnapshot, toSnapshot,
+        diffList);
+  }
+
+  private static List<SnapshotDiffReport.DiffReportEntry> toDiffList(
+      List<?> objs) {
+    if (objs == null) {
+      return null;
+    }
+    List<SnapshotDiffReport.DiffReportEntry> diffList =
+        new ChunkedArrayList<>();
+    for (int i = 0; i < objs.size(); i++) {
+      diffList.add(toDiffReportEntry((Map<?, ?>) objs.get(i)));
+    }
+    return diffList;
+  }
+
+  private static SnapshotDiffReport.DiffReportEntry toDiffReportEntry(
+      Map<?, ?> json) {
+    if (json == null) {
+      return null;
+    }
+    SnapshotDiffReport.DiffType type =
+        SnapshotDiffReport.DiffType.parseDiffType((String) json.get("type"));
+    byte[] sourcePath = toByteArray((String) json.get("sourcePath"));
+    byte[] targetPath = toByteArray((String) json.get("targetPath"));
+    return new SnapshotDiffReport.DiffReportEntry(type, sourcePath, targetPath);
+  }
+
+  private static byte[] toByteArray(String str) {
+    if (str == null) {
+      return null;
+    }
+    return DFSUtilClient.string2Bytes(str);
+  }
+
+  public static SnapshottableDirectoryStatus[] toSnapshottableDirectoryList(
+      final Map<?, ?> json) {
+    if (json == null) {
+      return null;
+    }
+    List<?> list = (List<?>) json.get("SnapshottableDirectoryList");
+    if (list == null) {
+      return null;
+    }
+    SnapshottableDirectoryStatus[] statuses =
+        new SnapshottableDirectoryStatus[list.size()];
+    for (int i = 0; i < list.size(); i++) {
+      statuses[i] = toSnapshottableDirectoryStatus((Map<?, ?>) list.get(i));
+    }
+    return statuses;
+  }
+
+  private static SnapshottableDirectoryStatus toSnapshottableDirectoryStatus(
+      Map<?, ?> json) {
+    if (json == null) {
+      return null;
+    }
+    int snapshotNumber = getInt(json, "snapshotNumber", 0);
+    int snapshotQuota = getInt(json, "snapshotQuota", 0);
+    byte[] parentFullPath = toByteArray((String) json.get("parentFullPath"));
+    HdfsFileStatus dirStatus =
+        toFileStatus((Map<?, ?>) json.get("dirStatus"), false);
+    SnapshottableDirectoryStatus snapshottableDirectoryStatus =
+        new SnapshottableDirectoryStatus(dirStatus, snapshotNumber,
+            snapshotQuota, parentFullPath);
+    return snapshottableDirectoryStatus;
+  }
+
+  public static SnapshotStatus[] toSnapshotList(final Map<?, ?> json) {
+    if (json == null) {
+      return null;
+    }
+    List<?> list = (List<?>) json.get("SnapshotList");
+    if (list == null) {
+      return null;
+    }
+    SnapshotStatus[] statuses =
+        new SnapshotStatus[list.size()];
+    for (int i = 0; i < list.size(); i++) {
+      statuses[i] = toSnapshotStatus((Map<?, ?>) list.get(i));
+    }
+    return statuses;
+  }
+
+  private static SnapshotStatus toSnapshotStatus(
+      Map<?, ?> json) {
+    if (json == null) {
+      return null;
+    }
+    int snapshotID = getInt(json, "snapshotID", 0);
+    boolean isDeleted = "DELETED".equalsIgnoreCase(
+        (String)json.get("deletionStatus"));
+    String fullPath = ((String) json.get("fullPath"));
+
+    HdfsFileStatus dirStatus =
+        toFileStatus((Map<?, ?>) json.get("dirStatus"), false);
+    SnapshotStatus snapshotStatus =
+        new SnapshotStatus(dirStatus, snapshotID,
+            isDeleted, DFSUtilClient.string2Bytes(
+                SnapshotStatus.getParentPath(fullPath)));
+    return snapshotStatus;
   }
 }

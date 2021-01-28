@@ -60,8 +60,8 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Supplier;
-import com.google.common.collect.Lists;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 /**
  * This class tests node maintenance.
@@ -373,6 +373,7 @@ public class TestMaintenanceState extends AdminStatesBaseTest {
     testExpectedReplication(2);
     testExpectedReplication(3);
     testExpectedReplication(4);
+    testExpectedReplication(10);
   }
 
   private void testExpectedReplication(int replicationFactor)
@@ -665,6 +666,8 @@ public class TestMaintenanceState extends AdminStatesBaseTest {
 
     int repl = 3;
     writeFile(fileSys, file, repl, 1);
+    DFSTestUtil.waitForReplication((DistributedFileSystem) fileSys, file,
+        (short) repl, 10000);
     final DatanodeInfo[] nodes = getFirstBlockReplicasDatanodeInfos(fileSys,
         file);
 

@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.fs.permission.FsAction;
@@ -48,14 +48,13 @@ import static org.apache.hadoop.util.Time.now;
  */
 class FSDirConcatOp {
 
-  static FileStatus concat(FSDirectory fsd, String target, String[] srcs,
-    boolean logRetryCache) throws IOException {
+  static FileStatus concat(FSDirectory fsd, FSPermissionChecker pc,
+      String target, String[] srcs, boolean logRetryCache) throws IOException {
     validatePath(target, srcs);
     assert srcs != null;
     if (FSDirectory.LOG.isDebugEnabled()) {
       FSDirectory.LOG.debug("concat {} to {}", Arrays.toString(srcs), target);
     }
-    FSPermissionChecker pc = fsd.getPermissionChecker();
     final INodesInPath targetIIP = fsd.resolvePath(pc, target, DirOp.WRITE);
     // write permission for the target
     if (fsd.isPermissionEnabled()) {
@@ -151,7 +150,7 @@ class FSDirConcatOp {
             + " is referred by some other reference in some snapshot.");
       }
       // source file cannot be the same with the target file
-      if (srcINode == targetINode) {
+      if (srcINode.equals(targetINode)) {
         throw new HadoopIllegalArgumentException("concat: the src file " + src
             + " is the same with the target file " + targetIIP.getPath());
       }
@@ -215,6 +214,7 @@ class FSDirConcatOp {
         }
       }
     }
+    deltas.addNameSpace(-srcList.length);
     return deltas;
   }
 
@@ -253,7 +253,9 @@ class FSDirConcatOp {
     for (INodeFile nodeToRemove : srcList) {
       if(nodeToRemove != null) {
         nodeToRemove.clearBlocks();
-        nodeToRemove.getParent().removeChild(nodeToRemove);
+        // Ensure the nodeToRemove is cleared from snapshot diff list
+        nodeToRemove.getParent().removeChild(nodeToRemove,
+            targetIIP.getLatestSnapshotId());
         fsd.getINodeMap().remove(nodeToRemove);
         count++;
       }

@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
@@ -197,10 +197,9 @@ public class BlockRecoveryWorker {
       long blockId = (isTruncateRecovery) ?
           rBlock.getNewBlock().getBlockId() : block.getBlockId();
 
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("block=" + block + ", (length=" + block.getNumBytes()
-            + "), syncList=" + syncList);
-      }
+      LOG.info("BlockRecoveryWorker: block={} (length={}),"
+              + " isTruncateRecovery={}, syncList={}", block,
+          block.getNumBytes(), isTruncateRecovery, syncList);
 
       // syncList.isEmpty() means that all data-nodes do not have the block
       // or their replicas have 0 length.
@@ -276,7 +275,9 @@ public class BlockRecoveryWorker {
         }
         // recover() guarantees syncList will have at least one replica with RWR
         // or better state.
-        assert minLength != Long.MAX_VALUE : "wrong minLength";
+        if (minLength == Long.MAX_VALUE) {
+          throw new IOException("Incorrect block size");
+        }
         newBlock.setNumBytes(minLength);
         break;
       case RUR:
@@ -288,6 +289,11 @@ public class BlockRecoveryWorker {
       if (isTruncateRecovery) {
         newBlock.setNumBytes(rBlock.getNewBlock().getNumBytes());
       }
+
+      LOG.info("BlockRecoveryWorker: block={} (length={}), bestState={},"
+              + " newBlock={} (length={}), participatingList={}",
+          block, block.getNumBytes(), bestState.name(), newBlock,
+          newBlock.getNumBytes(), participatingList);
 
       List<DatanodeID> failedList = new ArrayList<>();
       final List<BlockRecord> successList = new ArrayList<>();
@@ -303,10 +309,8 @@ public class BlockRecoveryWorker {
         }
       }
 
-      // If any of the data-nodes failed, the recovery fails, because
-      // we never know the actual state of the replica on failed data-nodes.
-      // The recovery should be started over.
-      if (!failedList.isEmpty()) {
+      // Abort if all failed.
+      if (successList.isEmpty()) {
         throw new IOException("Cannot recover " + block
             + ", the following datanodes failed: " + failedList);
       }
@@ -334,19 +338,24 @@ public class BlockRecoveryWorker {
 
   /**
    * blk_0  blk_1  blk_2  blk_3  blk_4  blk_5  blk_6  blk_7  blk_8
-   *  64k    64k    64k    64k    64k    64k    64k    64k    64k   <-- stripe_0
+   *  64k    64k    64k    64k    64k    64k    64k    64k    64k   &lt;--
+   *  stripe_0
    *  64k    64k    64k    64k    64k    64k    64k    64k    64k
-   *  64k    64k    64k    64k    64k    64k    64k    61k    <-- startStripeIdx
+   *  64k    64k    64k    64k    64k    64k    64k    61k    &lt;--
+   *  startStripeIdx
    *  64k    64k    64k    64k    64k    64k    64k
    *  64k    64k    64k    64k    64k    64k    59k
    *  64k    64k    64k    64k    64k    64k
-   *  64k    64k    64k    64k    64k    64k                <-- last full stripe
-   *  64k    64k    13k    64k    55k     3k              <-- target last stripe
+   *  64k    64k    64k    64k    64k    64k                &lt;--
+   *  last full stripe
+   *  64k    64k    13k    64k    55k     3k              &lt;--
+   *  target last stripe
    *  64k    64k           64k     1k
    *  64k    64k           58k
    *  64k    64k
    *  64k    19k
-   *  64k                                               <-- total visible stripe
+   *  64k                                               &lt;--
+   *  total visible stripe
    *
    *  Due to different speed of streamers, the internal blocks in a block group
    *  could have different lengths when the block group isn't ended normally.
@@ -458,7 +467,7 @@ public class BlockRecoveryWorker {
       // notify Namenode the new size and locations
       final DatanodeID[] newLocs = new DatanodeID[totalBlkNum];
       final String[] newStorages = new String[totalBlkNum];
-      for (int i = 0; i < totalBlkNum; i++) {
+      for (int i = 0; i < blockIndices.length; i++) {
         newLocs[blockIndices[i]] = DatanodeID.EMPTY_DATANODE_ID;
         newStorages[blockIndices[i]] = "";
       }
@@ -542,7 +551,7 @@ public class BlockRecoveryWorker {
     ExtendedBlock block = rb.getBlock();
     DatanodeInfo[] targets = rb.getLocations();
 
-    LOG.info(who + " calls recoverBlock(" + block
+    LOG.info("BlockRecoveryWorker: " + who + " calls recoverBlock(" + block
         + ", targets=[" + Joiner.on(", ").join(targets) + "]"
         + ", newGenerationStamp=" + rb.getNewGenerationStamp()
         + ", newBlock=" + rb.getNewBlock()
@@ -591,17 +600,22 @@ public class BlockRecoveryWorker {
     Daemon d = new Daemon(datanode.threadGroup, new Runnable() {
       @Override
       public void run() {
-        for(RecoveringBlock b : blocks) {
-          try {
-            logRecoverBlock(who, b);
-            if (b.isStriped()) {
-              new RecoveryTaskStriped((RecoveringStripedBlock) b).recover();
-            } else {
-              new RecoveryTaskContiguous(b).recover();
+        datanode.metrics.incrDataNodeBlockRecoveryWorkerCount();
+        try {
+          for (RecoveringBlock b : blocks) {
+            try {
+              logRecoverBlock(who, b);
+              if (b.isStriped()) {
+                new RecoveryTaskStriped((RecoveringStripedBlock) b).recover();
+              } else {
+                new RecoveryTaskContiguous(b).recover();
+              }
+            } catch (IOException e) {
+              LOG.warn("recover Block: {} FAILED: {}", b, e);
             }
-          } catch (IOException e) {
-            LOG.warn("recoverBlocks FAILED: " + b, e);
           }
+        } finally {
+          datanode.metrics.decrDataNodeBlockRecoveryWorkerCount();
         }
       }
     });

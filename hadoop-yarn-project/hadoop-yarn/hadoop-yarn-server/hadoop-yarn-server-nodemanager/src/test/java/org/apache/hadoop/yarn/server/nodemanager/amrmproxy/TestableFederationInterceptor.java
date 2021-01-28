@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.nodemanager.amrmproxy;
 
 import java.io.IOException;
+import java.security.PrivilegedExceptionAction;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -26,23 +27,40 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
-import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
+import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+import org.apache.hadoop.yarn.server.AMHeartbeatRequestHandler;
+import org.apache.hadoop.yarn.server.AMRMClientRelayer;
 import org.apache.hadoop.yarn.server.MockResourceManagerFacade;
 import org.apache.hadoop.yarn.server.uam.UnmanagedAMPoolManager;
 import org.apache.hadoop.yarn.server.uam.UnmanagedApplicationManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Extends the FederationInterceptor and overrides methods to provide a testable
  * implementation of FederationInterceptor.
  */
 public class TestableFederationInterceptor extends FederationInterceptor {
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestableFederationInterceptor.class);
+
   private ConcurrentHashMap<String, MockResourceManagerFacade>
       secondaryResourceManagers = new ConcurrentHashMap<>();
   private AtomicInteger runningIndex = new AtomicInteger(0);
   private MockResourceManagerFacade mockRm;
+
+  public TestableFederationInterceptor() {
+  }
+
+  public TestableFederationInterceptor(MockResourceManagerFacade homeRM,
+      ConcurrentHashMap<String, MockResourceManagerFacade> secondaries) {
+    mockRm = homeRM;
+    secondaryResourceManagers = secondaries;
+  }
 
   @Override
   protected UnmanagedAMPoolManager createUnmanagedAMPoolManager(
@@ -51,15 +69,23 @@ public class TestableFederationInterceptor extends FederationInterceptor {
   }
 
   @Override
-  protected ApplicationMasterProtocol createHomeRMProxy(
-      AMRMProxyApplicationContext appContext) {
+  protected AMHeartbeatRequestHandler createHomeHeartbeartHandler(
+      Configuration conf, ApplicationId appId,
+      AMRMClientRelayer rmProxyRelayer) {
+    return new TestableAMRequestHandlerThread(conf, appId, rmProxyRelayer);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Override
+  protected <T> T createHomeRMProxy(AMRMProxyApplicationContext appContext,
+      Class<T> protocol, UserGroupInformation user) {
     synchronized (this) {
       if (mockRm == null) {
         mockRm = new MockResourceManagerFacade(
             new YarnConfiguration(super.getConf()), 0);
       }
     }
-    return mockRm;
+    return (T) mockRm;
   }
 
   @SuppressWarnings("unchecked")
@@ -68,7 +94,7 @@ public class TestableFederationInterceptor extends FederationInterceptor {
     // We create one instance of the mock resource manager per sub cluster. Keep
     // track of the instances of the RMs in the map keyed by the sub cluster id
     synchronized (this.secondaryResourceManagers) {
-      if (this.secondaryResourceManagers.contains(subClusterId)) {
+      if (this.secondaryResourceManagers.containsKey(subClusterId)) {
         return (T) this.secondaryResourceManagers.get(subClusterId);
       } else {
         // The running index here is used to simulate different RM_EPOCH to
@@ -91,6 +117,80 @@ public class TestableFederationInterceptor extends FederationInterceptor {
     }
   }
 
+  protected MockResourceManagerFacade getHomeRM() {
+    return mockRm;
+  }
+
+  protected ConcurrentHashMap<String, MockResourceManagerFacade>
+      getSecondaryRMs() {
+    return secondaryResourceManagers;
+  }
+
+  protected MockResourceManagerFacade getSecondaryRM(String scId) {
+    return secondaryResourceManagers.get(scId);
+  }
+
+  /**
+   * Drain all aysnc heartbeat threads, comes in two favors:
+   *
+   * 1. waitForAsyncHBThreadFinish == false. Only wait for the async threads to
+   * pick up all pending heartbeat requests. Not necessarily wait for all
+   * threads to finish processing the last request. This is used to make sure
+   * all new UAM are launched by the async threads, but at the same time will
+   * finish draining while (slow) RM is still processing the last heartbeat
+   * request.
+   *
+   * 2. waitForAsyncHBThreadFinish == true. Wait for all async thread to finish
+   * processing all heartbeat requests.
+   */
+  protected void drainAllAsyncQueue(boolean waitForAsyncHBThreadFinish)
+      throws YarnException {
+
+    LOG.info("waiting to drain home heartbeat handler");
+    if (waitForAsyncHBThreadFinish) {
+      getHomeHeartbeartHandler().drainHeartbeatThread();
+    } else {
+      while (getHomeHeartbeartHandler().getRequestQueueSize() > 0) {
+        try {
+          Thread.sleep(10);
+        } catch (InterruptedException e) {
+        }
+      }
+    }
+
+    LOG.info("waiting to drain UAM heartbeat handlers");
+    UnmanagedAMPoolManager uamPool = getUnmanagedAMPool();
+    if (waitForAsyncHBThreadFinish) {
+      getUnmanagedAMPool().drainUAMHeartbeats();
+    } else {
+      while (true) {
+        boolean done = true;
+        for (String scId : uamPool.getAllUAMIds()) {
+          if (uamPool.getRequestQueueSize(scId) > 0) {
+            done = false;
+            break;
+          }
+        }
+        if (done) {
+          break;
+        }
+        try {
+          Thread.sleep(10);
+        } catch (InterruptedException e) {
+        }
+      }
+    }
+  }
+
+  protected UserGroupInformation getUGIWithToken(
+      ApplicationAttemptId appAttemptId) {
+    UserGroupInformation ugi =
+        UserGroupInformation.createRemoteUser(appAttemptId.toString());
+    AMRMTokenIdentifier token = new AMRMTokenIdentifier(appAttemptId, 1);
+    ugi.addTokenIdentifier(token);
+    return ugi;
+  }
+
   /**
    * Extends the UnmanagedAMPoolManager and overrides methods to provide a
    * testable implementation of UnmanagedAMPoolManager.
@@ -104,9 +204,11 @@ public class TestableFederationInterceptor extends FederationInterceptor {
     @Override
     public UnmanagedApplicationManager createUAM(Configuration conf,
         ApplicationId appId, String queueName, String submitter,
-        String appNameSuffix) {
+        String appNameSuffix, boolean keepContainersAcrossApplicationAttempts,
+        String rmId) {
       return new TestableUnmanagedApplicationManager(conf, appId, queueName,
-          submitter, appNameSuffix);
+          submitter, appNameSuffix, keepContainersAcrossApplicationAttempts,
+          rmId);
     }
   }
 
@@ -119,8 +221,17 @@ public class TestableFederationInterceptor extends FederationInterceptor {
 
     public TestableUnmanagedApplicationManager(Configuration conf,
         ApplicationId appId, String queueName, String submitter,
-        String appNameSuffix) {
-      super(conf, appId, queueName, submitter, appNameSuffix);
+        String appNameSuffix, boolean keepContainersAcrossApplicationAttempts,
+        String rmName) {
+      super(conf, appId, queueName, submitter, appNameSuffix,
+          keepContainersAcrossApplicationAttempts, rmName);
+    }
+
+    @Override
+    protected AMHeartbeatRequestHandler createAMHeartbeatRequestHandler(
+        Configuration conf, ApplicationId appId,
+        AMRMClientRelayer rmProxyRelayer) {
+      return new TestableAMRequestHandlerThread(conf, appId, rmProxyRelayer);
     }
 
     /**
@@ -134,6 +245,32 @@ public class TestableFederationInterceptor extends FederationInterceptor {
         throws IOException {
       return createSecondaryRMProxy(protocol, config,
           YarnConfiguration.getClusterId(config));
+    }
+  }
+
+  /**
+   * Wrap the handler thread so it calls from the same user.
+   */
+  protected class TestableAMRequestHandlerThread
+      extends AMHeartbeatRequestHandler {
+    public TestableAMRequestHandlerThread(Configuration conf,
+        ApplicationId applicationId, AMRMClientRelayer rmProxyRelayer) {
+      super(conf, applicationId, rmProxyRelayer);
+    }
+
+    @Override
+    public void run() {
+      try {
+        getUGIWithToken(getAttemptId())
+            .doAs(new PrivilegedExceptionAction<Object>() {
+              @Override
+              public Object run() {
+                TestableAMRequestHandlerThread.super.run();
+                return null;
+              }
+            });
+      } catch (Exception e) {
+      }
     }
   }
 }

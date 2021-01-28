@@ -18,7 +18,20 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager;
 
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetLocalizationStatusesResponse;
+import org.apache.hadoop.yarn.api.records.LocalizationState;
+import org.apache.hadoop.yarn.api.records.LocalizationStatus;
+import org.apache.hadoop.yarn.server.api.AuxiliaryLocalPathHandler;
+import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
+import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
+import static org.apache.hadoop.test.MetricsAsserts.assertGauge;
+import static org.apache.hadoop.test.MetricsAsserts.assertGaugeGt;
+import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
@@ -34,15 +47,18 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.hadoop.fs.FileContext;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
+import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.service.Service;
 import org.apache.hadoop.test.GenericTestUtils;
@@ -111,6 +127,7 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
+import static org.mockito.Mockito.when;
 import org.slf4j.LoggerFactory;
 
 public class TestContainerManager extends BaseContainerManagerTest {
@@ -183,8 +200,8 @@ public class TestContainerManager extends BaseContainerManagerTest {
   @Override
   protected ContainerManagerImpl
       createContainerManager(DeletionService delSrvc) {
-    return  new ContainerManagerImpl(context, exec, delSrvc, nodeStatusUpdater,
-      metrics, dirsHandler) {
+    return  new ContainerManagerImpl(context, exec, delSrvc,
+        getNodeStatusUpdater(), metrics, dirsHandler) {
 
       @Override
       protected UserGroupInformation getRemoteUgi() throws YarnException {
@@ -311,6 +328,73 @@ public class TestContainerManager extends BaseContainerManagerTest {
     BufferedReader reader = new BufferedReader(new FileReader(targetFile));
     Assert.assertEquals("Hello World!", reader.readLine());
     Assert.assertEquals(null, reader.readLine());
+
+    //
+    // check the localization counter
+    //
+    long targetFileSize =
+        FileUtil.getDU(targetFile.getCanonicalFile().getParentFile());
+    MetricsRecordBuilder rb = getMetrics("NodeManagerMetrics");
+    assertCounter("LocalizedCacheMissBytes", targetFileSize, rb);
+    assertCounter("LocalizedCacheHitBytes", 0L, rb);
+    assertCounter("LocalizedCacheMissFiles", 1L, rb);
+    assertCounter("LocalizedCacheHitFiles", 0L, rb);
+    assertGaugeGt("LocalizationDurationMillisAvgTime", 0, rb);
+    assertGauge("LocalizedCacheHitBytesRatio", 0, rb);
+    assertGauge("LocalizedCacheHitFilesRatio", 0, rb);
+
+    // test cache being used
+    final ContainerId cid1 = createContainerId(1);
+    containerManager.startContainers(StartContainersRequest.newInstance(
+        Collections.singletonList(
+            StartContainerRequest.newInstance(
+                containerLaunchContext,
+                createContainerToken(cid1, DUMMY_RM_IDENTIFIER,
+                    context.getNodeId(),
+                    user,
+                    context.getContainerTokenSecretManager())))));
+    waitForContainerState(containerManager, cid1, ContainerState.COMPLETE);
+    rb = getMetrics("NodeManagerMetrics");
+    assertCounter("LocalizedCacheMissBytes", targetFileSize, rb);
+    assertCounter("LocalizedCacheHitBytes", targetFileSize, rb);
+    assertCounter("LocalizedCacheMissFiles", 1L, rb);
+    assertCounter("LocalizedCacheHitFiles", 1L, rb);
+    assertGauge("LocalizedCacheHitBytesRatio", 50, rb);
+    assertGauge("LocalizedCacheHitFilesRatio", 50, rb);
+  }
+
+  @Test (timeout = 10000L)
+  public void testAuxPathHandler() throws Exception {
+    File testDir = GenericTestUtils
+        .getTestDir(TestContainerManager.class.getSimpleName() + "LocDir");
+    testDir.mkdirs();
+    File testFile = new File(testDir, "test");
+    testFile.createNewFile();
+    YarnConfiguration configuration = new YarnConfiguration();
+    configuration.set(YarnConfiguration.NM_LOCAL_DIRS,
+        testDir.getAbsolutePath());
+    LocalDirsHandlerService spyDirHandlerService =
+        Mockito.spy(new LocalDirsHandlerService());
+    spyDirHandlerService.init(configuration);
+    when(spyDirHandlerService.getConfig()).thenReturn(configuration);
+    AuxiliaryLocalPathHandler auxiliaryLocalPathHandler =
+        new ContainerManagerImpl.AuxiliaryLocalPathHandlerImpl(
+            spyDirHandlerService);
+    Path p = auxiliaryLocalPathHandler.getLocalPathForRead("test");
+    assertTrue(p != null &&
+        !spyDirHandlerService.getLocalDirsForRead().isEmpty());
+
+    when(spyDirHandlerService.getLocalDirsForRead()).thenReturn(
+        new ArrayList<String>());
+    try {
+      auxiliaryLocalPathHandler.getLocalPathForRead("test");
+      fail("Should not have passed!");
+    } catch (IOException e) {
+      Assert.assertTrue(e.getMessage().contains("Could not find"));
+    } finally {
+      testFile.delete();
+      testDir.delete();
+    }
   }
 
   //@Test
@@ -1161,7 +1245,7 @@ public class TestContainerManager extends BaseContainerManagerTest {
   // While the container is running, localize new resources.
   // Verify the symlink is created properly
   @Test
-  public void testLocalingResourceWhileContainerRunning() throws Exception {
+  public void testLocalizingResourceWhileContainerRunning() throws Exception {
     // Real del service
     delSrvc = new DeletionService(exec);
     delSrvc.init(conf);
@@ -1446,8 +1530,6 @@ public class TestContainerManager extends BaseContainerManagerTest {
     containerManager.start();
 
     List<StartContainerRequest> list = new ArrayList<>();
-    ContainerLaunchContext containerLaunchContext =
-        recordFactory.newRecordInstance(ContainerLaunchContext.class);
     for (int i = 0; i < 10; i++) {
       ContainerId cId = createContainerId(i);
       long identifier = 0;
@@ -1460,8 +1542,9 @@ public class TestContainerManager extends BaseContainerManagerTest {
           createContainerToken(cId, identifier, context.getNodeId(), user,
             context.getContainerTokenSecretManager());
       StartContainerRequest request =
-          StartContainerRequest.newInstance(containerLaunchContext,
-            containerToken);
+          StartContainerRequest.newInstance(
+              recordFactory.newRecordInstance(ContainerLaunchContext.class),
+              containerToken);
       list.add(request);
     }
     StartContainersRequest requestList =
@@ -1491,9 +1574,6 @@ public class TestContainerManager extends BaseContainerManagerTest {
   public void testMultipleContainersStopAndGetStatus() throws Exception {
     containerManager.start();
     List<StartContainerRequest> startRequest = new ArrayList<>();
-    ContainerLaunchContext containerLaunchContext =
-        recordFactory.newRecordInstance(ContainerLaunchContext.class);
-
     List<ContainerId> containerIds = new ArrayList<>();
     for (int i = 0; i < 10; i++) {
       ContainerId cId;
@@ -1507,8 +1587,9 @@ public class TestContainerManager extends BaseContainerManagerTest {
           createContainerToken(cId, DUMMY_RM_IDENTIFIER, context.getNodeId(),
             user, context.getContainerTokenSecretManager());
       StartContainerRequest request =
-          StartContainerRequest.newInstance(containerLaunchContext,
-            containerToken);
+          StartContainerRequest.newInstance(
+              recordFactory.newRecordInstance(ContainerLaunchContext.class),
+              containerToken);
       startRequest.add(request);
       containerIds.add(cId);
     }
@@ -1663,7 +1744,7 @@ public class TestContainerManager extends BaseContainerManagerTest {
   @Test
   public void testNullTokens() throws Exception {
     ContainerManagerImpl cMgrImpl =
-        new ContainerManagerImpl(context, exec, delSrvc, nodeStatusUpdater,
+        new ContainerManagerImpl(context, exec, delSrvc, getNodeStatusUpdater(),
         metrics, dirsHandler);
     String strExceptionMsg = "";
     try {
@@ -1687,7 +1768,8 @@ public class TestContainerManager extends BaseContainerManagerTest {
 
     strExceptionMsg = "";
     try {
-      cMgrImpl.authorizeGetAndStopContainerRequest(null, null, true, null);
+      cMgrImpl.authorizeGetAndStopContainerRequest(null, null, true, null,
+          null);
     } catch(YarnException ye) {
       strExceptionMsg = ye.getMessage();
     }
@@ -1748,15 +1830,14 @@ public class TestContainerManager extends BaseContainerManagerTest {
     containerManager.start();
     // Start 4 containers 0..4 with default resource (1024, 1)
     List<StartContainerRequest> list = new ArrayList<>();
-    ContainerLaunchContext containerLaunchContext = recordFactory
-        .newRecordInstance(ContainerLaunchContext.class);
     for (int i = 0; i < 4; i++) {
       ContainerId cId = createContainerId(i);
       long identifier = DUMMY_RM_IDENTIFIER;
       Token containerToken = createContainerToken(cId, identifier,
           context.getNodeId(), user, context.getContainerTokenSecretManager());
       StartContainerRequest request = StartContainerRequest.newInstance(
-          containerLaunchContext, containerToken);
+          recordFactory.newRecordInstance(ContainerLaunchContext.class),
+          containerToken);
       list.add(request);
     }
     StartContainersRequest requestList = StartContainersRequest
@@ -1941,15 +2022,11 @@ public class TestContainerManager extends BaseContainerManagerTest {
     Signal signal = ContainerLaunch.translateCommandToSignal(command);
     containerManager.start();
 
-    File scriptFile = new File(tmpDir, "scriptFile.sh");
+    File scriptFile = Shell.appendScriptExtension(tmpDir, "scriptFile");
     PrintWriter fileWriter = new PrintWriter(scriptFile);
     File processStartFile =
         new File(tmpDir, "start_file.txt").getAbsoluteFile();
-    fileWriter.write("\numask 0"); // So that start file is readable by the test
-    fileWriter.write("\necho Hello World! > " + processStartFile);
-    fileWriter.write("\necho $$ >> " + processStartFile);
-    fileWriter.write("\nexec sleep 1000s");
-    fileWriter.close();
+    writeScriptFile(fileWriter, "Hello world!", processStartFile, null, false);
 
     ContainerLaunchContext containerLaunchContext =
         recordFactory.newRecordInstance(ContainerLaunchContext.class);
@@ -1972,9 +2049,8 @@ public class TestContainerManager extends BaseContainerManagerTest {
         new HashMap<String, LocalResource>();
     localResources.put(destinationFile, rsrc_alpha);
     containerLaunchContext.setLocalResources(localResources);
-    List<String> commands = new ArrayList<>();
-    commands.add("/bin/bash");
-    commands.add(scriptFile.getAbsolutePath());
+    List<String> commands =
+        Arrays.asList(Shell.getRunScriptCommand(scriptFile));
     containerLaunchContext.setCommands(commands);
     StartContainerRequest scRequest =
         StartContainerRequest.newInstance(
@@ -2147,5 +2223,128 @@ public class TestContainerManager extends BaseContainerManagerTest {
     Assert.assertTrue(response.getFailedRequests().containsKey(cId));
     Assert.assertTrue(response.getFailedRequests().get(cId).getMessage()
         .contains("Null resource visibility for local resource"));
+  }
+
+  @Test
+  public void testGetLocalizationStatuses() throws Exception {
+    containerManager.start();
+    ContainerId containerId = createContainerId(0, 0);
+    Token containerToken =
+        createContainerToken(containerId, DUMMY_RM_IDENTIFIER,
+            context.getNodeId(),
+            user, context.getContainerTokenSecretManager());
+
+    // localization resource
+    File scriptFile = Shell.appendScriptExtension(tmpDir, "scriptFile_new");
+    PrintWriter fileWriter = new PrintWriter(scriptFile);
+    File file1 = new File(tmpDir, "file1.txt").getAbsoluteFile();
+
+    writeScriptFile(fileWriter, "Upgrade World!", file1, containerId, false);
+
+    ContainerLaunchContext containerLaunchContext =
+        prepareContainerLaunchContext(scriptFile, "dest_file1", false, 0);
+
+    StartContainerRequest request = StartContainerRequest.newInstance(
+        containerLaunchContext, containerToken);
+    List<StartContainerRequest> startRequest = new ArrayList<>();
+    startRequest.add(request);
+
+    // start container
+    StartContainersRequest requestList = StartContainersRequest.newInstance(
+        startRequest);
+    containerManager.startContainers(requestList);
+    Thread.sleep(5000);
+
+    // Get localization statuses
+    GetLocalizationStatusesRequest statusRequest =
+        GetLocalizationStatusesRequest.newInstance(
+            Lists.newArrayList(containerId));
+
+    GetLocalizationStatusesResponse statusResponse =
+        containerManager.getLocalizationStatuses(statusRequest);
+
+    Assert.assertEquals(1, statusResponse.getLocalizationStatuses()
+        .get(containerId).size());
+    LocalizationStatus status = statusResponse.getLocalizationStatuses()
+        .get(containerId).iterator().next();
+    Assert.assertEquals("resource key", "dest_file1",
+        status.getResourceKey());
+    Assert.assertEquals("resource status", LocalizationState.COMPLETED,
+        status.getLocalizationState());
+
+    Assert.assertEquals(0, statusResponse.getFailedRequests().size());
+
+    // stop containers
+    StopContainersRequest stopRequest =
+        StopContainersRequest.newInstance(Lists.newArrayList(containerId));
+    containerManager.stopContainers(stopRequest);
+  }
+
+  @Test
+  public void testGetLocalizationStatusesMultiContainers() throws Exception {
+    containerManager.start();
+    ContainerId container1 = createContainerId(0, 0);
+    ContainerId container2 = createContainerId(1, 0);
+
+    Token containerToken1 = createContainerToken(container1,
+        DUMMY_RM_IDENTIFIER, context.getNodeId(), user,
+        context.getContainerTokenSecretManager());
+    Token containerToken2 = createContainerToken(container2,
+        DUMMY_RM_IDENTIFIER, context.getNodeId(), user,
+        context.getContainerTokenSecretManager());
+
+    // localization resource
+    File scriptFile = Shell.appendScriptExtension(tmpDir, "scriptFile_new");
+    PrintWriter fileWriter = new PrintWriter(scriptFile);
+    File file1 = new File(tmpDir, "file1.txt").getAbsoluteFile();
+
+    writeScriptFile(fileWriter, "Upgrade World!", file1, container1, false);
+
+    ContainerLaunchContext containerLaunchContext =
+        prepareContainerLaunchContext(scriptFile, "dest_file1", false, 0);
+
+    StartContainerRequest request1 = StartContainerRequest.newInstance(
+        containerLaunchContext, containerToken1);
+    StartContainerRequest request2 = StartContainerRequest.newInstance(
+        containerLaunchContext, containerToken2);
+
+    List<StartContainerRequest> startRequest = new ArrayList<>();
+    startRequest.add(request1);
+    startRequest.add(request2);
+
+    // start container
+    StartContainersRequest requestList = StartContainersRequest.newInstance(
+        startRequest);
+    containerManager.startContainers(requestList);
+    Thread.sleep(5000);
+
+    // Get localization statuses
+    GetLocalizationStatusesRequest statusRequest =
+        GetLocalizationStatusesRequest.newInstance(
+            Lists.newArrayList(container1, container2));
+
+    GetLocalizationStatusesResponse statusResponse =
+        containerManager.getLocalizationStatuses(statusRequest);
+    Assert.assertEquals(2, statusResponse.getLocalizationStatuses().size());
+
+    ContainerId[] containerIds = {container1, container2};
+    Arrays.stream(containerIds).forEach(cntnId -> {
+      List<LocalizationStatus> statuses = statusResponse
+          .getLocalizationStatuses().get(container1);
+      Assert.assertEquals(1, statuses.size());
+      LocalizationStatus status = statuses.get(0);
+      Assert.assertEquals("resource key", "dest_file1",
+          status.getResourceKey());
+      Assert.assertEquals("resource status", LocalizationState.COMPLETED,
+          status.getLocalizationState());
+    });
+
+    Assert.assertEquals(0, statusResponse.getFailedRequests().size());
+
+    // stop containers
+    StopContainersRequest stopRequest =
+        StopContainersRequest.newInstance(Lists.newArrayList(container1,
+            container2));
+    containerManager.stopContainers(stopRequest);
   }
 }

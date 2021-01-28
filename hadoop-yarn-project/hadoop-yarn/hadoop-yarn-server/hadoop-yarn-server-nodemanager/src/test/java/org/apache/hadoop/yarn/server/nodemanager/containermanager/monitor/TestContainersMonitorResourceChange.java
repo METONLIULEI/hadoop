@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -41,7 +42,10 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Cont
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerEventType;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerImpl;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor.ContainersMonitorImpl.ProcessTreeInfo;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerExecutionException;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerExecContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerLivenessContext;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerReapContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerSignalContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerStartContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.DeletionAsUserContext;
@@ -73,7 +77,7 @@ public class TestContainersMonitorResourceChange {
 
   private static class MockExecutor extends ContainerExecutor {
     @Override
-    public void init() throws IOException {
+    public void init(Context nmContext) throws IOException {
     }
     @Override
     public void startLocalizer(LocalizerStartContext ctx)
@@ -85,10 +89,27 @@ public class TestContainersMonitorResourceChange {
       return 0;
     }
     @Override
+    public int relaunchContainer(ContainerStartContext ctx) throws
+        IOException, ConfigurationException {
+      return 0;
+    }
+    @Override
     public boolean signalContainer(ContainerSignalContext ctx)
         throws IOException {
       return true;
     }
+    @Override
+    public boolean reapContainer(ContainerReapContext ctx)
+        throws IOException {
+      return true;
+    }
+
+    @Override
+    public IOStreamPair execContainer(ContainerExecContext ctx)
+        throws ContainerExecutionException {
+      return new IOStreamPair(null, null);
+    }
+
     @Override
     public void deleteAsUser(DeletionAsUserContext ctx)
         throws IOException, InterruptedException {
@@ -108,6 +129,10 @@ public class TestContainersMonitorResourceChange {
     public boolean isContainerAlive(ContainerLivenessContext ctx)
         throws IOException {
       return true;
+    }
+    @Override
+    public void updateYarnSysFS(Context ctx, String user, String appId,
+        String spec) throws IOException {
     }
   }
 
@@ -163,9 +188,10 @@ public class TestContainersMonitorResourceChange {
   }
 
   @Test
-  public void testContainersResourceChange() throws Exception {
+  public void testContainersResourceChangePolling() throws Exception {
     // set container monitor interval to be 20ms
     conf.setLong(YarnConfiguration.NM_CONTAINER_MON_INTERVAL_MS, 20L);
+    conf.setBoolean(YarnConfiguration.NM_MEMORY_RESOURCE_ENFORCED, false);
     containersMonitor = createContainersMonitor(executor, dispatcher, context);
     containersMonitor.init(conf);
     containersMonitor.start();

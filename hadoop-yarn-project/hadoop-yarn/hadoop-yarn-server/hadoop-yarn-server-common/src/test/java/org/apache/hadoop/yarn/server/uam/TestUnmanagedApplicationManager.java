@@ -35,6 +35,8 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
+import org.apache.hadoop.yarn.server.AMHeartbeatRequestHandler;
+import org.apache.hadoop.yarn.server.AMRMClientRelayer;
 import org.apache.hadoop.yarn.server.MockResourceManagerFacade;
 import org.apache.hadoop.yarn.util.AsyncCallback;
 import org.junit.Assert;
@@ -65,7 +67,8 @@ public class TestUnmanagedApplicationManager {
         ApplicationAttemptId.newInstance(ApplicationId.newInstance(0, 1), 1);
 
     uam = new TestableUnmanagedApplicationManager(conf,
-        attemptId.getApplicationId(), null, "submitter", "appNameSuffix");
+        attemptId.getApplicationId(), null, "submitter", "appNameSuffix", true,
+        "rm");
   }
 
   protected void waitForCallBackCountAndCheckZeroPending(
@@ -84,11 +87,12 @@ public class TestUnmanagedApplicationManager {
     }
   }
 
-  @Test(timeout = 5000)
+  @Test(timeout = 10000)
   public void testBasicUsage()
       throws YarnException, IOException, InterruptedException {
 
-    createAndRegisterApplicationMaster(
+    launchUAM(attemptId);
+    registerApplicationMaster(
         RegisterApplicationMasterRequest.newInstance(null, 0, null), attemptId);
 
     allocateAsync(AllocateRequest.newInstance(0, 0, null, null, null), callback,
@@ -100,13 +104,56 @@ public class TestUnmanagedApplicationManager {
     finishApplicationMaster(
         FinishApplicationMasterRequest.newInstance(null, null, null),
         attemptId);
+
+    while (uam.isHeartbeatThreadAlive()) {
+      LOG.info("waiting for heartbeat thread to finish");
+      Thread.sleep(100);
+    }
+  }
+
+  /*
+   * Test re-attaching of an existing UAM. This is for HA of UAM client.
+   */
+  @Test(timeout = 5000)
+  public void testUAMReAttach()
+      throws YarnException, IOException, InterruptedException {
+
+    launchUAM(attemptId);
+    registerApplicationMaster(
+        RegisterApplicationMasterRequest.newInstance(null, 0, null), attemptId);
+
+    allocateAsync(AllocateRequest.newInstance(0, 0, null, null, null), callback,
+        attemptId);
+    // Wait for outstanding async allocate callback
+    waitForCallBackCountAndCheckZeroPending(callback, 1);
+
+    MockResourceManagerFacade rmProxy = uam.getRMProxy();
+    uam = new TestableUnmanagedApplicationManager(conf,
+        attemptId.getApplicationId(), null, "submitter", "appNameSuffix", true,
+        "rm");
+    uam.setRMProxy(rmProxy);
+
+    reAttachUAM(null, attemptId);
+    registerApplicationMaster(
+        RegisterApplicationMasterRequest.newInstance(null, 0, null), attemptId);
+
+    allocateAsync(AllocateRequest.newInstance(0, 0, null, null, null), callback,
+        attemptId);
+
+    // Wait for outstanding async allocate callback
+    waitForCallBackCountAndCheckZeroPending(callback, 2);
+
+    finishApplicationMaster(
+        FinishApplicationMasterRequest.newInstance(null, null, null),
+        attemptId);
   }
 
   @Test(timeout = 5000)
   public void testReRegister()
       throws YarnException, IOException, InterruptedException {
 
-    createAndRegisterApplicationMaster(
+    launchUAM(attemptId);
+    registerApplicationMaster(
         RegisterApplicationMasterRequest.newInstance(null, 0, null), attemptId);
 
     uam.setShouldReRegisterNext();
@@ -137,7 +184,8 @@ public class TestUnmanagedApplicationManager {
       @Override
       public void run() {
         try {
-          createAndRegisterApplicationMaster(
+          launchUAM(attemptId);
+          registerApplicationMaster(
               RegisterApplicationMasterRequest.newInstance(null, 1001, null),
               attemptId);
         } catch (Exception e) {
@@ -147,7 +195,7 @@ public class TestUnmanagedApplicationManager {
     });
 
     // Sync obj from mock RM
-    Object syncObj = MockResourceManagerFacade.getSyncObj();
+    Object syncObj = MockResourceManagerFacade.getRegisterSyncObj();
 
     // Wait for register call in the thread get into RM and then wake us
     synchronized (syncObj) {
@@ -218,17 +266,36 @@ public class TestUnmanagedApplicationManager {
         attemptId);
   }
 
-  @Test
+  @Test(timeout = 10000)
   public void testForceKill()
       throws YarnException, IOException, InterruptedException {
-    createAndRegisterApplicationMaster(
+    launchUAM(attemptId);
+    registerApplicationMaster(
         RegisterApplicationMasterRequest.newInstance(null, 0, null), attemptId);
     uam.forceKillApplication();
+
+    while (uam.isHeartbeatThreadAlive()) {
+      LOG.info("waiting for heartbeat thread to finish");
+      Thread.sleep(100);
+    }
 
     try {
       uam.forceKillApplication();
       Assert.fail("Should fail because application is already killed");
     } catch (YarnException t) {
+    }
+  }
+
+  @Test(timeout = 10000)
+  public void testShutDownConnections()
+      throws YarnException, IOException, InterruptedException {
+    launchUAM(attemptId);
+    registerApplicationMaster(
+        RegisterApplicationMasterRequest.newInstance(null, 0, null), attemptId);
+    uam.shutDownConnections();
+    while (uam.isHeartbeatThreadAlive()) {
+      LOG.info("waiting for heartbeat thread to finish");
+      Thread.sleep(100);
     }
   }
 
@@ -241,19 +308,40 @@ public class TestUnmanagedApplicationManager {
     return ugi;
   }
 
-  protected RegisterApplicationMasterResponse
-      createAndRegisterApplicationMaster(
-          final RegisterApplicationMasterRequest request,
-          ApplicationAttemptId appAttemptId)
-          throws YarnException, IOException, InterruptedException {
+  protected Token<AMRMTokenIdentifier> launchUAM(
+      ApplicationAttemptId appAttemptId)
+      throws IOException, InterruptedException {
+    return getUGIWithToken(appAttemptId)
+        .doAs(new PrivilegedExceptionAction<Token<AMRMTokenIdentifier>>() {
+          @Override
+          public Token<AMRMTokenIdentifier> run() throws Exception {
+            return uam.launchUAM();
+          }
+        });
+  }
+
+  protected void reAttachUAM(final Token<AMRMTokenIdentifier> uamToken,
+      ApplicationAttemptId appAttemptId)
+      throws IOException, InterruptedException {
+    getUGIWithToken(appAttemptId).doAs(new PrivilegedExceptionAction<Object>() {
+      @Override
+      public Token<AMRMTokenIdentifier> run() throws Exception {
+        uam.reAttachUAM(uamToken);
+        return null;
+      }
+    });
+  }
+
+  protected RegisterApplicationMasterResponse registerApplicationMaster(
+      final RegisterApplicationMasterRequest request,
+      ApplicationAttemptId appAttemptId)
+      throws YarnException, IOException, InterruptedException {
     return getUGIWithToken(appAttemptId).doAs(
         new PrivilegedExceptionAction<RegisterApplicationMasterResponse>() {
           @Override
           public RegisterApplicationMasterResponse run()
               throws YarnException, IOException {
-            RegisterApplicationMasterResponse response =
-                uam.createAndRegisterApplicationMaster(request);
-            return response;
+            return uam.registerApplicationMaster(request);
           }
         });
   }
@@ -304,15 +392,24 @@ public class TestUnmanagedApplicationManager {
   /**
    * Testable UnmanagedApplicationManager that talks to a mock RM.
    */
-  public static class TestableUnmanagedApplicationManager
+  public class TestableUnmanagedApplicationManager
       extends UnmanagedApplicationManager {
 
     private MockResourceManagerFacade rmProxy;
 
     public TestableUnmanagedApplicationManager(Configuration conf,
         ApplicationId appId, String queueName, String submitter,
-        String appNameSuffix) {
-      super(conf, appId, queueName, submitter, appNameSuffix);
+        String appNameSuffix, boolean keepContainersAcrossApplicationAttempts,
+        String rmName) {
+      super(conf, appId, queueName, submitter, appNameSuffix,
+          keepContainersAcrossApplicationAttempts, rmName);
+    }
+
+    @Override
+    protected AMHeartbeatRequestHandler createAMHeartbeatRequestHandler(
+        Configuration config, ApplicationId appId,
+        AMRMClientRelayer rmProxyRelayer) {
+      return new TestableAMRequestHandlerThread(config, appId, rmProxyRelayer);
     }
 
     @SuppressWarnings("unchecked")
@@ -328,6 +425,41 @@ public class TestUnmanagedApplicationManager {
     public void setShouldReRegisterNext() {
       if (rmProxy != null) {
         rmProxy.setShouldReRegisterNext();
+      }
+    }
+
+    public MockResourceManagerFacade getRMProxy() {
+      return rmProxy;
+    }
+
+    public void setRMProxy(MockResourceManagerFacade proxy) {
+      this.rmProxy = proxy;
+    }
+  }
+
+  /**
+   * Wrap the handler thread so it calls from the same user.
+   */
+  public class TestableAMRequestHandlerThread
+      extends AMHeartbeatRequestHandler {
+    public TestableAMRequestHandlerThread(Configuration conf,
+        ApplicationId applicationId, AMRMClientRelayer rmProxyRelayer) {
+      super(conf, applicationId, rmProxyRelayer);
+    }
+
+    @Override
+    public void run() {
+      try {
+        getUGIWithToken(attemptId)
+            .doAs(new PrivilegedExceptionAction<Object>() {
+              @Override
+              public Object run() {
+                TestableAMRequestHandlerThread.super.run();
+                return null;
+              }
+            });
+      } catch (Exception e) {
+        LOG.error("Exception running TestableAMRequestHandlerThread", e);
       }
     }
   }

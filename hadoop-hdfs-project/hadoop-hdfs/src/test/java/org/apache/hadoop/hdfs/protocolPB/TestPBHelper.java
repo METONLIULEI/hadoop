@@ -18,7 +18,7 @@
 package org.apache.hadoop.hdfs.protocolPB;
 
 
-import com.google.protobuf.UninitializedMessageException;
+import org.apache.hadoop.thirdparty.protobuf.UninitializedMessageException;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
 import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
@@ -35,7 +35,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
-import com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclEntryScope;
 import org.apache.hadoop.fs.permission.AclEntryType;
@@ -48,6 +48,7 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.StripedFileTestUtil;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockChecksumType;
 import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
@@ -114,10 +115,10 @@ import org.apache.hadoop.util.DataChecksum;
 import org.junit.Assert;
 import org.junit.Test;
 
-import com.google.common.base.Joiner;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
-import com.google.protobuf.ByteString;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 
 /**
  * Tests for {@link PBHelper}
@@ -528,14 +529,18 @@ public class TestPBHelper {
             AdminStates.NORMAL),
         DFSTestUtil.getLocalDatanodeInfo("127.0.0.1", "h4",
             AdminStates.NORMAL),
+        DFSTestUtil.getLocalDatanodeInfo("127.0.0.1", "h5",
+            AdminStates.NORMAL),
     };
-    String[] storageIDs = {"s1", "s2", "s3", "s4"};
+    String[] storageIDs = {"s1", "s2", "s3", "s4", "s5"};
     StorageType[] media = {
         StorageType.DISK,
         StorageType.SSD,
         StorageType.DISK,
-        StorageType.RAM_DISK
+        StorageType.RAM_DISK,
+        StorageType.NVDIMM,
     };
+
     LocatedBlock lb = new LocatedBlock(
         new ExtendedBlock("bp12", 12345, 10, 53),
         dnInfos, storageIDs, media, 5, false, new DatanodeInfo[]{});
@@ -680,6 +685,19 @@ public class TestPBHelper {
         HdfsProtos.ChecksumTypeProto.CHECKSUM_CRC32);
     assertEquals(PBHelperClient.convert(DataChecksum.Type.CRC32C),
         HdfsProtos.ChecksumTypeProto.CHECKSUM_CRC32C);
+  }
+
+  @Test
+  public void testBlockChecksumTypeProto() {
+    assertEquals(BlockChecksumType.MD5CRC,
+        PBHelperClient.convert(HdfsProtos.BlockChecksumTypeProto.MD5CRC));
+    assertEquals(BlockChecksumType.COMPOSITE_CRC,
+        PBHelperClient.convert(
+            HdfsProtos.BlockChecksumTypeProto.COMPOSITE_CRC));
+    assertEquals(PBHelperClient.convert(BlockChecksumType.MD5CRC),
+        HdfsProtos.BlockChecksumTypeProto.MD5CRC);
+    assertEquals(PBHelperClient.convert(BlockChecksumType.COMPOSITE_CRC),
+        HdfsProtos.BlockChecksumTypeProto.COMPOSITE_CRC);
   }
 
   @Test
@@ -896,7 +914,7 @@ public class TestPBHelper {
     b.setFileBufferSize(DFSConfigKeys.IO_FILE_BUFFER_SIZE_DEFAULT);
     b.setEncryptDataTransfer(DFSConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_DEFAULT);
     b.setTrashInterval(DFSConfigKeys.FS_TRASH_INTERVAL_DEFAULT);
-    b.setChecksumType(HdfsProtos.ChecksumTypeProto.valueOf(
+    b.setChecksumType(HdfsProtos.ChecksumTypeProto.forNumber(
         DataChecksum.Type.valueOf(DFSConfigKeys.DFS_CHECKSUM_TYPE_DEFAULT).id));
     HdfsProtos.FsServerDefaultsProto proto = b.build();
 

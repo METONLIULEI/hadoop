@@ -17,12 +17,14 @@
  */
 package org.apache.hadoop.hdfs.server.datanode.erasurecode;
 
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
+import org.apache.hadoop.hdfs.util.StripedBlockUtil.BlockReadStats;
 import org.apache.hadoop.util.Daemon;
 import org.slf4j.Logger;
 
@@ -47,6 +49,7 @@ public final class ErasureCodingWorker {
 
   private final DataNode datanode;
   private final Configuration conf;
+  private final float xmitWeight;
 
   private ThreadPoolExecutor stripedReconstructionPool;
   private ThreadPoolExecutor stripedReadPool;
@@ -54,6 +57,14 @@ public final class ErasureCodingWorker {
   public ErasureCodingWorker(Configuration conf, DataNode datanode) {
     this.datanode = datanode;
     this.conf = conf;
+    this.xmitWeight = conf.getFloat(
+        DFSConfigKeys.DFS_DN_EC_RECONSTRUCTION_XMITS_WEIGHT_KEY,
+        DFSConfigKeys.DFS_DN_EC_RECONSTRUCTION_XMITS_WEIGHT_DEFAULT
+    );
+    Preconditions.checkArgument(this.xmitWeight >= 0,
+        "Invalid value configured for " +
+            DFSConfigKeys.DFS_DN_EC_RECONSTRUCTION_XMITS_WEIGHT_KEY +
+            ", it can not be negative value (" + this.xmitWeight + ").");
 
     initializeStripedReadThreadPool();
     initializeStripedBlkReconstructionThreadPool(conf.getInt(
@@ -95,7 +106,7 @@ public final class ErasureCodingWorker {
   private void initializeStripedBlkReconstructionThreadPool(int numThreads) {
     LOG.debug("Using striped block reconstruction; pool threads={}",
         numThreads);
-    stripedReconstructionPool = DFSUtilClient.getThreadPoolExecutor(2,
+    stripedReconstructionPool = DFSUtilClient.getThreadPoolExecutor(numThreads,
         numThreads, 60, new LinkedBlockingQueue<>(),
         "StripedBlockReconstruction-", false);
     stripedReconstructionPool.allowCoreThreadTimeOut(true);
@@ -128,7 +139,7 @@ public final class ErasureCodingWorker {
           //   1) NN will not send more tasks than what DN can execute and
           //   2) DN will not throw away reconstruction tasks, and instead keeps
           //      an unbounded number of tasks in the executor's task queue.
-          xmitsSubmitted = task.getXmits();
+          xmitsSubmitted = Math.max((int)(task.getXmits() * xmitWeight), 1);
           getDatanode().incrementXmitsInProcess(xmitsSubmitted);
           stripedReconstructionPool.submit(task);
         } else {
@@ -151,12 +162,16 @@ public final class ErasureCodingWorker {
     return conf;
   }
 
-  CompletionService<Void> createReadService() {
+  CompletionService<BlockReadStats> createReadService() {
     return new ExecutorCompletionService<>(stripedReadPool);
   }
 
   public void shutDown() {
     stripedReconstructionPool.shutdown();
     stripedReadPool.shutdown();
+  }
+
+  public float getXmitWeight() {
+    return xmitWeight;
   }
 }

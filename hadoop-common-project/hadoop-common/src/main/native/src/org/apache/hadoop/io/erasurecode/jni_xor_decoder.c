@@ -54,6 +54,10 @@ Java_org_apache_hadoop_io_erasurecode_rawcoder_NativeXORRawDecoder_decodeImpl(
   XORDecoder* xorDecoder;
 
   xorDecoder = (XORDecoder*)getCoder(env, thiz);
+  if (!xorDecoder) {
+    THROW(env, "java/io/IOException", "NativeXORRawDecoder closed");
+    return;
+  }
   numDataUnits = ((IsalCoder*)xorDecoder)->numDataUnits;
   numParityUnits = ((IsalCoder*)xorDecoder)->numParityUnits;
   chunkSize = (int)dataLen;
@@ -61,6 +65,8 @@ Java_org_apache_hadoop_io_erasurecode_rawcoder_NativeXORRawDecoder_decodeImpl(
   getInputs(env, inputs, inputOffsets, xorDecoder->inputs,
       numDataUnits + numParityUnits);
   getOutputs(env, outputs, outputOffsets, xorDecoder->outputs, numParityUnits);
+
+  memset(xorDecoder->outputs[0], 0, chunkSize);
 
   for (i = 0; i < numDataUnits + numParityUnits; i++) {
     if (xorDecoder->inputs[i] == NULL) {
@@ -76,5 +82,8 @@ JNIEXPORT void JNICALL
 Java_org_apache_hadoop_io_erasurecode_rawcoder_NativeXORRawDecoder_destroyImpl
   (JNIEnv *env, jobject thiz){
   XORDecoder* xorDecoder = (XORDecoder*)getCoder(env, thiz);
-  free(xorDecoder);
+  if (xorDecoder) {
+    free(xorDecoder);
+    setCoder(env, thiz, NULL);
+  }
 }

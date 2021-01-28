@@ -19,15 +19,15 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 import static org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot.CURRENT_STATE_ID;
 import static org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot.ID_INTEGER_COMPARATOR;
@@ -36,7 +36,7 @@ import static org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot.ID_INTEGE
  * Contains INodes information resolved from a given path.
  */
 public class INodesInPath {
-  public static final Log LOG = LogFactory.getLog(INodesInPath.class);
+  public static final Logger LOG = LoggerFactory.getLogger(INodesInPath.class);
 
   /**
    * @return true if path component is {@link HdfsConstants#DOT_SNAPSHOT_DIR}
@@ -133,6 +133,27 @@ public class INodesInPath {
   static INodesInPath resolve(final INodeDirectory startingDir,
       final byte[][] components) {
     return resolve(startingDir, components, false);
+  }
+
+  /**
+   * Retrieves the existing INodes from a path, starting at the root directory.
+   * The root directory is located by following the parent link in the inode
+   * recursively until the final root inode is found.
+   * The inodes returned will depend upon the output of inode.getFullPathName().
+   * For a snapshot path, like /data/.snapshot/snap1, it will be resolved to:
+   *     [null, data, .snapshot/snap1]
+   * For a file in the snapshot, as inode.getFullPathName resolves the snapshot
+   * information, the returned inodes for a path like /data/.snapshot/snap1/d1
+   * would be:
+   *     [null, data, d1]
+   * @param inode the {@link INode} to be resolved
+   * @return INodesInPath
+   */
+  static INodesInPath resolveFromRoot(INode inode) {
+    INode[] inodes = getINodes(inode);
+    byte[][] paths = INode.getPathComponents(inode.getFullPathName());
+    INodeDirectory rootDir = inodes[0].asDirectory();
+    return resolve(rootDir, paths);
   }
 
   static INodesInPath resolve(final INodeDirectory startingDir,
@@ -329,8 +350,8 @@ public class INodesInPath {
   }
 
   /**
-   * @return the i-th inode if i >= 0;
-   *         otherwise, i < 0, return the (length + i)-th inode.
+   * @return the i-th inode if i {@literal >=} 0;
+   *         otherwise, i {@literal <} 0, return the (length + i)-th inode.
    */
   public INode getINode(int i) {
     return inodes[(i < 0) ? inodes.length + i : i];
@@ -484,7 +505,7 @@ public class INodesInPath {
     }
 
     final StringBuilder b = new StringBuilder(getClass().getSimpleName())
-        .append(": path = ").append(DFSUtil.byteArray2PathString(path))
+        .append(": path = ").append(getPath())
         .append("\n  inodes = ");
     if (inodes == null) {
       b.append("null");

@@ -24,15 +24,14 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.key.KeyProvider;
 import org.apache.hadoop.fs.BlockStoragePolicySpi;
 import org.apache.hadoop.fs.CacheFlag;
-import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileEncryptionInfo;
-import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.viewfs.ViewFileSystemOverloadScheme;
 import org.apache.hadoop.hdfs.DFSInotifyEventInputStream;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
@@ -42,9 +41,11 @@ import org.apache.hadoop.hdfs.protocol.CachePoolEntry;
 import org.apache.hadoop.hdfs.protocol.CachePoolInfo;
 import org.apache.hadoop.hdfs.protocol.EncryptionZone;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.ReencryptAction;
 import org.apache.hadoop.hdfs.protocol.OpenFileEntry;
+import org.apache.hadoop.hdfs.protocol.OpenFilesIterator.OpenFilesType;
 import org.apache.hadoop.hdfs.protocol.ZoneReencryptionStatus;
 import org.apache.hadoop.security.AccessControlException;
 
@@ -66,9 +67,8 @@ import java.util.EnumSet;
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
 public class HdfsAdmin {
-
-  private DistributedFileSystem dfs;
-  private static final FsPermission TRASH_PERMISSION = new FsPermission(
+  final private DistributedFileSystem dfs;
+  public static final FsPermission TRASH_PERMISSION = new FsPermission(
       FsAction.ALL, FsAction.ALL, FsAction.ALL, true);
 
   /**
@@ -80,6 +80,10 @@ public class HdfsAdmin {
    */
   public HdfsAdmin(URI uri, Configuration conf) throws IOException {
     FileSystem fs = FileSystem.get(uri, conf);
+    if ((fs instanceof ViewFileSystemOverloadScheme)) {
+      fs = ((ViewFileSystemOverloadScheme) fs)
+          .getRawFileSystem(new Path(FileSystem.getDefaultUri(conf)), conf);
+    }
     if (!(fs instanceof DistributedFileSystem)) {
       throw new IllegalArgumentException("'" + uri + "' is not an HDFS URI.");
     } else {
@@ -165,6 +169,20 @@ public class HdfsAdmin {
    */
   public void allowSnapshot(Path path) throws IOException {
     dfs.allowSnapshot(path);
+    if (dfs.isSnapshotTrashRootEnabled()) {
+      dfs.provisionSnapshotTrash(path, TRASH_PERMISSION);
+    }
+  }
+
+  /**
+   * Provision a trash directory for a given snapshottable directory.
+   * @param path the root of the snapshottable directory
+   * @return Path of the provisioned trash root
+   * @throws IOException if the trash directory can not be created.
+   */
+  public Path provisionSnapshotTrash(Path path)
+      throws IOException {
+    return dfs.provisionSnapshotTrash(path, TRASH_PERMISSION);
   }
 
   /**
@@ -328,7 +346,7 @@ public class HdfsAdmin {
         throw new HadoopIllegalArgumentException(
             "can not have both PROVISION_TRASH and NO_TRASH flags");
       }
-      this.provisionEZTrash(path);
+      dfs.provisionEZTrash(path, TRASH_PERMISSION);
     }
   }
 
@@ -339,7 +357,7 @@ public class HdfsAdmin {
    * @throws IOException if the trash directory can not be created.
    */
   public void provisionEncryptionZoneTrash(Path path) throws IOException {
-    this.provisionEZTrash(path);
+    dfs.provisionEZTrash(path, TRASH_PERMISSION);
   }
 
   /**
@@ -360,10 +378,10 @@ public class HdfsAdmin {
    * Returns a RemoteIterator which can be used to list the encryption zones
    * in HDFS. For large numbers of encryption zones, the iterator will fetch
    * the list of zones in a number of small batches.
-   * <p/>
+   * <p>
    * Since the list is fetched in batches, it does not represent a
    * consistent snapshot of the entire list of encryption zones.
-   * <p/>
+   * <p>
    * This method can only be called by HDFS superusers.
    */
   public RemoteIterator<EncryptionZone> listEncryptionZones()
@@ -418,7 +436,7 @@ public class HdfsAdmin {
    * for information on stream usage.
    * See {@link org.apache.hadoop.hdfs.inotify.Event}
    * for information on the available events.
-   * <p/>
+   * <p>
    * Inotify users may want to tune the following HDFS parameters to
    * ensure that enough extra HDFS edits are saved to support inotify clients
    * that fall behind the current state of the namespace while reading events.
@@ -438,7 +456,7 @@ public class HdfsAdmin {
    * dfs.namenode.checkpoint.txns
    * dfs.namenode.num.checkpoints.retained
    * dfs.ha.log-roll.period
-   * <p/>
+   * <p>
    * It is recommended that local journaling be configured
    * (dfs.namenode.edits.dir) for inotify (in addition to a shared journal)
    * so that edit transfers from the shared journal can be avoided.
@@ -533,11 +551,22 @@ public class HdfsAdmin {
   }
 
   /**
+   * Set the source path to the specified storage policy.
+   *
+   * @param path The source path referring to either a directory or a file.
+   * @throws IOException
+   */
+  public void satisfyStoragePolicy(final Path path) throws IOException {
+    dfs.satisfyStoragePolicy(path);
+  }
+
+  /**
    * Get the Erasure coding policies supported.
    *
    * @throws IOException
    */
-  public ErasureCodingPolicy[] getErasureCodingPolicies() throws IOException {
+  public ErasureCodingPolicyInfo[] getErasureCodingPolicies()
+      throws IOException {
     return dfs.getClient().getErasureCodingPolicies();
   }
 
@@ -600,58 +629,30 @@ public class HdfsAdmin {
     dfs.disableErasureCodingPolicy(ecPolicyName);
   }
 
-  private void provisionEZTrash(Path path) throws IOException {
-    // make sure the path is an EZ
-    EncryptionZone ez = dfs.getEZForPath(path);
-    if (ez == null) {
-      throw new IllegalArgumentException(path + " is not an encryption zone.");
-    }
-
-    String ezPath = ez.getPath();
-    if (!path.toString().equals(ezPath)) {
-      throw new IllegalArgumentException(path + " is not the root of an " +
-          "encryption zone. Do you mean " + ez.getPath() + "?");
-    }
-
-    // check if the trash directory exists
-
-    Path trashPath = new Path(ez.getPath(), FileSystem.TRASH_PREFIX);
-
-    try {
-      FileStatus trashFileStatus = dfs.getFileStatus(trashPath);
-      String errMessage = "Will not provision new trash directory for " +
-          "encryption zone " + ez.getPath() + ". Path already exists.";
-      if (!trashFileStatus.isDirectory()) {
-        errMessage += "\r\n" +
-            "Warning: " + trashPath.toString() + " is not a directory";
-      }
-      if (!trashFileStatus.getPermission().equals(TRASH_PERMISSION)) {
-        errMessage += "\r\n" +
-            "Warning: the permission of " +
-            trashPath.toString() + " is not " + TRASH_PERMISSION;
-      }
-      throw new FileAlreadyExistsException(errMessage);
-    } catch (FileNotFoundException ignored) {
-      // no trash path
-    }
-
-    // Update the permission bits
-    dfs.mkdir(trashPath, TRASH_PERMISSION);
-    dfs.setPermission(trashPath, TRASH_PERMISSION);
-  }
-
   /**
    * Returns a RemoteIterator which can be used to list all open files
    * currently managed by the NameNode. For large numbers of open files,
    * iterator will fetch the list in batches of configured size.
-   * <p/>
+   * <p>
    * Since the list is fetched in batches, it does not represent a
    * consistent snapshot of the all open files.
-   * <p/>
+   * <p>
    * This method can only be called by HDFS superusers.
    */
+  @Deprecated
   public RemoteIterator<OpenFileEntry> listOpenFiles() throws IOException {
     return dfs.listOpenFiles();
+  }
+
+  @Deprecated
+  public RemoteIterator<OpenFileEntry> listOpenFiles(
+      EnumSet<OpenFilesType> openFilesTypes) throws IOException {
+    return dfs.listOpenFiles(openFilesTypes);
+  }
+
+  public RemoteIterator<OpenFileEntry> listOpenFiles(
+      EnumSet<OpenFilesType> openFilesTypes, String path) throws IOException {
+    return dfs.listOpenFiles(openFilesTypes, path);
   }
 
 }

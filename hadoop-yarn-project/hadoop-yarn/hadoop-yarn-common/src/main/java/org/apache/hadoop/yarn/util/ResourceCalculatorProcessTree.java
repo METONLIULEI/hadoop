@@ -20,13 +20,14 @@ package org.apache.hadoop.yarn.util;
 
 import java.lang.reflect.Constructor;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.yarn.exceptions.YarnException;
 
 /**
  * Interface class to obtain process resource usage
@@ -37,8 +38,8 @@ import org.apache.hadoop.conf.Configured;
 @Public
 @Evolving
 public abstract class ResourceCalculatorProcessTree extends Configured {
-  static final Log LOG = LogFactory
-      .getLog(ResourceCalculatorProcessTree.class);
+  static final Logger LOG = LoggerFactory
+      .getLogger(ResourceCalculatorProcessTree.class);
   public static final int UNAVAILABLE = -1;
 
   /**
@@ -48,6 +49,13 @@ public abstract class ResourceCalculatorProcessTree extends Configured {
    * @param root process-tree root-process
    */
   public ResourceCalculatorProcessTree(String root) {
+  }
+
+  /**
+   * Initialize the object.
+   * @throws YarnException Throws an exception on error.
+   */
+  public void initialize() throws YarnException {
   }
 
   /**
@@ -168,6 +176,7 @@ public abstract class ResourceCalculatorProcessTree extends Configured {
         Constructor <? extends ResourceCalculatorProcessTree> c = clazz.getConstructor(String.class);
         ResourceCalculatorProcessTree rctree = c.newInstance(pid);
         rctree.setConf(conf);
+        rctree.initialize();
         return rctree;
       } catch(Exception e) {
         throw new RuntimeException(e);

@@ -54,10 +54,7 @@ import java.util.regex.Pattern;
 
 import javax.crypto.SecretKey;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.DataInputByteBuffer;
 import org.apache.hadoop.io.DataOutputBuffer;
@@ -84,7 +81,6 @@ import org.apache.hadoop.util.DiskChecker;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.concurrent.HadoopExecutors;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
-import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
 import org.apache.hadoop.yarn.server.api.ApplicationInitializationContext;
 import org.apache.hadoop.yarn.server.api.ApplicationTerminationContext;
@@ -97,7 +93,6 @@ import org.fusesource.leveldbjni.JniDBFactory;
 import org.fusesource.leveldbjni.internal.NativeDB;
 import org.iq80.leveldb.DB;
 import org.iq80.leveldb.DBException;
-import org.iq80.leveldb.Logger;
 import org.iq80.leveldb.Options;
 import org.jboss.netty.bootstrap.ServerBootstrap;
 import org.jboss.netty.buffer.ChannelBuffers;
@@ -136,28 +131,40 @@ import org.jboss.netty.util.CharsetUtil;
 import org.jboss.netty.util.HashedWheelTimer;
 import org.jboss.netty.util.Timer;
 import org.eclipse.jetty.http.HttpHeader;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Charsets;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.cache.RemovalListener;
-import com.google.common.cache.RemovalNotification;
-import com.google.common.cache.Weigher;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import com.google.protobuf.ByteString;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.RemovalListener;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 
 public class ShuffleHandler extends AuxiliaryService {
 
-  private static final Log LOG = LogFactory.getLog(ShuffleHandler.class);
-  private static final Log AUDITLOG =
-      LogFactory.getLog(ShuffleHandler.class.getName()+".audit");
+  private static final org.slf4j.Logger LOG =
+      LoggerFactory.getLogger(ShuffleHandler.class);
+  private static final org.slf4j.Logger AUDITLOG =
+      LoggerFactory.getLogger(ShuffleHandler.class.getName()+".audit");
   public static final String SHUFFLE_MANAGE_OS_CACHE = "mapreduce.shuffle.manage.os.cache";
   public static final boolean DEFAULT_SHUFFLE_MANAGE_OS_CACHE = true;
 
   public static final String SHUFFLE_READAHEAD_BYTES = "mapreduce.shuffle.readahead.bytes";
   public static final int DEFAULT_SHUFFLE_READAHEAD_BYTES = 4 * 1024 * 1024;
+
+  public static final String MAX_WEIGHT =
+      "mapreduce.shuffle.pathcache.max-weight";
+  public static final int DEFAULT_MAX_WEIGHT = 10 * 1024 * 1024;
+
+  public static final String EXPIRE_AFTER_ACCESS_MINUTES =
+      "mapreduce.shuffle.pathcache.expire-after-access-minutes";
+  public static final int DEFAULT_EXPIRE_AFTER_ACCESS_MINUTES = 5;
+
+  public static final String CONCURRENCY_LEVEL =
+      "mapreduce.shuffle.pathcache.concurrency-level";
+  public static final int DEFAULT_CONCURRENCY_LEVEL = 16;
   
   // pattern to identify errors related to the client closing the socket early
   // idea borrowed from Netty SslHandler
@@ -284,6 +291,7 @@ public class ShuffleHandler extends AuxiliaryService {
     }
   }
 
+  private final MetricsSystem ms;
   final ShuffleMetrics metrics;
 
   class ReduceMapFileCount implements ChannelFutureListener {
@@ -400,6 +408,7 @@ public class ShuffleHandler extends AuxiliaryService {
 
   ShuffleHandler(MetricsSystem ms) {
     super(MAPREDUCE_SHUFFLE_SERVICEID);
+    this.ms = ms;
     metrics = ms.register(new ShuffleMetrics());
   }
 
@@ -582,6 +591,7 @@ public class ShuffleHandler extends AuxiliaryService {
     if (stateDb != null) {
       stateDb.close();
     }
+    ms.unregisterSource(ShuffleMetrics.class.getSimpleName());
     super.serviceStop();
   }
 
@@ -630,7 +640,6 @@ public class ShuffleHandler extends AuxiliaryService {
   private void startStore(Path recoveryRoot) throws IOException {
     Options options = new Options();
     options.createIfMissing(false);
-    options.logger(new LevelDBLogger());
     Path dbPath = new Path(recoveryRoot, STATE_DB_NAME);
     LOG.info("Using state database at " + dbPath + " for recovery");
     File dbfile = new File(dbPath.toString());
@@ -776,15 +785,6 @@ public class ShuffleHandler extends AuxiliaryService {
     }
   }
 
-  private static class LevelDBLogger implements Logger {
-    private static final Log LOG = LogFactory.getLog(LevelDBLogger.class);
-
-    @Override
-    public void log(String message) {
-      LOG.info(message);
-    }
-  }
-
   static class TimeoutHandler extends IdleStateAwareChannelHandler {
 
     private boolean enabledTimeout;
@@ -846,65 +846,46 @@ public class ShuffleHandler extends AuxiliaryService {
       // TODO factor out encode/decode to permit binary shuffle
       // TODO factor out decode of index to permit alt. models
     }
-
   }
 
   class Shuffle extends SimpleChannelUpstreamHandler {
-    private static final int MAX_WEIGHT = 10 * 1024 * 1024;
-    private static final int EXPIRE_AFTER_ACCESS_MINUTES = 5;
-    private static final int ALLOWED_CONCURRENCY = 16;
-    private final Configuration conf;
     private final IndexCache indexCache;
-    private final LocalDirAllocator lDirAlloc =
-      new LocalDirAllocator(YarnConfiguration.NM_LOCAL_DIRS);
+    private final
+    LoadingCache<AttemptPathIdentifier, AttemptPathInfo> pathCache;
+
     private int port;
-    private final LoadingCache<AttemptPathIdentifier, AttemptPathInfo> pathCache =
-      CacheBuilder.newBuilder().expireAfterAccess(EXPIRE_AFTER_ACCESS_MINUTES,
-      TimeUnit.MINUTES).softValues().concurrencyLevel(ALLOWED_CONCURRENCY).
-      removalListener(
-          new RemovalListener<AttemptPathIdentifier, AttemptPathInfo>() {
-            @Override
-            public void onRemoval(RemovalNotification<AttemptPathIdentifier,
-                AttemptPathInfo> notification) {
-              if (LOG.isDebugEnabled()) {
-                LOG.debug("PathCache Eviction: " + notification.getKey() +
-                    ", Reason=" + notification.getCause());
-              }
-            }
-          }
-      ).maximumWeight(MAX_WEIGHT).weigher(
-          new Weigher<AttemptPathIdentifier, AttemptPathInfo>() {
-            @Override
-            public int weigh(AttemptPathIdentifier key,
-                AttemptPathInfo value) {
-              return key.jobId.length() + key.user.length() +
-                  key.attemptId.length()+
-                  value.indexPath.toString().length() +
-                  value.dataPath.toString().length();
-            }
-          }
-      ).build(new CacheLoader<AttemptPathIdentifier, AttemptPathInfo>() {
-        @Override
-        public AttemptPathInfo load(AttemptPathIdentifier key) throws
-            Exception {
-          String base = getBaseLocation(key.jobId, key.user);
-          String attemptBase = base + key.attemptId;
-          Path indexFileName = lDirAlloc.getLocalPathToRead(
-              attemptBase + "/" + INDEX_FILE_NAME, conf);
-          Path mapOutputFileName = lDirAlloc.getLocalPathToRead(
-              attemptBase + "/" + DATA_FILE_NAME, conf);
 
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Loaded : " + key + " via loader");
-          }
-          return new AttemptPathInfo(indexFileName, mapOutputFileName);
-        }
-      });
-
-    public Shuffle(Configuration conf) {
-      this.conf = conf;
-      indexCache = new IndexCache(new JobConf(conf));
+    Shuffle(Configuration conf) {
       this.port = conf.getInt(SHUFFLE_PORT_CONFIG_KEY, DEFAULT_SHUFFLE_PORT);
+      this.indexCache = new IndexCache(new JobConf(conf));
+      this.pathCache = CacheBuilder.newBuilder()
+          .expireAfterAccess(conf.getInt(EXPIRE_AFTER_ACCESS_MINUTES,
+              DEFAULT_EXPIRE_AFTER_ACCESS_MINUTES), TimeUnit.MINUTES)
+          .softValues()
+          .concurrencyLevel(conf.getInt(CONCURRENCY_LEVEL,
+              DEFAULT_CONCURRENCY_LEVEL))
+          .removalListener((RemovalListener<AttemptPathIdentifier,
+              AttemptPathInfo>) notification ->
+              LOG.debug("PathCache Eviction: {}, Reason={}",
+                  notification.getKey(), notification.getCause()))
+          .maximumWeight(conf.getInt(MAX_WEIGHT, DEFAULT_MAX_WEIGHT))
+          .weigher((key, value) -> key.jobId.length() + key.user.length() +
+              key.attemptId.length()+ value.indexPath.toString().length() +
+              value.dataPath.toString().length())
+          .build(new CacheLoader<AttemptPathIdentifier, AttemptPathInfo>() {
+            @Override
+            public AttemptPathInfo load(AttemptPathIdentifier key) throws
+                Exception {
+              String base = getBaseLocation(key.jobId, key.user);
+              String attemptBase = base + key.attemptId;
+              Path indexFileName = getAuxiliaryLocalPathHandler()
+                  .getLocalPathForRead(attemptBase + "/" + INDEX_FILE_NAME);
+              Path mapOutputFileName = getAuxiliaryLocalPathHandler()
+                  .getLocalPathForRead(attemptBase + "/" + DATA_FILE_NAME);
+              LOG.debug("Loaded : {} via loader", key);
+              return new AttemptPathInfo(indexFileName, mapOutputFileName);
+            }
+          });
     }
 
     public void setPort(int port) {
@@ -925,6 +906,8 @@ public class ShuffleHandler extends AuxiliaryService {
     @Override
     public void channelOpen(ChannelHandlerContext ctx, ChannelStateEvent evt) 
         throws Exception {
+      super.channelOpen(ctx, evt);
+
       if ((maxShuffleConnections > 0) && (accepted.size() >= maxShuffleConnections)) {
         LOG.info(String.format("Current number of shuffle connections (%d) is " + 
             "greater than or equal to the max allowed shuffle connections (%d)", 
@@ -940,8 +923,6 @@ public class ShuffleHandler extends AuxiliaryService {
         return;
       }
       accepted.add(evt.getChannel());
-      super.channelOpen(ctx, evt);
-     
     }
 
     @Override

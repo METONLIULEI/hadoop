@@ -27,7 +27,7 @@
     <name>hadoop.tmp.dir</name>
     <value>target/build/test</value>
     <description>A base for other temporary directories.</description>
-    <final>true</final>
+    <final>false</final>
   </property>
 
   <property>
@@ -36,12 +36,25 @@
     <description>The endpoint for s3a://landsat-pds URLs</description>
   </property>
 
+  <property>
+    <name>fs.s3a.bucket.landsat-pds.multipart.purge</name>
+    <value>false</value>
+    <description>Don't try to purge uploads in the read-only bucket, as
+    it will only create log noise.</description>
+  </property>
+
   <!-- Make sure S3Guard is disabled for read-only bucket tests. -->
   <property>
     <name>fs.s3a.bucket.landsat-pds.metadatastore.impl</name>
     <value>${s3guard.null}</value>
     <description>The read-only landsat-pds repository isn't
         managed by s3guard</description>
+  </property>
+
+  <property>
+    <name>fs.s3a.bucket.landsat-pds.probe</name>
+    <value>0</value>
+    <description>Let's postpone existence checks to the first IO operation </description>
   </property>
 
   <!-- Convenience definitions. -->
@@ -141,6 +154,16 @@
   <property>
     <name>hadoop.security.authentication</name>
     <value>simple</value>
+  </property>
+
+  <!-- Reduce DDB capacity on auto-created tables, to keep bills down. -->
+  <property>
+    <name>fs.s3a.s3guard.ddb.table.capacity.read</name>
+    <value>0</value>
+  </property>
+  <property>
+    <name>fs.s3a.s3guard.ddb.table.capacity.write</name>
+    <value>0</value>
   </property>
 
   <!--

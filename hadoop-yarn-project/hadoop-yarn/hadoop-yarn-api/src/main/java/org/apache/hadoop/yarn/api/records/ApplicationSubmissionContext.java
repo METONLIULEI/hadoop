@@ -424,9 +424,9 @@ public abstract class ApplicationSubmissionContext {
 
   /**
    * Set tags for the application. A maximum of
-   * {@link YarnConfiguration#APPLICATION_MAX_TAGS} are allowed
+   * {@link YarnConfiguration#RM_APPLICATION_MAX_TAGS} are allowed
    * per application. Each tag can be at most
-   * {@link YarnConfiguration#APPLICATION_MAX_TAG_LENGTH}
+   * {@link YarnConfiguration#RM_APPLICATION_MAX_TAG_LENGTH}
    * characters, and can contain only ASCII characters.
    *
    * @param tags tags to set
@@ -598,4 +598,25 @@ public abstract class ApplicationSubmissionContext {
   @Unstable
   public abstract void setApplicationTimeouts(
       Map<ApplicationTimeoutType, Long> applicationTimeouts);
+
+  /**
+   * Get application scheduling environment variables stored as a key value
+   * pair map for application.
+   *
+   * @return placement envs for application.
+   */
+  @Public
+  @Unstable
+  public abstract Map<String, String> getApplicationSchedulingPropertiesMap();
+
+  /**
+   * Set the scheduling envs for the application.
+   *
+   * @param schedulingEnvMap
+   *          A map of env's for the application scheduling preferences.
+   */
+  @Public
+  @Unstable
+  public abstract void setApplicationSchedulingPropertiesMap(
+      Map<String, String> schedulingEnvMap);
 }

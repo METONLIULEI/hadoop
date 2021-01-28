@@ -1,4 +1,3 @@
-
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -18,146 +17,184 @@
 # Dockerfile for installing the necessary dependencies for building Hadoop.
 # See BUILDING.txt.
 
-
-FROM ubuntu:trusty
+FROM ubuntu:focal
 
 WORKDIR /root
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+#####
+# Disable suggests/recommends
+#####
+RUN echo APT::Install-Recommends "0"\; > /etc/apt/apt.conf.d/10disableextras
+RUN echo APT::Install-Suggests "0"\; >>  /etc/apt/apt.conf.d/10disableextras
 
 ENV DEBIAN_FRONTEND noninteractive
 ENV DEBCONF_TERSE true
 
+# hadolint ignore=DL3008
+RUN apt-get -q update \
+    && apt-get -q install -y --no-install-recommends \
+        ant \
+        apt-utils \
+        bats \
+        build-essential \
+        bzip2 \
+        clang \
+        cmake \
+        curl \
+        doxygen \
+        findbugs \
+        fuse \
+        g++ \
+        gcc \
+        git \
+        gnupg-agent \
+        hugo \
+        libbcprov-java \
+        libbz2-dev \
+        libcurl4-openssl-dev \
+        libfuse-dev \
+        libprotobuf-dev \
+        libprotoc-dev \
+        libsasl2-dev \
+        libsnappy-dev \
+        libssl-dev \
+        libtool \
+        libzstd-dev \
+        locales \
+        make \
+        maven \
+        nodejs \
+        node-yarn \
+        npm \
+        openjdk-11-jdk \
+        openjdk-8-jdk \
+        pinentry-curses \
+        pkg-config \
+        python \
+        python2.7 \
+        python-pkg-resources \
+        python-setuptools \
+        rsync \
+        shellcheck \
+        software-properties-common \
+        sudo \
+        valgrind \
+        zlib1g-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 ######
-# Install common dependencies from packages
-#
-# WARNING: DO NOT PUT JAVA APPS HERE! Otherwise they will install default
-# Ubuntu Java.  See Java section below!
+# Set env vars required to build Hadoop
 ######
-RUN apt-get -q update && apt-get -q install --no-install-recommends -y \
-    build-essential \
-    bzip2 \
-    curl \
-    doxygen \
-    fuse \
-    g++ \
-    gcc \
-    git \
-    gnupg-agent \
-    make \
-    libbz2-dev \
-    libcurl4-openssl-dev \
-    libfuse-dev \
-    libprotobuf-dev \
-    libprotoc-dev \
-    libsnappy-dev \
-    libssl-dev \
-    libtool \
-    pinentry-curses \
-    pkg-config \
-    protobuf-compiler \
-    protobuf-c-compiler \
-    python \
-    python2.7 \
-    python2.7-dev \
-    python-pip \
-    rsync \
-    snappy \
-    zlib1g-dev
+ENV MAVEN_HOME /usr
+# JAVA_HOME must be set in Maven >= 3.5.0 (MNG-6003)
+ENV JAVA_HOME /usr/lib/jvm/java-8-openjdk-amd64
+ENV FINDBUGS_HOME /usr
 
 #######
-# Oracle Java
+# Install Boost 1.72 (1.71 ships with Focal)
 #######
-
-RUN echo "dot_style = mega" > "/root/.wgetrc"
-RUN echo "quiet = on" >> "/root/.wgetrc"
-
-RUN apt-get -q install --no-install-recommends -y software-properties-common
-RUN add-apt-repository -y ppa:webupd8team/java
-RUN apt-get -q update
-
-# Auto-accept the Oracle JDK license
-RUN echo oracle-java8-installer shared/accepted-oracle-license-v1-1 select true | sudo /usr/bin/debconf-set-selections
-RUN apt-get -q install --no-install-recommends -y oracle-java8-installer
+# hadolint ignore=DL3003
+RUN mkdir -p /opt/boost-library \
+    && curl -L https://sourceforge.net/projects/boost/files/boost/1.72.0/boost_1_72_0.tar.bz2/download > boost_1_72_0.tar.bz2 \
+    && mv boost_1_72_0.tar.bz2 /opt/boost-library \
+    && cd /opt/boost-library \
+    && tar --bzip2 -xf boost_1_72_0.tar.bz2 \
+    && cd /opt/boost-library/boost_1_72_0 \
+    && ./bootstrap.sh --prefix=/usr/ \
+    && ./b2 --without-python install \
+    && cd /root \
+    && rm -rf /opt/boost-library
 
 ####
-# Apps that require Java
-###
-RUN apt-get -q update && apt-get -q install --no-install-recommends -y ant
+# Install pip (deprecated from Focal toolchain)
+####
+# hadolint ignore=DL3003
+RUN mkdir -p /opt/pip \
+    && curl -L https://bootstrap.pypa.io/2.7/get-pip.py > get-pip.py \
+    && mv get-pip.py /opt/pip \
+    && cd /opt/pip \
+    && python2.7 get-pip.py "pip < 21.0" \
+    && cd /root \
+    && rm -rf /opt/pip
 
 ######
-# Install Apache Maven
+# Install Google Protobuf 3.7.1 (3.6.1 ships with Focal)
 ######
-RUN mkdir -p /opt/maven && \
-    curl -L -s -S \
-         https://www-us.apache.org/dist/maven/maven-3/3.3.9/binaries/apache-maven-3.3.9-bin.tar.gz \
-         -o /opt/maven.tar.gz && \
-    tar xzf /opt/maven.tar.gz --strip-components 1 -C /opt/maven
-ENV MAVEN_HOME /opt/maven
-ENV PATH "${PATH}:/opt/maven/bin"
-
-######
-# Install cmake
-######
-RUN mkdir -p /opt/cmake && \
-    curl -L -s -S \
-         https://cmake.org/files/v3.1/cmake-3.1.0-Linux-x86_64.tar.gz \
-         -o /opt/cmake.tar.gz && \
-    tar xzf /opt/cmake.tar.gz --strip-components 1 -C /opt/cmake
-ENV CMAKE_HOME /opt/cmake
-ENV PATH "${PATH}:/opt/cmake/bin"
-
-######
-# Install findbugs
-######
-RUN mkdir -p /opt/findbugs && \
-    curl -L -s -S \
-         https://sourceforge.net/projects/findbugs/files/findbugs/3.0.1/findbugs-noUpdateChecks-3.0.1.tar.gz/download \
-         -o /opt/findbugs.tar.gz && \
-    tar xzf /opt/findbugs.tar.gz --strip-components 1 -C /opt/findbugs
-ENV FINDBUGS_HOME /opt/findbugs
-ENV PATH "${PATH}:/opt/findbugs/bin"
+# hadolint ignore=DL3003
+RUN mkdir -p /opt/protobuf-src \
+    && curl -L -s -S \
+      https://github.com/protocolbuffers/protobuf/releases/download/v3.7.1/protobuf-java-3.7.1.tar.gz \
+      -o /opt/protobuf.tar.gz \
+    && tar xzf /opt/protobuf.tar.gz --strip-components 1 -C /opt/protobuf-src \
+    && cd /opt/protobuf-src \
+    && ./configure --prefix=/opt/protobuf \
+    && make install \
+    && cd /root \
+    && rm -rf /opt/protobuf-src
+ENV PROTOBUF_HOME /opt/protobuf
+ENV PATH "${PATH}:/opt/protobuf/bin"
 
 ####
-# Install shellcheck
+# Install pylint at fixed version (2.0.0 removed python2 support)
+# https://github.com/PyCQA/pylint/issues/2294
 ####
-RUN apt-get -q install -y cabal-install
-RUN mkdir /root/.cabal
-RUN echo "remote-repo: hackage.fpcomplete.com:http://hackage.fpcomplete.com/" >> /root/.cabal/config
-#RUN echo "remote-repo: hackage.haskell.org:http://hackage.haskell.org/" > /root/.cabal/config
-RUN echo "remote-repo-cache: /root/.cabal/packages" >> /root/.cabal/config
-RUN cabal update
-RUN cabal install shellcheck --global
-
-####
-# Install bats
-####
-RUN add-apt-repository -y ppa:duggan/bats
-RUN apt-get -q update
-RUN apt-get -q install --no-install-recommends -y bats
-
-####
-# Install pylint
-####
-RUN pip install pylint
+RUN pip2 install \
+    astroid==1.6.6 \
+    isort==4.3.21 \
+    configparser==4.0.2 \
+    pylint==1.9.2
 
 ####
 # Install dateutil.parser
 ####
-RUN pip install python-dateutil
+RUN pip2 install python-dateutil==2.7.3
+
+####
+# Install bower
+####
+# hadolint ignore=DL3008
+RUN npm install -g bower@1.8.8
+
+###
+# Install hadolint
+####
+RUN curl -L -s -S \
+        https://github.com/hadolint/hadolint/releases/download/v1.11.1/hadolint-Linux-x86_64 \
+        -o /bin/hadolint \
+   && chmod a+rx /bin/hadolint \
+   && shasum -a 512 /bin/hadolint | \
+        awk '$1!="734e37c1f6619cbbd86b9b249e69c9af8ee1ea87a2b1ff71dccda412e9dac35e63425225a95d71572091a3f0a11e9a04c2fc25d9e91b840530c26af32b9891ca" {exit(1)}'
+
+######
+# Intel ISA-L 2.29.0
+######
+# hadolint ignore=DL3003,DL3008
+RUN mkdir -p /opt/isa-l-src \
+    && apt-get -q update \
+    && apt-get install -y --no-install-recommends automake yasm \
+    && apt-get clean \
+    && curl -L -s -S \
+      https://github.com/intel/isa-l/archive/v2.29.0.tar.gz \
+      -o /opt/isa-l.tar.gz \
+    && tar xzf /opt/isa-l.tar.gz --strip-components 1 -C /opt/isa-l-src \
+    && cd /opt/isa-l-src \
+    && ./autogen.sh \
+    && ./configure \
+    && make \
+    && make install \
+    && cd /root \
+    && rm -rf /opt/isa-l-src
 
 ###
 # Avoid out of memory errors in builds
 ###
-ENV MAVEN_OPTS -Xms256m -Xmx512m
+ENV MAVEN_OPTS -Xms256m -Xmx1536m
 
-###
-# Install node js tools for web UI frameowkr
-###
-RUN apt-get -y install nodejs && \
-    ln -s /usr/bin/nodejs /usr/bin/node && \
-    apt-get -y install npm && \
-    npm install npm@latest -g && \
-    npm install -g bower && \
-    npm install -g ember-cli
+# Skip gpg verification when downloading Yetus via yetus-wrapper
+ENV HADOOP_SKIP_YETUS_VERIFICATION true
 
 ###
 # Everything past this point is either not needed for testing or breaks Yetus.
@@ -165,16 +202,8 @@ RUN apt-get -y install nodejs && \
 # YETUS CUT HERE
 ###
 
-####
-# Install Forrest (for Apache Hadoop website)
-###
-RUN mkdir -p /usr/local/apache-forrest ; \
-    curl -s -S -O http://archive.apache.org/dist/forrest/0.8/apache-forrest-0.8.tar.gz ; \
-    tar xzf *forrest* --strip-components 1 -C /usr/local/apache-forrest ; \
-    echo 'forrest.home=/usr/local/apache-forrest' > build.properties
-
 # Add a welcome message and environment checks.
-ADD hadoop_env_checks.sh /root/hadoop_env_checks.sh
+COPY hadoop_env_checks.sh /root/hadoop_env_checks.sh
 RUN chmod 755 /root/hadoop_env_checks.sh
-RUN echo '~/hadoop_env_checks.sh' >> /root/.bashrc
-
+# hadolint ignore=SC2016
+RUN echo '${HOME}/hadoop_env_checks.sh' >> /root/.bashrc

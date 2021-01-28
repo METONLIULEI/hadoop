@@ -20,12 +20,13 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 import static org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol.DNA_ERASURE_CODING_RECONSTRUCTION;
 import static org.apache.hadoop.util.Time.monotonicNow;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.net.InetAddresses;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.net.InetAddresses;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.StorageType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -35,6 +36,7 @@ import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.net.DFSNetworkTopology;
 import org.apache.hadoop.hdfs.protocol.*;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo.DatanodeInfoBuilder;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor.BlockTargetPair;
@@ -64,6 +66,7 @@ import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * Manage datanodes, include decommission and other activities.
@@ -71,7 +74,7 @@ import java.util.concurrent.TimeUnit;
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
 public class DatanodeManager {
-  static final Log LOG = LogFactory.getLog(DatanodeManager.class);
+  static final Logger LOG = LoggerFactory.getLogger(DatanodeManager.class);
 
   private final Namesystem namesystem;
   private final BlockManager blockManager;
@@ -131,6 +134,12 @@ public class DatanodeManager {
   
   /** Whether or not to avoid using stale DataNodes for reading */
   private final boolean avoidStaleDataNodesForRead;
+
+  /** Whether or not to consider lad for reading. */
+  private final boolean readConsiderLoad;
+
+  /** Whether or not to consider storageType for reading. */
+  private final boolean readConsiderStorageType;
 
   /**
    * Whether or not to avoid using stale DataNodes for writing.
@@ -312,6 +321,20 @@ public class DatanodeManager {
     this.avoidStaleDataNodesForRead = conf.getBoolean(
         DFSConfigKeys.DFS_NAMENODE_AVOID_STALE_DATANODE_FOR_READ_KEY,
         DFSConfigKeys.DFS_NAMENODE_AVOID_STALE_DATANODE_FOR_READ_DEFAULT);
+    this.readConsiderLoad = conf.getBoolean(
+        DFSConfigKeys.DFS_NAMENODE_READ_CONSIDERLOAD_KEY,
+        DFSConfigKeys.DFS_NAMENODE_READ_CONSIDERLOAD_DEFAULT);
+    this.readConsiderStorageType = conf.getBoolean(
+        DFSConfigKeys.DFS_NAMENODE_READ_CONSIDERSTORAGETYPE_KEY,
+        DFSConfigKeys.DFS_NAMENODE_READ_CONSIDERSTORAGETYPE_DEFAULT);
+    if (readConsiderLoad && readConsiderStorageType) {
+      LOG.warn(
+          "{} and {} are incompatible and only one can be enabled. "
+              + "Both are currently enabled. {} will be ignored.",
+          DFSConfigKeys.DFS_NAMENODE_READ_CONSIDERLOAD_KEY,
+          DFSConfigKeys.DFS_NAMENODE_READ_CONSIDERSTORAGETYPE_KEY,
+          DFSConfigKeys.DFS_NAMENODE_READ_CONSIDERSTORAGETYPE_KEY);
+    }
     this.avoidStaleDataNodesForWrite = conf.getBoolean(
         DFSConfigKeys.DFS_NAMENODE_AVOID_STALE_DATANODE_FOR_WRITE_KEY,
         DFSConfigKeys.DFS_NAMENODE_AVOID_STALE_DATANODE_FOR_WRITE_DEFAULT);
@@ -516,7 +539,7 @@ public class DatanodeManager {
       }
     }
 
-    DatanodeInfo[] di = lb.getLocations();
+    DatanodeInfoWithStorage[] di = lb.getLocations();
     // Move decommissioned/stale datanodes to the bottom
     Arrays.sort(di, comparator);
 
@@ -528,12 +551,30 @@ public class DatanodeManager {
     int activeLen = lastActiveIndex + 1;
     if(nonDatanodeReader) {
       networktopology.sortByDistanceUsingNetworkLocation(client,
-          lb.getLocations(), activeLen);
+          lb.getLocations(), activeLen, createSecondaryNodeSorter());
     } else {
-      networktopology.sortByDistance(client, lb.getLocations(), activeLen);
+      networktopology.sortByDistance(client, lb.getLocations(), activeLen,
+          createSecondaryNodeSorter());
     }
+    // move PROVIDED storage to the end to prefer local replicas.
+    lb.moveProvidedToEnd(activeLen);
     // must update cache since we modified locations array
     lb.updateCachedStorageInfo();
+  }
+
+  private Consumer<List<DatanodeInfoWithStorage>> createSecondaryNodeSorter() {
+    Consumer<List<DatanodeInfoWithStorage>> secondarySort = null;
+    if (readConsiderStorageType) {
+      Comparator<DatanodeInfoWithStorage> comp =
+          Comparator.comparing(DatanodeInfoWithStorage::getStorageType);
+      secondarySort = list -> Collections.sort(list, comp);
+    }
+    if (readConsiderLoad) {
+      Comparator<DatanodeInfoWithStorage> comp =
+          Comparator.comparingInt(DatanodeInfo::getXceiverCount);
+      secondarySort = list -> Collections.sort(list, comp);
+    }
+    return secondarySort;
   }
 
   /** @return the datanode descriptor for the host. */
@@ -1130,7 +1171,6 @@ public class DatanodeManager {
           nodeDescr.setDependentHostNames(
               getNetworkDependenciesWithDefault(nodeDescr));
         }
-        networktopology.add(nodeDescr);
         nodeDescr.setSoftwareVersion(nodeReg.getSoftwareVersion());
         resolveUpgradeDomain(nodeDescr);
 
@@ -1247,6 +1287,13 @@ public class DatanodeManager {
   /** @return the number of dead datanodes. */
   public int getNumDeadDataNodes() {
     return getDatanodeListForReport(DatanodeReportType.DEAD).size();
+  }
+
+  /** @return the number of datanodes. */
+  public int getNumOfDataNodes() {
+    synchronized (this) {
+      return datanodeMap.size();
+    }
   }
 
   /** @return list of datanodes where decommissioning is in progress. */
@@ -1538,7 +1585,7 @@ public class DatanodeManager {
   }
 
   private BlockRecoveryCommand getBlockRecoveryCommand(String blockPoolId,
-      DatanodeDescriptor nodeinfo) {
+      DatanodeDescriptor nodeinfo) throws IOException {
     BlockInfo[] blocks = nodeinfo.getLeaseRecoveryCommand(Integer.MAX_VALUE);
     if (blocks == null) {
       return null;
@@ -1546,7 +1593,10 @@ public class DatanodeManager {
     BlockRecoveryCommand brCommand = new BlockRecoveryCommand(blocks.length);
     for (BlockInfo b : blocks) {
       BlockUnderConstructionFeature uc = b.getUnderConstructionFeature();
-      assert uc != null;
+      if(uc == null) {
+        throw new IOException("Recovery block " + b +
+            "where it is not under construction.");
+      }
       final DatanodeStorageInfo[] storages = uc.getExpectedStorageLocations();
       // Skip stale nodes during recovery
       final List<DatanodeStorageInfo> recoveryLocations =
@@ -1674,7 +1724,6 @@ public class DatanodeManager {
           (double) (totalReplicateBlocks * maxTransfers) / totalBlocks);
       int numECTasks = (int) Math.ceil(
           (double) (totalECBlocks * maxTransfers) / totalBlocks);
-
       if (LOG.isDebugEnabled()) {
         LOG.debug("Pending replication tasks: " + numReplicationTasks
             + " erasure-coded tasks: " + numECTasks);
@@ -1683,8 +1732,24 @@ public class DatanodeManager {
       List<BlockTargetPair> pendingList = nodeinfo.getReplicationCommand(
           numReplicationTasks);
       if (pendingList != null && !pendingList.isEmpty()) {
-        cmds.add(new BlockCommand(DatanodeProtocol.DNA_TRANSFER, blockPoolId,
-            pendingList));
+        // If the block is deleted, the block size will become
+        // BlockCommand.NO_ACK (LONG.MAX_VALUE) . This kind of block we don't
+        // need
+        // to send for replication or reconstruction
+        Iterator<BlockTargetPair> iterator = pendingList.iterator();
+        while (iterator.hasNext()) {
+          BlockTargetPair cmd = iterator.next();
+          if (cmd.block != null
+              && cmd.block.getNumBytes() == BlockCommand.NO_ACK) {
+            // block deleted
+            DatanodeStorageInfo.decrementBlocksScheduled(cmd.targets);
+            iterator.remove();
+          }
+        }
+        if (!pendingList.isEmpty()) {
+          cmds.add(new BlockCommand(DatanodeProtocol.DNA_TRANSFER, blockPoolId,
+              pendingList));
+        }
       }
       // check pending erasure coding tasks
       List<BlockECReconstructionInfo> pendingECList = nodeinfo
@@ -1734,6 +1799,7 @@ public class DatanodeManager {
         }
         slowDiskTracker.addSlowDiskReport(nodeReg.getIpcAddr(false), slowDisks);
       }
+      slowDiskTracker.checkAndUpdateReportIfNecessary();
     }
 
     if (!cmds.isEmpty()) {
@@ -1832,7 +1898,7 @@ public class DatanodeManager {
   }
   
   public void markAllDatanodesStale() {
-    LOG.info("Marking all datandoes as stale");
+    LOG.info("Marking all datanodes as stale");
     synchronized (this) {
       for (DatanodeDescriptor dn : datanodeMap.values()) {
         for(DatanodeStorageInfo storage : dn.getStorageInfos()) {
@@ -1913,6 +1979,11 @@ public class DatanodeManager {
         }
         return avgLoad;
       }
+
+      @Override
+      public Map<StorageType, StorageTypeStats> getStorageTypeStats() {
+        return heartbeatManager.getStorageTypeStats();
+      }
     };
   }
 
@@ -1963,6 +2034,27 @@ public class DatanodeManager {
   public String getSlowDisksReport() {
     return slowDiskTracker != null ?
         slowDiskTracker.getSlowDiskReportAsJsonString() : null;
+  }
+
+  /**
+   * Generates datanode reports for the given report type.
+   *
+   * @param type
+   *          type of the datanode report
+   * @return array of DatanodeStorageReports
+   */
+  public DatanodeStorageReport[] getDatanodeStorageReport(
+      DatanodeReportType type) {
+    final List<DatanodeDescriptor> datanodes = getDatanodeListForReport(type);
+
+    DatanodeStorageReport[] reports = new DatanodeStorageReport[datanodes
+        .size()];
+    for (int i = 0; i < reports.length; i++) {
+      final DatanodeDescriptor d = datanodes.get(i);
+      reports[i] = new DatanodeStorageReport(
+          new DatanodeInfoBuilder().setFrom(d).build(), d.getStorageReports());
+    }
+    return reports;
   }
 }
 

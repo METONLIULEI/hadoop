@@ -34,8 +34,6 @@ import java.util.concurrent.TimeoutException;
 
 import javax.servlet.http.HttpServletResponse;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.ha.ClientBaseWithFixes;
 import org.apache.hadoop.ha.HAServiceProtocol;
@@ -63,11 +61,13 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestRMFailover extends ClientBaseWithFixes {
-  private static final Log LOG =
-      LogFactory.getLog(TestRMFailover.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestRMFailover.class.getName());
   private static final HAServiceProtocol.StateChangeRequestInfo req =
       new HAServiceProtocol.StateChangeRequestInfo(
           HAServiceProtocol.RequestSource.REQUEST_BY_USER);
@@ -114,7 +114,7 @@ public class TestRMFailover extends ClientBaseWithFixes {
         client.getApplications();
         return;
       } catch (Exception e) {
-        LOG.error(e);
+        LOG.error(e.toString());
       } finally {
         client.stop();
       }
@@ -294,10 +294,8 @@ public class TestRMFailover extends ClientBaseWithFixes {
     redirectURL = getRedirectURL(rm2Url + "/metrics");
     assertEquals(redirectURL,rm1Url + "/metrics");
 
-    redirectURL = getRedirectURL(rm2Url + "/jmx?param1=value1+x&param2=y");
-    assertEquals(rm1Url + "/jmx?param1=value1+x&param2=y", redirectURL);
 
-    // standby RM links /conf, /stacks, /logLevel, /static, /logs,
+    // standby RM links /conf, /stacks, /logLevel, /static, /logs, /jmx
     // /cluster/cluster as well as webService
     // /ws/v1/cluster/info should not be redirected to active RM
     redirectURL = getRedirectURL(rm2Url + "/cluster/cluster");
@@ -316,6 +314,9 @@ public class TestRMFailover extends ClientBaseWithFixes {
     assertNull(redirectURL);
 
     redirectURL = getRedirectURL(rm2Url + "/logs");
+    assertNull(redirectURL);
+
+    redirectURL = getRedirectURL(rm2Url + "/jmx?param1=value1+x&param2=y");
     assertNull(redirectURL);
 
     redirectURL = getRedirectURL(rm2Url + "/ws/v1/cluster/info");

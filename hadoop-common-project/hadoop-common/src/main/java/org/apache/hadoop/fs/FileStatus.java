@@ -56,15 +56,36 @@ public class FileStatus implements Writable, Comparable<Object>,
   private Path symlink;
   private Set<AttrFlags> attr;
 
-  private enum AttrFlags {
+  /**
+   * Flags for entity attributes.
+   */
+  public enum AttrFlags {
+    /** ACL information available for this entity. */
     HAS_ACL,
+    /** Entity is encrypted. */
     HAS_CRYPT,
+    /** Entity is stored erasure-coded. */
     HAS_EC,
-    SNAPSHOT_ENABLED
+    /** Snapshot capability enabled. */
+    SNAPSHOT_ENABLED,
   }
-  private static final Set<AttrFlags> NONE = Collections.<AttrFlags>emptySet();
-  private static Set<AttrFlags> flags(boolean acl, boolean crypt, boolean ec) {
-    if (!(acl || crypt || ec)) {
+
+  /**
+   * Shared, empty set of attributes (a common case for FileStatus).
+   */
+  public static final Set<AttrFlags> NONE = Collections.<AttrFlags>emptySet();
+
+  /**
+   * Convert boolean attributes to a set of flags.
+   * @param acl   See {@link AttrFlags#HAS_ACL}.
+   * @param crypt See {@link AttrFlags#HAS_CRYPT}.
+   * @param ec    See {@link AttrFlags#HAS_EC}.
+   * @param sn    See {@link AttrFlags#SNAPSHOT_ENABLED}.
+   * @return converted set of flags.
+   */
+  public static Set<AttrFlags> attributes(boolean acl, boolean crypt,
+                                          boolean ec, boolean sn) {
+    if (!(acl || crypt || ec || sn)) {
       return NONE;
     }
     EnumSet<AttrFlags> ret = EnumSet.noneOf(AttrFlags.class);
@@ -76,6 +97,9 @@ public class FileStatus implements Writable, Comparable<Object>,
     }
     if (ec) {
       ret.add(AttrFlags.HAS_EC);
+    }
+    if (sn) {
+      ret.add(AttrFlags.SNAPSHOT_ENABLED);
     }
     return ret;
   }
@@ -117,6 +141,15 @@ public class FileStatus implements Writable, Comparable<Object>,
       long blocksize, long modification_time, long access_time,
       FsPermission permission, String owner, String group, Path symlink,
       Path path, boolean hasAcl, boolean isEncrypted, boolean isErasureCoded) {
+    this(length, isdir, block_replication, blocksize, modification_time,
+        access_time, permission, owner, group, symlink, path,
+        attributes(hasAcl, isEncrypted, isErasureCoded, false));
+  }
+
+  public FileStatus(long length, boolean isdir, int block_replication,
+      long blocksize, long modification_time, long access_time,
+      FsPermission permission, String owner, String group, Path symlink,
+      Path path, Set<AttrFlags> attr) {
     this.length = length;
     this.isdir = isdir;
     this.block_replication = (short)block_replication;
@@ -136,7 +169,7 @@ public class FileStatus implements Writable, Comparable<Object>,
     this.group = (group == null) ? "" : group;
     this.symlink = symlink;
     this.path = path;
-    attr = flags(hasAcl, isEncrypted, isErasureCoded);
+    this.attr = attr;
 
     // The variables isdir and symlink indicate the type:
     // 1. isdir implies directory, in which case symlink must be null.
@@ -341,19 +374,6 @@ public class FileStatus implements Writable, Comparable<Object>,
   }
 
   /**
-   * Sets Snapshot enabled flag.
-   *
-   * @param isSnapShotEnabled When true, SNAPSHOT_ENABLED flag is set
-   */
-  public void setSnapShotEnabledFlag(boolean isSnapShotEnabled) {
-    if (isSnapShotEnabled) {
-      attr.add(AttrFlags.SNAPSHOT_ENABLED);
-    } else {
-      attr.remove(AttrFlags.SNAPSHOT_ENABLED);
-    }
-  }
-
-  /**
    * @return The contents of the symbolic link.
    */
   public Path getSymlink() throws IOException {
@@ -422,21 +442,21 @@ public class FileStatus implements Writable, Comparable<Object>,
   @Override
   public String toString() {
     StringBuilder sb = new StringBuilder();
-    sb.append(getClass().getSimpleName()); 
-    sb.append("{");
-    sb.append("path=" + path);
-    sb.append("; isDirectory=" + isdir);
+    sb.append(getClass().getSimpleName())
+        .append("{")
+        .append("path=" + path)
+        .append("; isDirectory=" + isdir);
     if(!isDirectory()){
-      sb.append("; length=" + length);
-      sb.append("; replication=" + block_replication);
-      sb.append("; blocksize=" + blocksize);
+      sb.append("; length=" + length)
+          .append("; replication=" + block_replication)
+          .append("; blocksize=" + blocksize);
     }
-    sb.append("; modification_time=" + modification_time);
-    sb.append("; access_time=" + access_time);
-    sb.append("; owner=" + owner);
-    sb.append("; group=" + group);
-    sb.append("; permission=" + permission);
-    sb.append("; isSymlink=" + isSymlink());
+    sb.append("; modification_time=" + modification_time)
+        .append("; access_time=" + access_time)
+        .append("; owner=" + owner)
+        .append("; group=" + group)
+        .append("; permission=" + permission)
+        .append("; isSymlink=" + isSymlink());
     if(isSymlink()) {
       try {
         sb.append("; symlink=" + getSymlink());
@@ -444,10 +464,10 @@ public class FileStatus implements Writable, Comparable<Object>,
         throw new RuntimeException("Unexpected exception", e);
       }
     }
-    sb.append("; hasAcl=" + hasAcl());
-    sb.append("; isEncrypted=" + isEncrypted());
-    sb.append("; isErasureCoded=" + isErasureCoded());
-    sb.append("}");
+    sb.append("; hasAcl=" + hasAcl())
+        .append("; isEncrypted=" + isEncrypted())
+        .append("; isErasureCoded=" + isErasureCoded())
+        .append("}");
     return sb.toString();
   }
 
@@ -480,8 +500,9 @@ public class FileStatus implements Writable, Comparable<Object>,
     setGroup(other.getGroup());
     setSymlink((other.isSymlink() ? other.getSymlink() : null));
     setPath(other.getPath());
-    attr = flags(other.hasAcl(), other.isEncrypted(), other.isErasureCoded());
-    assert (isDirectory() && getSymlink() == null) || !isDirectory();
+    attr = attributes(other.hasAcl(), other.isEncrypted(),
+        other.isErasureCoded(), other.isSnapshotEnabled());
+    assert !(isDirectory() && isSymlink()) : "A directory cannot be a symlink";
   }
 
   /**

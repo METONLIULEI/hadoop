@@ -24,8 +24,8 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -38,7 +38,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.Recoverable;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * A ResourceManager specific delegation token secret manager.
@@ -50,8 +50,8 @@ import com.google.common.annotations.VisibleForTesting;
 public class RMDelegationTokenSecretManager extends
     AbstractDelegationTokenSecretManager<RMDelegationTokenIdentifier> implements
     Recoverable {
-  private static final Log LOG = LogFactory
-      .getLog(RMDelegationTokenSecretManager.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(RMDelegationTokenSecretManager.class);
 
   private final ResourceManager rm;
 
@@ -82,14 +82,21 @@ public class RMDelegationTokenSecretManager extends
     return new RMDelegationTokenIdentifier();
   }
 
+  private boolean shouldIgnoreException(Exception e) {
+    return !running && e.getCause() instanceof InterruptedException;
+  }
+
   @Override
   protected void storeNewMasterKey(DelegationKey newKey) {
     try {
       LOG.info("storing master key with keyID " + newKey.getKeyId());
       rm.getRMContext().getStateStore().storeRMDTMasterKey(newKey);
     } catch (Exception e) {
-      LOG.error("Error in storing master key with KeyID: " + newKey.getKeyId());
-      ExitUtil.terminate(1, e);
+      if (!shouldIgnoreException(e)) {
+        LOG.error(
+            "Error in storing master key with KeyID: " + newKey.getKeyId());
+        ExitUtil.terminate(1, e);
+      }
     }
   }
 
@@ -99,8 +106,10 @@ public class RMDelegationTokenSecretManager extends
       LOG.info("removing master key with keyID " + key.getKeyId());
       rm.getRMContext().getStateStore().removeRMDTMasterKey(key);
     } catch (Exception e) {
-      LOG.error("Error in removing master key with KeyID: " + key.getKeyId());
-      ExitUtil.terminate(1, e);
+      if (!shouldIgnoreException(e)) {
+        LOG.error("Error in removing master key with KeyID: " + key.getKeyId());
+        ExitUtil.terminate(1, e);
+      }
     }
   }
 
@@ -113,9 +122,11 @@ public class RMDelegationTokenSecretManager extends
       rm.getRMContext().getStateStore().storeRMDelegationToken(identifier,
           renewDate);
     } catch (Exception e) {
-      LOG.error("Error in storing RMDelegationToken with sequence number: "
-          + identifier.getSequenceNumber());
-      ExitUtil.terminate(1, e);
+      if (!shouldIgnoreException(e)) {
+        LOG.error("Error in storing RMDelegationToken with sequence number: "
+            + identifier.getSequenceNumber());
+        ExitUtil.terminate(1, e);
+      }
     }
   }
 
@@ -127,9 +138,11 @@ public class RMDelegationTokenSecretManager extends
           + id.getSequenceNumber());
       rm.getRMContext().getStateStore().updateRMDelegationToken(id, renewDate);
     } catch (Exception e) {
-      LOG.error("Error in updating persisted RMDelegationToken" +
-                " with sequence number: " + id.getSequenceNumber());
-      ExitUtil.terminate(1, e);
+      if (!shouldIgnoreException(e)) {
+        LOG.error("Error in updating persisted RMDelegationToken"
+            + " with sequence number: " + id.getSequenceNumber());
+        ExitUtil.terminate(1, e);
+      }
     }
   }
 
@@ -141,9 +154,12 @@ public class RMDelegationTokenSecretManager extends
           + ident.getSequenceNumber());
       rm.getRMContext().getStateStore().removeRMDelegationToken(ident);
     } catch (Exception e) {
-      LOG.error("Error in removing RMDelegationToken with sequence number: "
-          + ident.getSequenceNumber());
-      ExitUtil.terminate(1, e);
+      if (!shouldIgnoreException(e)) {
+        LOG.error(
+            "Error in removing RMDelegationToken with sequence number: "
+                + ident.getSequenceNumber());
+        ExitUtil.terminate(1, e);
+      }
     }
   }
 

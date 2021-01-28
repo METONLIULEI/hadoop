@@ -19,8 +19,10 @@
 package org.apache.hadoop.yarn.server.resourcemanager.webapp;
 
 import com.google.inject.Inject;
+import org.apache.commons.text.StringEscapeUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
@@ -29,6 +31,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeInfo;
 import org.apache.hadoop.yarn.util.Times;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.webapp.SubView;
 import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet;
 import org.apache.hadoop.yarn.webapp.hamlet2.Hamlet.TABLE;
@@ -81,16 +84,26 @@ class NodesPage extends RmView {
 
       if (!this.opportunisticContainersEnabled) {
         trbody.th(".containers", "Containers")
+            .th(".allocationTags", "Allocation Tags")
             .th(".mem", "Mem Used")
             .th(".mem", "Mem Avail")
+            .th(".mem", "Phys Mem Used %")
             .th(".vcores", "VCores Used")
-            .th(".vcores", "VCores Avail");
+            .th(".vcores", "VCores Avail")
+            .th(".vcores", "Phys VCores Used %")
+            .th(".gpus", "GPUs Used")
+            .th(".gpus", "GPUs Avail");
       } else {
         trbody.th(".containers", "Running Containers (G)")
+            .th(".allocationTags", "Allocation Tags")
             .th(".mem", "Mem Used (G)")
             .th(".mem", "Mem Avail (G)")
+            .th(".mem", "Phys Mem Used %")
             .th(".vcores", "VCores Used (G)")
             .th(".vcores", "VCores Avail (G)")
+            .th(".vcores", "Phys VCores Used %")
+            .th(".gpus", "GPUs Used (G)")
+            .th(".gpus", "GPUs Avail (G)")
             .th(".containers", "Running Containers (O)")
             .th(".mem", "Mem Used (O)")
             .th(".vcores", "VCores Used (O)")
@@ -162,19 +175,40 @@ class NodesPage extends RmView {
           nodeTableData.append("\",\"<a ").append("href='" + "//" + httpAddress)
               .append("'>").append(httpAddress).append("</a>\",").append("\"");
         }
+        Integer gpuIndex = ResourceUtils.getResourceTypeIndex()
+            .get(ResourceInformation.GPU_URI);
+        long usedGPUs = 0;
+        long availableGPUs = 0;
+        if (gpuIndex != null && info.getUsedResource() != null
+            && info.getAvailableResource() != null) {
+          usedGPUs = info.getUsedResource().getResource()
+              .getResourceValue(ResourceInformation.GPU_URI);
+          availableGPUs = info.getAvailableResource().getResource()
+              .getResourceValue(ResourceInformation.GPU_URI);
+        }
         nodeTableData.append("<br title='")
             .append(String.valueOf(info.getLastHealthUpdate())).append("'>")
             .append(Times.format(info.getLastHealthUpdate())).append("\",\"")
-            .append(info.getHealthReport()).append("\",\"")
+            .append(StringEscapeUtils.escapeJava(info.getHealthReport())).append("\",\"")
             .append(String.valueOf(info.getNumContainers())).append("\",\"")
+            .append(info.getAllocationTagsSummary()).append("\",\"")
             .append("<br title='").append(String.valueOf(usedMemory))
             .append("'>").append(StringUtils.byteDesc(usedMemory * BYTES_IN_MB))
             .append("\",\"").append("<br title='")
             .append(String.valueOf(availableMemory)).append("'>")
             .append(StringUtils.byteDesc(availableMemory * BYTES_IN_MB))
-            .append("\",\"").append(String.valueOf(info.getUsedVirtualCores()))
+            .append("\",\"")
+            .append(String.valueOf((int) info.getMemUtilization()))
+            .append("\",\"")
+            .append(String.valueOf(info.getUsedVirtualCores()))
             .append("\",\"")
             .append(String.valueOf(info.getAvailableVirtualCores()))
+            .append("\",\"")
+            .append(String.valueOf((int) info.getVcoreUtilization()))
+            .append("\",\"")
+            .append(String.valueOf(usedGPUs))
+            .append("\",\"")
+            .append(String.valueOf(availableGPUs))
             .append("\",\"");
 
         // If opportunistic containers are enabled, add extra fields.
@@ -229,12 +263,12 @@ class NodesPage extends RmView {
   private String nodesTableInit() {
     StringBuilder b = tableInit().append(", 'aaData': nodeTableData")
         .append(", bDeferRender: true").append(", bProcessing: true")
-        .append(", aoColumnDefs: [");
-    b.append("{'bSearchable': false, 'aTargets': [ 7 ]}");
-    b.append(", {'sType': 'title-numeric', 'bSearchable': false, "
-        + "'aTargets': [ 8, 9 ] }");
-    b.append(", {'sType': 'title-numeric', 'aTargets': [ 5 ]}");
-    b.append("]}");
+        .append(", aoColumnDefs: [")
+        .append("{'bSearchable': false, 'aTargets': [ 7 ]}")
+        .append(", {'sType': 'title-numeric', 'bSearchable': false, "
+            + "'aTargets': [ 9, 10 ] }")
+        .append(", {'sType': 'title-numeric', 'aTargets': [ 5 ]}")
+        .append("]}");
     return b.toString();
   }
 }

@@ -68,7 +68,7 @@ import org.junit.Test;
 public abstract class FederationStateStoreBaseTest {
 
   private static final MonotonicClock CLOCK = new MonotonicClock();
-  private FederationStateStore stateStore = createStateStore();
+  private FederationStateStore stateStore;
 
   protected abstract FederationStateStore createStateStore();
 
@@ -76,6 +76,7 @@ public abstract class FederationStateStoreBaseTest {
 
   @Before
   public void before() throws IOException, YarnException {
+    stateStore = createStateStore();
     stateStore.init(conf);
   }
 
@@ -271,6 +272,25 @@ public abstract class FederationStateStoreBaseTest {
     SubClusterId subClusterId2 = SubClusterId.newInstance("SC2");
     ApplicationHomeSubCluster ahsc2 =
         ApplicationHomeSubCluster.newInstance(appId, subClusterId2);
+
+    AddApplicationHomeSubClusterResponse response =
+        stateStore.addApplicationHomeSubCluster(
+            AddApplicationHomeSubClusterRequest.newInstance(ahsc2));
+
+    Assert.assertEquals(subClusterId1, response.getHomeSubCluster());
+    Assert.assertEquals(subClusterId1, queryApplicationHomeSC(appId));
+
+  }
+
+  @Test
+  public void testAddApplicationHomeSubClusterAppAlreadyExistsInTheSameSC()
+      throws Exception {
+    ApplicationId appId = ApplicationId.newInstance(1, 1);
+    SubClusterId subClusterId1 = SubClusterId.newInstance("SC1");
+    addApplicationHomeSC(appId, subClusterId1);
+
+    ApplicationHomeSubCluster ahsc2 =
+        ApplicationHomeSubCluster.newInstance(appId, subClusterId1);
 
     AddApplicationHomeSubClusterResponse response =
         stateStore.addApplicationHomeSubCluster(
@@ -497,7 +517,7 @@ public abstract class FederationStateStoreBaseTest {
 
   // Convenience methods
 
-  private SubClusterInfo createSubClusterInfo(SubClusterId subClusterId) {
+  SubClusterInfo createSubClusterInfo(SubClusterId subClusterId) {
 
     String amRMAddress = "1.2.3.4:1";
     String clientRMAddress = "1.2.3.4:2";
@@ -516,7 +536,7 @@ public abstract class FederationStateStoreBaseTest {
     return SubClusterPolicyConfiguration.newInstance(queueName, policyType, bb);
   }
 
-  private void addApplicationHomeSC(ApplicationId appId,
+  void addApplicationHomeSC(ApplicationId appId,
       SubClusterId subClusterId) throws YarnException {
     ApplicationHomeSubCluster ahsc =
         ApplicationHomeSubCluster.newInstance(appId, subClusterId);
@@ -539,14 +559,14 @@ public abstract class FederationStateStoreBaseTest {
         SubClusterRegisterRequest.newInstance(subClusterInfo));
   }
 
-  private SubClusterInfo querySubClusterInfo(SubClusterId subClusterId)
+  SubClusterInfo querySubClusterInfo(SubClusterId subClusterId)
       throws YarnException {
     GetSubClusterInfoRequest request =
         GetSubClusterInfoRequest.newInstance(subClusterId);
     return stateStore.getSubCluster(request).getSubClusterInfo();
   }
 
-  private SubClusterId queryApplicationHomeSC(ApplicationId appId)
+  SubClusterId queryApplicationHomeSC(ApplicationId appId)
       throws YarnException {
     GetApplicationHomeSubClusterRequest request =
         GetApplicationHomeSubClusterRequest.newInstance(appId);
@@ -573,6 +593,10 @@ public abstract class FederationStateStoreBaseTest {
 
   protected Configuration getConf() {
     return conf;
+  }
+
+  protected FederationStateStore getStateStore() {
+    return stateStore;
   }
 
 }

@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Supplier;
-import org.apache.commons.lang.builder.ToStringBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import java.util.function.Supplier;
+import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -33,13 +33,13 @@ import org.apache.hadoop.hdfs.util.StripedBlockUtil;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.Whitebox;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.log4j.Level;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -85,14 +85,13 @@ public class TestLeaseRecoveryStriped {
   private Configuration conf;
   private final Path dir = new Path("/" + this.getClass().getSimpleName());
   final Path p = new Path(dir, "testfile");
+  private final int testFileLength = (stripesPerBlock - 1) * stripeSize;
 
   @Before
   public void setup() throws IOException {
     conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
     conf.setLong(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 60000L);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
-        false);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 0);
     final int numDNs = dataBlocks + parityBlocks;
@@ -191,17 +190,20 @@ public class TestLeaseRecoveryStriped {
 
   private void runTest(int[] blockLengths, long safeLength) throws Exception {
     writePartialBlocks(blockLengths);
+
+    int checkDataLength = Math.min(testFileLength, (int)safeLength);
+
     recoverLease();
 
     List<Long> oldGS = new ArrayList<>();
     oldGS.add(1001L);
-    StripedFileTestUtil.checkData(dfs, p, (int)safeLength,
+    StripedFileTestUtil.checkData(dfs, p, checkDataLength,
         new ArrayList<DatanodeInfo>(), oldGS, blockGroupSize);
     // After recovery, storages are reported by primary DN. we should verify
     // storages reported by blockReport.
     cluster.restartNameNode(true);
     cluster.waitFirstBRCompleted(0, 10000);
-    StripedFileTestUtil.checkData(dfs, p, (int)safeLength,
+    StripedFileTestUtil.checkData(dfs, p, checkDataLength,
         new ArrayList<DatanodeInfo>(), oldGS, blockGroupSize);
   }
 
@@ -219,12 +221,11 @@ public class TestLeaseRecoveryStriped {
     final FSDataOutputStream out = dfs.create(p);
     final DFSStripedOutputStream stripedOut = (DFSStripedOutputStream) out
         .getWrappedStream();
-    int length = (stripesPerBlock - 1) * stripeSize;
     int[] posToKill = getPosToKill(blockLengths);
     int checkingPos = nextCheckingPos(posToKill, 0);
     Set<Integer> stoppedStreamerIndexes = new HashSet<>();
     try {
-      for (int pos = 0; pos < length; pos++) {
+      for (int pos = 0; pos < testFileLength; pos++) {
         out.write(StripedFileTestUtil.getByte(pos));
         if (pos == checkingPos) {
           for (int index : getIndexToStop(posToKill, pos)) {

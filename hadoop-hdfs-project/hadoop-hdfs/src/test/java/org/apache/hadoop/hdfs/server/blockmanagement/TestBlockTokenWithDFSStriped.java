@@ -79,7 +79,7 @@ public class TestBlockTokenWithDFSStriped extends TestBlockTokenWithDFS {
     }
 
     cluster = new MiniDFSCluster.Builder(conf)
-        .nameNodePort(ServerSocketUtil.getPort(19820, 100))
+        .nameNodePort(ServerSocketUtil.getPort(18020, 100))
         .nameNodeHttpPort(ServerSocketUtil.getPort(19870, 100))
         .numDataNodes(numDNs)
         .build();
@@ -136,7 +136,7 @@ public class TestBlockTokenWithDFSStriped extends TestBlockTokenWithDFS {
     LocatedBlock[] internalBlocks = StripedBlockUtil.parseStripedBlockGroup
         (lsb, cellSize, dataBlocks, parityBlocks);
     for (LocatedBlock internalBlock : internalBlocks) {
-      if(super.isBlockTokenExpired(internalBlock)){
+      if(internalBlock != null && super.isBlockTokenExpired(internalBlock)) {
         return true;
       }
     }

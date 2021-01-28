@@ -41,7 +41,7 @@ import org.apache.hadoop.yarn.proto.YarnProtos.QueueInfoProtoOrBuilder;
 import org.apache.hadoop.yarn.proto.YarnProtos.QueueStateProto;
 import org.apache.hadoop.yarn.proto.YarnProtos.QueueStatisticsProto;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
 @Private
 @Unstable
@@ -500,4 +500,17 @@ public class QueueInfoPBImpl extends QueueInfo {
     this.queueConfigurations.putAll(queueConfigurations);
   }
 
+  @Override
+  public Boolean getIntraQueuePreemptionDisabled() {
+    QueueInfoProtoOrBuilder p = viaProto ? proto : builder;
+    return (p.hasIntraQueuePreemptionDisabled()) ? p
+        .getIntraQueuePreemptionDisabled() : null;
+  }
+
+  @Override
+  public void setIntraQueuePreemptionDisabled(
+      boolean intraQueuePreemptionDisabled) {
+    maybeInitBuilder();
+    builder.setIntraQueuePreemptionDisabled(intraQueuePreemptionDisabled);
+  }
 }
