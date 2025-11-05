@@ -26,8 +26,8 @@ import java.io.IOException;
 
 import org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity.mockframework.ProportionalCapacityPreemptionPolicyMockFramework;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /*
  * Test class for testing intra-queue preemption when the fair ordering policy
@@ -35,7 +35,7 @@ import org.junit.Test;
  */
 public class TestProportionalCapacityPreemptionPolicyIntraQueueFairOrdering
     extends ProportionalCapacityPreemptionPolicyMockFramework {
-  @Before
+  @BeforeEach
   public void setup() {
     super.setup();
     conf.setBoolean(
@@ -74,7 +74,7 @@ public class TestProportionalCapacityPreemptionPolicyIntraQueueFairOrdering
     // With FairOrderingPolicy enabled on queue a, all 20 resources should be
     // preempted from app1
     String appsConfig =
-    // queueName\t(prio,resource,host,expression,#repeat,reserved,pending,user)
+    // queueName\t(priority,resource,host,expression,#repeat,reserved,pending,user)
         "a\t" // app1, user1 in a
             + "(1,1,n1,,60,false,0,user1);" +
             "a\t" // app2, user2 in a
@@ -122,7 +122,7 @@ public class TestProportionalCapacityPreemptionPolicyIntraQueueFairOrdering
     // With FifoOrderingPolicy enabled on queue a, the first 5 should come from
     // the youngest app, app2, until app2 is reduced to the user limit of 35.
     String appsConfig =
-    // queueName\t(prio,resource,host,expression,#repeat,reserved,pending,user)
+    // queueName\t(priority,resource,host,expression,#repeat,reserved,pending,user)
         "a\t" // app1, user1 in a
             + "(1,1,n1,,60,false,0,user1);" +
             "a\t" // app2, user2 in a
@@ -145,7 +145,7 @@ public class TestProportionalCapacityPreemptionPolicyIntraQueueFairOrdering
     // The next 15 should come from app1 even though app2 is younger since app2
     // has already been reduced to its user limit.
     appsConfig =
-    // queueName\t(prio,resource,host,expression,#repeat,reserved,pending,user)
+    // queueName\t(priority,resource,host,expression,#repeat,reserved,pending,user)
         "a\t" // app1, user1 in a
             + "(1,1,n1,,60,false,0,user1);" +
             "a\t" // app2, user2 in a
@@ -195,7 +195,7 @@ public class TestProportionalCapacityPreemptionPolicyIntraQueueFairOrdering
     // preempted from app1 since it's the most over served app from the most
     // over served user
     String appsConfig =
-    // queueName\t(prio,resource,host,expression,#repeat,reserved,pending,user)
+    // queueName\t(priority,resource,host,expression,#repeat,reserved,pending,user)
         "a\t" // app1 and app2, user1 in a
             + "(1,1,n1,,35,false,0,user1);" +
             "a\t"
@@ -243,7 +243,7 @@ public class TestProportionalCapacityPreemptionPolicyIntraQueueFairOrdering
     // user4/app4 is requesting 20 resources in queue a
     // With 3 users, preemptable user limit should be around 35 resources each.
     String appsConfig =
-    // queueName\t(prio,resource,host,expression,#repeat,reserved,pending,user)
+    // queueName\t(priority,resource,host,expression,#repeat,reserved,pending,user)
         "a\t" // app1, user1 in a
             + "(1,1,n1,,40,false,0,user1);" +
         "a\t" // app2, user1 in a

@@ -28,8 +28,7 @@ import javax.crypto.ShortBufferException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.util.NativeCodeLoader;
-
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.PerformanceAdvisory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,14 +84,14 @@ public final class OpensslCipher {
     String loadingFailure = null;
     try {
       if (!NativeCodeLoader.buildSupportsOpenssl()) {
-        PerformanceAdvisory.LOG.debug("Build does not support openssl");
+        PerformanceAdvisory.LOG.warn("Build does not support openssl");
         loadingFailure = "build does not support openssl.";
       } else {
         initIDs();
       }
     } catch (Throwable t) {
       loadingFailure = t.getMessage();
-      LOG.debug("Failed to load OpenSSL Cipher.", t);
+      LOG.warn("Failed to load OpenSSL Cipher.", t);
     } finally {
       loadingFailureReason = loadingFailure;
     }
@@ -178,6 +177,20 @@ public final class OpensslCipher {
     }
     return new Transform(parts[0], parts[1], parts[2]);
   }
+
+  public static boolean isSupported(CipherSuite suite) {
+    Transform transform;
+    int algMode;
+    int padding;
+    try {
+      transform = tokenizeTransformation(suite.getName());
+      algMode = AlgMode.get(transform.alg, transform.mode);
+      padding = Padding.get(transform.padding);
+    } catch (NoSuchAlgorithmException|NoSuchPaddingException e) {
+      return false;
+    }
+    return isSupportedSuite(algMode, padding);
+  }
   
   /**
    * Initialize this cipher with a key and IV.
@@ -226,34 +239,33 @@ public final class OpensslCipher {
     output.position(output.position() + len);
     return len;
   }
-  
+
   /**
    * Finishes a multiple-part operation. The data is encrypted or decrypted,
    * depending on how this cipher was initialized.
    * <p>
-   * 
    * The result is stored in the output buffer. Upon return, the output buffer's
    * position will have advanced by n, where n is the value returned by this
    * method; the output buffer's limit will not have changed.
-   * <p>
-   * 
+   * </p>
    * If <code>output.remaining()</code> bytes are insufficient to hold the result,
    * a <code>ShortBufferException</code> is thrown.
    * <p>
-   * 
    * Upon finishing, this method resets this cipher object to the state it was
    * in when previously initialized. That is, the object is available to encrypt
    * or decrypt more data.
-   * <p>
-   * 
-   * If any exception is thrown, this cipher object need to be reset before it 
+   * </p>
+   * If any exception is thrown, this cipher object need to be reset before it
    * can be used again.
-   * 
+   *
    * @param output the output ByteBuffer
    * @return int number of bytes stored in <code>output</code>
-   * @throws ShortBufferException
-   * @throws IllegalBlockSizeException
-   * @throws BadPaddingException
+   * @throws ShortBufferException      if there is insufficient space in the output buffer.
+   * @throws IllegalBlockSizeException This exception is thrown when the length
+   *                                   of data provided to a block cipher is incorrect.
+   * @throws BadPaddingException       This exception is thrown when a particular
+   *                                   padding mechanism is expected for the input
+   *                                   data but the data is not padded properly.
    */
   public int doFinal(ByteBuffer output) throws ShortBufferException, 
       IllegalBlockSizeException, BadPaddingException {
@@ -299,6 +311,8 @@ public final class OpensslCipher {
       int maxOutputLength);
   
   private native void clean(long ctx, long engineNum);
+
+  private native static boolean isSupportedSuite(int alg, int padding);
 
   public native static String getLibraryName();
 }

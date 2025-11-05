@@ -31,11 +31,12 @@ import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.viewfs.TestChRootedFileSystem.MockFileSystem;
-import org.junit.*;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeAll;
 import static org.apache.hadoop.fs.viewfs.TestChRootedFileSystem.getChildFileSystem;
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.verify;
 
 /**
  * Verify that viewfs propagates certain methods to the underlying fs 
@@ -46,7 +47,7 @@ public class TestViewFileSystemDelegation { //extends ViewFileSystemTestSetup {
   static FakeFileSystem fs1;
   static FakeFileSystem fs2;
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     conf = ViewFileSystemTestSetup.createConfig();
     setupFileSystem(new URI("fs1:/"), FakeFileSystem.class);
@@ -83,12 +84,6 @@ public class TestViewFileSystemDelegation { //extends ViewFileSystemTestSetup {
     assertEquals(new URI("fs2:/").getAuthority(), fs2.getUri().getAuthority());
   }
   
-  @Test
-  public void testVerifyChecksum() throws Exception {
-    checkVerifyChecksum(false);
-    checkVerifyChecksum(true);
-  }
-
   /**
    * Tests that ViewFileSystem dispatches calls for every ACL method through the
    * mount table to the correct underlying FileSystem with all Path arguments
@@ -144,12 +139,6 @@ public class TestViewFileSystemDelegation { //extends ViewFileSystemTestSetup {
     verify(mockFs2).getAclStatus(mockFsPath2);
   }
 
-  void checkVerifyChecksum(boolean flag) {
-    viewFs.setVerifyChecksum(flag);
-    assertEquals(flag, fs1.getVerifyChecksum());
-    assertEquals(flag, fs2.getVerifyChecksum());
-  }
-
   static class FakeFileSystem extends LocalFileSystem {
     boolean verifyChecksum = true;
     URI uri;
@@ -169,7 +158,8 @@ public class TestViewFileSystemDelegation { //extends ViewFileSystemTestSetup {
     public void setVerifyChecksum(boolean verifyChecksum) {
       this.verifyChecksum = verifyChecksum;
     }
-    
+
+    @Override
     public boolean getVerifyChecksum(){
       return verifyChecksum;
     }

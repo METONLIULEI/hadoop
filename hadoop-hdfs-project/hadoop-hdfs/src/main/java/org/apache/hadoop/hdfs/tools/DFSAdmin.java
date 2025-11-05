@@ -35,9 +35,13 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.TreeSet;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
 import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 
 import org.apache.hadoop.hdfs.client.HdfsAdmin;
@@ -104,7 +108,7 @@ import org.apache.hadoop.security.authorize.RefreshAuthorizationPolicyProtocol;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.ToolRunner;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * This class provides some DFS administrative access shell commands.
@@ -119,7 +123,7 @@ public class DFSAdmin extends FsShell {
   private static final Logger LOG = LoggerFactory.getLogger(DFSAdmin.class);
 
   /**
-   * An abstract class for the execution of a file system command
+   * An abstract class for the execution of a file system command.
    */
   abstract private static class DFSAdminCommand extends Command {
     protected DistributedFileSystem dfs;
@@ -432,7 +436,7 @@ public class DFSAdmin extends FsShell {
    */
   private static final String commonUsageSummary =
     "\t[-report [-live] [-dead] [-decommissioning] " +
-    "[-enteringmaintenance] [-inmaintenance]]\n" +
+      "[-enteringmaintenance] [-inmaintenance] [-slownodes]]\n" +
     "\t[-safemode <enter | leave | get | wait | forceExit>]\n" +
     "\t[-saveNamespace [-beforeShutdown]]\n" +
     "\t[-rollEdits]\n" +
@@ -450,8 +454,8 @@ public class DFSAdmin extends FsShell {
     "\t[-refreshSuperUserGroupsConfiguration]\n" +
     "\t[-refreshCallQueue]\n" +
     "\t[-refresh <host:ipc_port> <key> [arg1..argn]\n" +
-    "\t[-reconfig <namenode|datanode> <host:ipc_port> " +
-      "<start|status|properties>]\n" +
+      "\t[-reconfig <namenode|datanode> <host:ipc_port|livenodes|decomnodes>\n" +
+        "\t<start|status|properties>]\n" +
     "\t[-printTopology]\n" +
       "\t[-refreshNamenodes datanode_host:ipc_port]\n" +
       "\t[-getVolumeReport datanode_host:ipc_port]\n" +
@@ -461,7 +465,7 @@ public class DFSAdmin extends FsShell {
     "\t[-fetchImage <local directory>]\n" +
     "\t[-allowSnapshot <snapshotDir>]\n" +
     "\t[-disallowSnapshot <snapshotDir>]\n" +
-      "\t[-provisionSnapshotTrash <snapshotDir>]\n" +
+      "\t[-provisionSnapshotTrash <snapshotDir> [-all]]\n" +
     "\t[-shutdownDatanode <datanode_host:ipc_port> [upgrade]]\n" +
     "\t[-evictWriters <datanode_host:ipc_port>]\n" +
     "\t[-getDatanodeInfo <datanode_host:ipc_port>]\n" +
@@ -487,11 +491,16 @@ public class DFSAdmin extends FsShell {
   protected DistributedFileSystem getDFS() throws IOException {
     return AdminHelper.checkAndGetDFS(getFS(), getConf());
   }
-  
+
+  public static final String[] DFS_REPORT_ARGS =
+      new String[] {"-live", "-dead", "-decommissioning", "-enteringmaintenance",
+          "-inmaintenance", "-slownodes"};
+
   /**
    * Gives a report on how the FileSystem is doing.
    * @exception IOException if the filesystem does not exist.
    */
+  @SuppressWarnings("deprecation")
   public void report(String[] argv, int i) throws IOException {
     DistributedFileSystem dfs = getDFS();
     FsStatus ds = dfs.getStatus();
@@ -545,6 +554,10 @@ public class DFSAdmin extends FsShell {
         replicatedBlockStats.getMissingReplicaBlocks());
     System.out.println("\tMissing blocks (with replication factor 1): " +
         replicatedBlockStats.getMissingReplicationOneBlocks());
+    if (replicatedBlockStats.hasBadlyDistributedBlocks()) {
+      System.out.println("\tBadly Distributed Blocks: " +
+          replicatedBlockStats.getBadlyDistributedBlocks());
+    }
     if (replicatedBlockStats.hasHighestPriorityLowRedundancyBlocks()) {
       System.out.println("\tLow redundancy blocks with highest priority " +
           "to recover: " +
@@ -562,6 +575,10 @@ public class DFSAdmin extends FsShell {
         ecBlockGroupStats.getCorruptBlockGroups());
     System.out.println("\tMissing block groups: " +
         ecBlockGroupStats.getMissingBlockGroups());
+    if (ecBlockGroupStats.hasBadlyDistributedBlocks()) {
+      System.out.println("\tBadly Distributed Blocks: " +
+          ecBlockGroupStats.getBadlyDistributedBlocks());
+    }
     if (ecBlockGroupStats.hasHighestPriorityLowRedundancyBlocks()) {
       System.out.println("\tLow redundancy blocks with highest priority " +
           "to recover: " +
@@ -578,19 +595,20 @@ public class DFSAdmin extends FsShell {
     List<String> args = Arrays.asList(argv);
     // Truncate already handled arguments before parsing report()-specific ones
     args = new ArrayList<String>(args.subList(i, args.size()));
-    final boolean listLive = StringUtils.popOption("-live", args);
-    final boolean listDead = StringUtils.popOption("-dead", args);
+    final boolean listLive = StringUtils.popOption(DFS_REPORT_ARGS[0], args);
+    final boolean listDead = StringUtils.popOption(DFS_REPORT_ARGS[1], args);
     final boolean listDecommissioning =
-        StringUtils.popOption("-decommissioning", args);
+        StringUtils.popOption(DFS_REPORT_ARGS[2], args);
     final boolean listEnteringMaintenance =
-        StringUtils.popOption("-enteringmaintenance", args);
+        StringUtils.popOption(DFS_REPORT_ARGS[3], args);
     final boolean listInMaintenance =
-        StringUtils.popOption("-inmaintenance", args);
-
+        StringUtils.popOption(DFS_REPORT_ARGS[4], args);
+    final boolean listSlowNodes =
+        StringUtils.popOption(DFS_REPORT_ARGS[5], args);
 
     // If no filter flags are found, then list all DN types
     boolean listAll = (!listLive && !listDead && !listDecommissioning
-        && !listEnteringMaintenance && !listInMaintenance);
+        && !listEnteringMaintenance && !listInMaintenance && !listSlowNodes);
 
     if (listAll || listLive) {
       printDataNodeReports(dfs, DatanodeReportType.LIVE, listLive, "Live");
@@ -614,12 +632,30 @@ public class DFSAdmin extends FsShell {
       printDataNodeReports(dfs, DatanodeReportType.IN_MAINTENANCE,
           listInMaintenance, "In maintenance");
     }
+
+    if (listAll || listSlowNodes) {
+      printSlowDataNodeReports(dfs, listSlowNodes, "Slow");
+    }
   }
 
   private static void printDataNodeReports(DistributedFileSystem dfs,
       DatanodeReportType type, boolean listNodes, String nodeState)
       throws IOException {
     DatanodeInfo[] nodes = dfs.getDataNodeStats(type);
+    if (nodes.length > 0 || listNodes) {
+      System.out.println(nodeState + " datanodes (" + nodes.length + "):\n");
+    }
+    if (nodes.length > 0) {
+      for (DatanodeInfo dn : nodes) {
+        System.out.println(dn.getDatanodeReport());
+        System.out.println();
+      }
+    }
+  }
+
+  private static void printSlowDataNodeReports(DistributedFileSystem dfs, boolean listNodes,
+      String nodeState) throws IOException {
+    DatanodeInfo[] nodes = dfs.getSlowDatanodeStats();
     if (nodes.length > 0 || listNodes) {
       System.out.println(nodeState + " datanodes (" + nodes.length + "):\n");
     }
@@ -638,6 +674,7 @@ public class DFSAdmin extends FsShell {
    * @param idx The index of the command that is being processed.
    * @exception IOException if the filesystem does not exist.
    */
+  @SuppressWarnings("deprecation")
   public void setSafeMode(String[] argv, int idx) throws IOException {
     if (idx != argv.length - 1) {
       printUsage("-safemode");
@@ -691,6 +728,7 @@ public class DFSAdmin extends FsShell {
 
   }
 
+  @SuppressWarnings("deprecation")
   private boolean waitExitSafeMode(DistributedFileSystem dfs, boolean inSafeMode)
       throws IOException {
     while (inSafeMode) {
@@ -793,14 +831,7 @@ public class DFSAdmin extends FsShell {
     System.out.println("Disallowing snapshot on " + argv[1] + " succeeded");
   }
 
-  /**
-   * Provision trash root in a snapshottable directory.
-   * Usage: hdfs dfsadmin -provisionSnapshotTrash snapshotDir
-   * @param argv List of of command line parameters.
-   * @exception IOException
-   */
-  public void provisionSnapshotTrash(String[] argv) throws IOException {
-    Path p = new Path(argv[1]);
+  private void provisionSnapshotTrashInternal(Path p) throws IOException {
     final HdfsAdmin admin = new HdfsAdmin(p.toUri(), getConf());
     Path trashRoot;
     try {
@@ -809,7 +840,35 @@ public class DFSAdmin extends FsShell {
       throw new RemoteException(e.getClass().getName(), e.getMessage());
     }
     System.out.println("Successfully provisioned snapshot trash at " +
-        trashRoot);
+            trashRoot);
+  }
+
+  private void provisionSnapshotTrashAll() throws IOException {
+    // Get all snapshottable directories
+    final DistributedFileSystem dfs = getDFS();
+    SnapshottableDirectoryStatus[] lst = dfs.getSnapshottableDirListing();
+    if (lst != null) {
+      for (SnapshottableDirectoryStatus dirStatus : lst) {
+        final Path p = dirStatus.getFullPath();
+        provisionSnapshotTrashInternal(p);
+      }
+    }
+  }
+
+  /**
+   * Provision trash root in a snapshottable directory.
+   * Usage: hdfs dfsadmin -provisionSnapshotTrash snapshotDir
+   *        hdfs dfsadmin -provisionSnapshotTrash -all
+   * @param argv List of of command line parameters.
+   * @exception IOException
+   */
+  public void provisionSnapshotTrash(String[] argv) throws IOException {
+    if (argv[1].equals("-all")) {
+      provisionSnapshotTrashAll();
+      return;
+    }
+    Path p = new Path(argv[1]);
+    provisionSnapshotTrashInternal(p);
   }
   
   /**
@@ -860,7 +919,7 @@ public class DFSAdmin extends FsShell {
                 + proxy.getAddress());
           }
         }catch (IOException ioe){
-          System.out.println("Save namespace failed for " +
+          System.err.println("Save namespace failed for " +
               proxy.getAddress());
           exceptions.add(ioe);
         }
@@ -917,7 +976,7 @@ public class DFSAdmin extends FsShell {
           System.out.println("restoreFailedStorage is set to " + res + " for "
               + proxy.getAddress());
         } catch (IOException ioe){
-          System.out.println("restoreFailedStorage failed for "
+          System.err.println("restoreFailedStorage failed for "
               + proxy.getAddress());
           exceptions.add(ioe);
         }
@@ -960,7 +1019,7 @@ public class DFSAdmin extends FsShell {
           System.out.println("Refresh nodes successful for " +
               proxy.getAddress());
         }catch (IOException ioe){
-          System.out.println("Refresh nodes failed for " +
+          System.err.println("Refresh nodes failed for " +
               proxy.getAddress());
           exceptions.add(ioe);
         }
@@ -1016,7 +1075,7 @@ public class DFSAdmin extends FsShell {
       openFilesRemoteIterator = dfs.listOpenFiles(openFilesTypes, path);
       printOpenFiles(openFilesRemoteIterator);
     } catch (IOException ioe){
-      System.out.println("List open files failed.");
+      System.err.println("List open files failed.");
       throw ioe;
     }
     return 0;
@@ -1024,14 +1083,14 @@ public class DFSAdmin extends FsShell {
 
   private void printOpenFiles(RemoteIterator<OpenFileEntry> openFilesIterator)
       throws IOException {
-    System.out.println(String.format("%-20s\t%-20s\t%s", "Client Host",
-          "Client Name", "Open File Path"));
+    System.out.printf("%-20s\t%-20s\t%s%n", "Client Host",
+        "Client Name", "Open File Path");
     while (openFilesIterator.hasNext()) {
       OpenFileEntry openFileEntry = openFilesIterator.next();
-      System.out.println(String.format("%-20s\t%-20s\t%20s",
+      System.out.printf("%-20s\t%-20s\t%20s%n",
           openFileEntry.getClientMachine(),
           openFileEntry.getClientName(),
-          openFileEntry.getFilePath()));
+          openFileEntry.getFilePath());
     }
   }
 
@@ -1126,7 +1185,7 @@ public class DFSAdmin extends FsShell {
       commonUsageSummary;
 
     String report ="-report [-live] [-dead] [-decommissioning] "
-        + "[-enteringmaintenance] [-inmaintenance]:\n" +
+        + "[-enteringmaintenance] [-inmaintenance] [-slownodes]:\n" +
         "\tReports basic filesystem information and statistics. \n" +
         "\tThe dfs usage can be different from \"du\" usage, because it\n" +
         "\tmeasures raw space used by replication, checksums, snapshots\n" +
@@ -1202,12 +1261,15 @@ public class DFSAdmin extends FsShell {
 
     String refreshCallQueue = "-refreshCallQueue: Reload the call queue from config\n";
 
-    String reconfig = "-reconfig <namenode|datanode> <host:ipc_port> " +
+    String reconfig = "-reconfig <namenode|datanode> <host:ipc_port|livenodes|decomnodes> " +
         "<start|status|properties>:\n" +
         "\tStarts or gets the status of a reconfiguration operation, \n" +
         "\tor gets a list of reconfigurable properties.\n" +
-
-        "\tThe second parameter specifies the node type\n";
+        "\tThe second parameter specifies the node type\n" +
+        "\tThe third parameter specifies host address. For start or status, \n" +
+        "\tdatanode supports livenodes and decomnodes as the third parameter, \n" +
+        "\twhich will start or retrieve reconfiguration on all live " +
+        "\tor decommissioning datanodes. \n";
     String genericRefresh = "-refresh: Arguments are <hostname:ipc_port>" +
             " <resource_identifier> [arg1..argn]\n" +
             "\tTriggers a runtime-refresh of the resource specified by " +
@@ -1266,9 +1328,10 @@ public class DFSAdmin extends FsShell {
     String disallowSnapshot = "-disallowSnapshot <snapshotDir>:\n" +
         "\tDo not allow snapshots to be taken on a directory any more.\n";
 
-    String provisionSnapshotTrash = "-provisionSnapshotTrash <snapshotDir>:\n" +
-        "\tProvision trash root in a snapshottable directory with permission"
-        + "\t" + HdfsAdmin.TRASH_PERMISSION + ".\n";
+    String provisionSnapshotTrash =
+        "-provisionSnapshotTrash <snapshotDir> [-all]:\n"
+        + "\tProvision trash root in one or all snapshottable directories."
+        + "\tTrash permission is " + HdfsAdmin.TRASH_PERMISSION + ".\n";
 
     String shutdownDatanode = "-shutdownDatanode <datanode_host:ipc_port> [upgrade]\n"
         + "\tSubmit a shutdown request for the given datanode. If an optional\n"
@@ -1447,7 +1510,7 @@ public class DFSAdmin extends FsShell {
           System.out.println("Finalize upgrade successful for " +
               proxy.getAddress());
         }catch (IOException ioe){
-          System.out.println("Finalize upgrade failed for " +
+          System.err.println("Finalize upgrade failed for " +
               proxy.getAddress());
           exceptions.add(ioe);
         }
@@ -1576,7 +1639,7 @@ public class DFSAdmin extends FsShell {
             throw re;
           }
         } catch (IOException ioe) {
-          System.out.println("Created metasave file " + pathname
+          System.err.println("Created metasave file " + pathname
               + " in the log directory of namenode " + proxy.getAddress()
               + " failed");
           exceptions.add(ioe);
@@ -1601,40 +1664,45 @@ public class DFSAdmin extends FsShell {
    * @throws IOException If an error while getting datanode report
    */
   public int printTopology() throws IOException {
-      DistributedFileSystem dfs = getDFS();
-      final DatanodeInfo[] report = dfs.getDataNodeStats();
+    DistributedFileSystem dfs = getDFS();
+    final DatanodeInfo[] report = dfs.getDataNodeStats();
 
-      // Build a map of rack -> nodes from the datanode report
-      HashMap<String, TreeSet<String> > tree = new HashMap<String, TreeSet<String>>();
-      for(DatanodeInfo dni : report) {
-        String location = dni.getNetworkLocation();
-        String name = dni.getName();
+    // Build a map of rack -> nodes from the datanode report
+    Map<String, HashMap<String, String>> map = new HashMap<>();
+    for(DatanodeInfo dni : report) {
+      String location = dni.getNetworkLocation();
+      String name = dni.getName();
+      String dnState = dni.getAdminState().toString();
         
-        if(!tree.containsKey(location)) {
-          tree.put(location, new TreeSet<String>());
-        }
-        
-        tree.get(location).add(name);
+      if(!map.containsKey(location)) {
+        map.put(location, new HashMap<>());
       }
-      
-      // Sort the racks (and nodes) alphabetically, display in order
-      ArrayList<String> racks = new ArrayList<String>(tree.keySet());
-      Collections.sort(racks);
-      
-      for(String r : racks) {
-        System.out.println("Rack: " + r);
-        TreeSet<String> nodes = tree.get(r);
 
-        for(String n : nodes) {
-          System.out.print("   " + n);
-          String hostname = NetUtils.getHostNameOfIP(n);
-          if(hostname != null)
-            System.out.print(" (" + hostname + ")");
-          System.out.println();
+      Map<String, String> node = map.get(location);
+      node.put(name, dnState);
+    }
+      
+    // Sort the racks (and nodes) alphabetically, display in order
+    List<String> racks = new ArrayList<>(map.keySet());
+    Collections.sort(racks);
+      
+    for(String r : racks) {
+      System.out.println("Rack: " + r);
+      Map<String, String> nodes = map.get(r);
+
+      for(Map.Entry<String, String> entry : nodes.entrySet()) {
+        String n = entry.getKey();
+        System.out.print("   " + n);
+        String hostname = NetUtils.getHostNameOfIP(n);
+        if(hostname != null) {
+          System.out.print(" (" + hostname + ")");
         }
-
+        System.out.print(" " + entry.getValue());
         System.out.println();
       }
+
+      System.out.println();
+    }
     return 0;
   }
   
@@ -1675,7 +1743,7 @@ public class DFSAdmin extends FsShell {
           System.out.println("Refresh service acl successful for "
               + proxy.getAddress());
         }catch (IOException ioe){
-          System.out.println("Refresh service acl failed for "
+          System.err.println("Refresh service acl failed for "
               + proxy.getAddress());
           exceptions.add(ioe);
         }
@@ -1728,7 +1796,7 @@ public class DFSAdmin extends FsShell {
           System.out.println("Refresh user to groups mapping successful for "
               + proxy.getAddress());
         }catch (IOException ioe){
-          System.out.println("Refresh user to groups mapping failed for "
+          System.err.println("Refresh user to groups mapping failed for "
               + proxy.getAddress());
           exceptions.add(ioe);
         }
@@ -1783,7 +1851,7 @@ public class DFSAdmin extends FsShell {
           System.out.println("Refresh super user groups configuration " +
               "successful for " + proxy.getAddress());
         }catch (IOException ioe){
-          System.out.println("Refresh super user groups configuration " +
+          System.err.println("Refresh super user groups configuration " +
               "failed for " + proxy.getAddress());
           exceptions.add(ioe);
         }
@@ -1832,7 +1900,7 @@ public class DFSAdmin extends FsShell {
           System.out.println("Refresh call queue successful for "
               + proxy.getAddress());
         }catch (IOException ioe){
-          System.out.println("Refresh call queue failed for "
+          System.err.println("Refresh call queue failed for "
               + proxy.getAddress());
           exceptions.add(ioe);
         }
@@ -1854,15 +1922,15 @@ public class DFSAdmin extends FsShell {
     return 0;
   }
 
-  public int reconfig(String[] argv, int i) throws IOException {
+  public int reconfig(String[] argv, int i) throws IOException, InterruptedException {
     String nodeType = argv[i];
     String address = argv[i + 1];
     String op = argv[i + 2];
 
     if ("start".equals(op)) {
-      return startReconfiguration(nodeType, address, System.out, System.err);
+      return startReconfigurationUtil(nodeType, address, System.out, System.err);
     } else if ("status".equals(op)) {
-      return getReconfigurationStatus(nodeType, address, System.out, System.err);
+      return getReconfigurationStatusUtil(nodeType, address, System.out, System.err);
     } else if ("properties".equals(op)) {
       return getReconfigurableProperties(nodeType, address, System.out,
           System.err);
@@ -1871,13 +1939,63 @@ public class DFSAdmin extends FsShell {
     return -1;
   }
 
-  int startReconfiguration(final String nodeThpe, final String address)
-      throws IOException {
-    return startReconfiguration(nodeThpe, address, System.out, System.err);
+  int startReconfiguration(final String nodeType, final String address)
+      throws IOException, InterruptedException {
+    return startReconfigurationUtil(nodeType, address, System.out, System.err);
+  }
+
+  int startReconfigurationUtil(final String nodeType, final String address, final PrintStream out,
+      final PrintStream err) throws IOException, InterruptedException {
+    if (!"livenodes".equals(address) && !"decomnodes".equals(address)) {
+      return startReconfiguration(nodeType, address, out, err);
+    }
+    if (!"datanode".equals(nodeType)) {
+      err.println("Only datanode type supports reconfiguration in bulk.");
+      return 1;
+    }
+    ExecutorService executorService = Executors.newFixedThreadPool(5);
+    DistributedFileSystem dfs = getDFS();
+    final DatanodeInfo[] nodes = "livenodes".equals(address) ?
+        dfs.getDataNodeStats(DatanodeReportType.LIVE) :
+        dfs.getDataNodeStats(DatanodeReportType.DECOMMISSIONING);
+    AtomicInteger successCount = new AtomicInteger();
+    AtomicInteger failCount = new AtomicInteger();
+    if (nodes != null) {
+      final CountDownLatch latch = new CountDownLatch(nodes.length);
+      for (DatanodeInfo node : nodes) {
+        executorService.submit(() -> {
+          try {
+            int status = startReconfiguration(nodeType, node.getIpcAddr(false), out, err);
+            if (status == 0) {
+              successCount.incrementAndGet();
+            } else {
+              failCount.incrementAndGet();
+            }
+          } finally {
+            latch.countDown();
+          }
+        });
+      }
+      latch.await();
+      executorService.shutdown();
+      if (!executorService.awaitTermination(1, TimeUnit.MINUTES)) {
+        err.println("Executor service could not be terminated in 60s. Please wait for"
+            + " sometime before the system cools down.");
+      }
+      out.println("Starting of reconfiguration task successful on " + successCount.get()
+          + " nodes, failed on " + failCount.get() + " nodes.");
+      if (failCount.get() == 0) {
+        return 0;
+      } else {
+        return 1;
+      }
+    }
+    err.println("DFS datanode stats could not be retrieved.");
+    return 1;
   }
 
   int startReconfiguration(final String nodeType, final String address,
-      final PrintStream out, final PrintStream err) throws IOException {
+      final PrintStream out, final PrintStream err) {
     String outMsg = null;
     String errMsg = null;
     int ret = 0;
@@ -1918,8 +2036,58 @@ public class DFSAdmin extends FsShell {
     }
   }
 
-  int getReconfigurationStatus(final String nodeType, final String address,
-      final PrintStream out, final PrintStream err) throws IOException {
+  int getReconfigurationStatusUtil(final String nodeType, final String address,
+      final PrintStream out, final PrintStream err) throws IOException, InterruptedException {
+    if (!"livenodes".equals(address) && !"decomnodes".equals(address)) {
+      return getReconfigurationStatus(nodeType, address, out, err);
+    }
+    if (!"datanode".equals(nodeType)) {
+      err.println("Only datanode type supports reconfiguration in bulk.");
+      return 1;
+    }
+    ExecutorService executorService = Executors.newFixedThreadPool(5);
+    DistributedFileSystem dfs = getDFS();
+    final DatanodeInfo[] nodes = "livenodes".equals(address) ?
+        dfs.getDataNodeStats(DatanodeReportType.LIVE) :
+        dfs.getDataNodeStats(DatanodeReportType.DECOMMISSIONING);
+    AtomicInteger successCount = new AtomicInteger();
+    AtomicInteger failCount = new AtomicInteger();
+    if (nodes != null) {
+      final CountDownLatch latch = new CountDownLatch(nodes.length);
+      for (DatanodeInfo node : nodes) {
+        executorService.submit(() -> {
+          try {
+            int status = getReconfigurationStatus(nodeType, node.getIpcAddr(false), out, err);
+            if (status == 0) {
+              successCount.incrementAndGet();
+            } else {
+              failCount.incrementAndGet();
+            }
+          } finally {
+            latch.countDown();
+          }
+        });
+      }
+      latch.await();
+      executorService.shutdown();
+      if (!executorService.awaitTermination(1, TimeUnit.MINUTES)) {
+        err.println("Executor service could not be terminated in 60s. Please wait for"
+            + " sometime before the system cools down.");
+      }
+      out.println("Retrieval of reconfiguration status successful on " + successCount.get()
+          + " nodes, failed on " + failCount.get() + " nodes.");
+      if (failCount.get() == 0) {
+        return 0;
+      } else {
+        return 1;
+      }
+    }
+    err.println("DFS datanode stats could not be retrieved.");
+    return 1;
+  }
+
+  int getReconfigurationStatus(final String nodeType, final String address, final PrintStream out,
+      final PrintStream err) {
     String outMsg = null;
     String errMsg = null;
     ReconfigurationTaskStatus status = null;
@@ -1935,22 +2103,20 @@ public class DFSAdmin extends FsShell {
     if (errMsg != null) {
       err.println(errMsg);
       return 1;
-    } else {
-      out.print(outMsg);
     }
 
     if (status != null) {
       if (!status.hasTask()) {
-        out.println("no task was found.");
+        out.println(outMsg + "no task was found.");
         return 0;
       }
-      out.print("started at " + new Date(status.getStartTime()));
+      String startMsg = outMsg + "started at " + new Date(status.getStartTime());
       if (!status.stopped()) {
-        out.println(" and is still running.");
+        out.println(startMsg + " and is still running.");
         return 0;
       }
 
-      out.println(" and finished at "
+      out.println(startMsg + " and finished at "
           + new Date(status.getEndTime()).toString() + ".");
       if (status.getStatus() == null) {
         // Nothing to report.
@@ -1973,6 +2139,7 @@ public class DFSAdmin extends FsShell {
         }
       }
     } else {
+      out.println(outMsg);
       return 1;
     }
 
@@ -2103,7 +2270,7 @@ public class DFSAdmin extends FsShell {
     if ("-report".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-report] [-live] [-dead] [-decommissioning]"
-          + " [-enteringmaintenance] [-inmaintenance]");
+          + " [-enteringmaintenance] [-inmaintenance] [-slownodes]");
     } else if ("-safemode".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-safemode enter | leave | get | wait | forceExit]");
@@ -2115,7 +2282,7 @@ public class DFSAdmin extends FsShell {
           + " [-disallowSnapshot <snapshotDir>]");
     } else if ("-provisionSnapshotTrash".equalsIgnoreCase(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
-          + " [-provisionSnapshotTrash <snapshotDir>]");
+          + " [-provisionSnapshotTrash <snapshotDir> [-all]]");
     } else if ("-saveNamespace".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
           + " [-saveNamespace [-beforeShutdown]]");
@@ -2165,7 +2332,7 @@ public class DFSAdmin extends FsShell {
                          + " [-refreshCallQueue]");
     } else if ("-reconfig".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
-          + " [-reconfig <namenode|datanode> <host:ipc_port> "
+          + " [-reconfig <namenode|datanode> <host:ipc_port|livenodes|decomnodes> "
           + "<start|status|properties>]");
     } else if ("-refresh".equals(cmd)) {
       System.err.println("Usage: hdfs dfsadmin"
@@ -2255,7 +2422,7 @@ public class DFSAdmin extends FsShell {
         return exitCode;
       }
     } else if ("-report".equals(cmd)) {
-      if (argv.length > 6) {
+      if (argv.length > DFS_REPORT_ARGS.length + 1) {
         printUsage(cmd);
         return exitCode;
       }

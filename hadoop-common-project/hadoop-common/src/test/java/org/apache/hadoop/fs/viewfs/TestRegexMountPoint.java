@@ -17,16 +17,19 @@
  */
 package org.apache.hadoop.fs.viewfs;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.function.Function;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Map;
 import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,7 +57,7 @@ public class TestRegexMountPoint {
     }
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     ConfigUtil.addLink(conf, TestRegexMountPoint.class.getName(), "/mnt",
@@ -63,9 +66,14 @@ public class TestRegexMountPoint {
     inodeTree = new InodeTree<TestRegexMountPointFileSystem>(conf,
         TestRegexMountPoint.class.getName(), null, false) {
       @Override
-      protected TestRegexMountPointFileSystem getTargetFileSystem(
-          final URI uri) {
-        return new TestRegexMountPointFileSystem(uri);
+      protected Function<URI, TestRegexMountPointFileSystem>
+          initAndGetTargetFs() {
+        return new Function<URI, TestRegexMountPointFileSystem>() {
+          @Override
+          public TestRegexMountPointFileSystem apply(URI uri) {
+            return new TestRegexMountPointFileSystem(uri);
+          }
+        };
       }
 
       @Override
@@ -82,7 +90,7 @@ public class TestRegexMountPoint {
     };
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     inodeTree = null;
   }
@@ -95,14 +103,14 @@ public class TestRegexMountPoint {
         new RegexMountPoint(inodeTree, srcRegex, target, null);
     regexMountPoint.initialize();
     Map<String, Set<String>> varMap = regexMountPoint.getVarInDestPathMap();
-    Assert.assertEquals(varMap.size(), 3);
-    Assert.assertEquals(varMap.get("0").size(), 1);
-    Assert.assertTrue(varMap.get("0").contains("$0"));
-    Assert.assertEquals(varMap.get("1").size(), 2);
-    Assert.assertTrue(varMap.get("1").contains("${1}"));
-    Assert.assertTrue(varMap.get("1").contains("$1"));
-    Assert.assertEquals(varMap.get("2").size(), 1);
-    Assert.assertTrue(varMap.get("2").contains("${2}"));
+    assertEquals(varMap.size(), 3);
+    assertEquals(varMap.get("0").size(), 1);
+    assertTrue(varMap.get("0").contains("$0"));
+    assertEquals(varMap.get("1").size(), 2);
+    assertTrue(varMap.get("1").contains("${1}"));
+    assertTrue(varMap.get("1").contains("$1"));
+    assertEquals(varMap.get("2").size(), 1);
+    assertTrue(varMap.get("2").contains("${2}"));
   }
 
   @Test
@@ -115,18 +123,18 @@ public class TestRegexMountPoint {
     regexMountPoint.initialize();
     InodeTree.ResolveResult resolveResult =
         regexMountPoint.resolve("/user/hadoop/file1", true);
-    Assert.assertEquals(resolveResult.kind, InodeTree.ResultKind.EXTERNAL_DIR);
-    Assert.assertTrue(
+    assertEquals(resolveResult.kind, InodeTree.ResultKind.EXTERNAL_DIR);
+    assertTrue(
         resolveResult.targetFileSystem
             instanceof TestRegexMountPointFileSystem);
-    Assert.assertEquals("/user/hadoop", resolveResult.resolvedPath);
-    Assert.assertTrue(
+    assertEquals("/user/hadoop", resolveResult.resolvedPath);
+    assertTrue(
         resolveResult.targetFileSystem
             instanceof TestRegexMountPointFileSystem);
-    Assert.assertEquals("/namenode1/testResolve/hadoop",
+    assertEquals("/namenode1/testResolve/hadoop",
         ((TestRegexMountPointFileSystem) resolveResult.targetFileSystem)
             .getUri().toString());
-    Assert.assertEquals("/file1", resolveResult.remainingPath.toString());
+    assertEquals("/file1", resolveResult.remainingPath.toString());
   }
 
   @Test
@@ -143,18 +151,18 @@ public class TestRegexMountPoint {
     regexMountPoint.initialize();
     InodeTree.ResolveResult resolveResult =
         regexMountPoint.resolve("/user/hadoop_user1/file_index", true);
-    Assert.assertEquals(resolveResult.kind, InodeTree.ResultKind.EXTERNAL_DIR);
-    Assert.assertTrue(
+    assertEquals(resolveResult.kind, InodeTree.ResultKind.EXTERNAL_DIR);
+    assertTrue(
         resolveResult.targetFileSystem
             instanceof TestRegexMountPointFileSystem);
-    Assert.assertEquals("/user/hadoop_user1", resolveResult.resolvedPath);
-    Assert.assertTrue(
+    assertEquals("/user/hadoop_user1", resolveResult.resolvedPath);
+    assertTrue(
         resolveResult.targetFileSystem
             instanceof TestRegexMountPointFileSystem);
-    Assert.assertEquals("/namenode1/testResolve/hadoop-user1",
+    assertEquals("/namenode1/testResolve/hadoop-user1",
         ((TestRegexMountPointFileSystem) resolveResult.targetFileSystem)
             .getUri().toString());
-    Assert.assertEquals("/file_index",
+    assertEquals("/file_index",
         resolveResult.remainingPath.toString());
   }
 }

@@ -21,13 +21,19 @@ package org.apache.hadoop.fs.azurebfs;
 import java.io.IOException;
 
 import org.assertj.core.api.Assertions;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.azurebfs.services.AbfsOutputStream;
 import org.apache.hadoop.fs.azurebfs.services.AbfsOutputStreamStatisticsImpl;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.StoreStatisticNames;
+
+import static org.apache.hadoop.fs.statistics.IOStatisticAssertions.extractStatistics;
+import static org.apache.hadoop.fs.statistics.IOStatisticAssertions.lookupMeanStatistic;
+import static org.apache.hadoop.fs.statistics.IOStatisticsLogging.ioStatisticsToPrettyString;
 
 /**
  * Test AbfsOutputStream statistics.
@@ -61,8 +67,8 @@ public class ITestAbfsOutputStreamStatistics
           getAbfsOutputStreamStatistics(outForSomeBytes);
 
       //Test for zero bytes To upload.
-      assertEquals("Mismatch in bytes to upload", 0,
-          abfsOutputStreamStatisticsForUploadBytes.getBytesToUpload());
+      assertEquals(0, abfsOutputStreamStatisticsForUploadBytes.getBytesToUpload(),
+          "Mismatch in bytes to upload");
 
       outForSomeBytes.write(testBytesToUpload.getBytes());
       outForSomeBytes.flush();
@@ -70,14 +76,13 @@ public class ITestAbfsOutputStreamStatistics
           getAbfsOutputStreamStatistics(outForSomeBytes);
 
       //Test for bytes to upload.
-      assertEquals("Mismatch in bytes to upload",
-          testBytesToUpload.getBytes().length,
-          abfsOutputStreamStatisticsForUploadBytes.getBytesToUpload());
+      assertEquals(testBytesToUpload.getBytes().length,
+          abfsOutputStreamStatisticsForUploadBytes.getBytesToUpload(), "Mismatch in bytes to upload");
 
       //Test for successful bytes uploaded.
-      assertEquals("Mismatch in successful bytes uploaded",
-          testBytesToUpload.getBytes().length,
-          abfsOutputStreamStatisticsForUploadBytes.getBytesUploadSuccessful());
+      assertEquals(testBytesToUpload.getBytes().length,
+          abfsOutputStreamStatisticsForUploadBytes.getBytesUploadSuccessful(),
+          "Mismatch in successful bytes uploaded");
 
     }
 
@@ -93,14 +98,13 @@ public class ITestAbfsOutputStreamStatistics
           getAbfsOutputStreamStatistics(outForLargeBytes);
 
       //Test for bytes to upload.
-      assertEquals("Mismatch in bytes to upload",
-          OPERATIONS * (testBytesToUpload.getBytes().length),
-          abfsOutputStreamStatistics.getBytesToUpload());
+      assertEquals(OPERATIONS * (testBytesToUpload.getBytes().length),
+          abfsOutputStreamStatistics.getBytesToUpload(), "Mismatch in bytes to upload");
 
       //Test for successful bytes uploaded.
-      assertEquals("Mismatch in successful bytes uploaded",
-          OPERATIONS * (testBytesToUpload.getBytes().length),
-          abfsOutputStreamStatistics.getBytesUploadSuccessful());
+      assertEquals(OPERATIONS * (testBytesToUpload.getBytes().length),
+          abfsOutputStreamStatistics.getBytesUploadSuccessful(),
+          "Mismatch in successful bytes uploaded");
 
     }
   }
@@ -131,8 +135,8 @@ public class ITestAbfsOutputStreamStatistics
           getAbfsOutputStreamStatistics(outForOneOp);
 
       //Test for shrinking queue zero time.
-      assertEquals("Mismatch in queue shrunk operations", 0,
-          abfsOutputStreamStatistics.getQueueShrunkOps());
+      assertEquals(0, abfsOutputStreamStatistics.getQueueShrunkOps(),
+          "Mismatch in queue shrunk operations");
 
     }
 
@@ -162,9 +166,8 @@ public class ITestAbfsOutputStreamStatistics
        * write operations done to get the number of queue shrinks done.
        *
        */
-      assertEquals("Mismatch in queue shrunk operations",
-          OPERATIONS - outForLargeOps.getWriteOperationsSize(),
-          abfsOutputStreamStatistics.getQueueShrunkOps());
+      assertEquals(OPERATIONS - outForLargeOps.getWriteOperationsSize(),
+          abfsOutputStreamStatistics.getQueueShrunkOps(), "Mismatch in queue shrunk operations");
     }
 
   }
@@ -190,8 +193,8 @@ public class ITestAbfsOutputStreamStatistics
           getAbfsOutputStreamStatistics(outForOneOp);
 
       //Test for zero time writing buffer to service.
-      assertEquals("Mismatch in write current buffer operations", 0,
-          abfsOutputStreamStatistics.getWriteCurrentBufferOperations());
+      assertEquals(0, abfsOutputStreamStatistics.getWriteCurrentBufferOperations(),
+          "Mismatch in write current buffer operations");
 
       outForOneOp.write(testWriteBuffer.getBytes());
       outForOneOp.flush();
@@ -199,8 +202,8 @@ public class ITestAbfsOutputStreamStatistics
       abfsOutputStreamStatistics = getAbfsOutputStreamStatistics(outForOneOp);
 
       //Test for one time writing buffer to service.
-      assertEquals("Mismatch in write current buffer operations", 1,
-          abfsOutputStreamStatistics.getWriteCurrentBufferOperations());
+      assertEquals(1, abfsOutputStreamStatistics.getWriteCurrentBufferOperations(),
+          "Mismatch in write current buffer operations");
     }
 
     try (
@@ -219,9 +222,8 @@ public class ITestAbfsOutputStreamStatistics
       AbfsOutputStreamStatisticsImpl abfsOutputStreamStatistics =
           getAbfsOutputStreamStatistics(outForLargeOps);
       //Test for 10 times writing buffer to service.
-      assertEquals("Mismatch in write current buffer operations",
-          OPERATIONS,
-          abfsOutputStreamStatistics.getWriteCurrentBufferOperations());
+      assertEquals(OPERATIONS, abfsOutputStreamStatistics.getWriteCurrentBufferOperations(),
+          "Mismatch in write current buffer operations");
     }
   }
 
@@ -241,10 +243,13 @@ public class ITestAbfsOutputStreamStatistics
       outputStream.write('a');
       outputStream.hflush();
 
-      AbfsOutputStreamStatisticsImpl abfsOutputStreamStatistics =
-          getAbfsOutputStreamStatistics(outputStream);
-      LOG.info("AbfsOutputStreamStats info: {}", abfsOutputStreamStatistics.toString());
-      Assertions.assertThat(abfsOutputStreamStatistics.getTimeSpentOnPutRequest())
+      IOStatistics ioStatistics = extractStatistics(fs);
+      LOG.info("AbfsOutputStreamStats info: {}",
+          ioStatisticsToPrettyString(ioStatistics));
+      Assertions.assertThat(
+          lookupMeanStatistic(ioStatistics,
+              AbfsStatistic.HTTP_PUT_REQUEST.getStatName()
+                  + StoreStatisticNames.SUFFIX_MEAN).mean())
           .describedAs("Mismatch in timeSpentOnPutRequest DurationTracker")
           .isGreaterThan(0.0);
     }

@@ -18,20 +18,23 @@
 
 package org.apache.hadoop.ipc;
 
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.hadoop.thirdparty.protobuf.BlockingService;
 import org.apache.hadoop.thirdparty.protobuf.RpcController;
 import org.apache.hadoop.thirdparty.protobuf.ServiceException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.ipc.Client.ConnectionId;
 import org.apache.hadoop.ipc.protobuf.TestProtos;
 import org.apache.hadoop.ipc.protobuf.TestRpcServiceProtos;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.util.Time;
-import org.junit.Assert;
 
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.retry.RetryPolicy;
@@ -56,6 +59,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /** Test facilities for unit tests for RPC. */
 public class TestRpcBase {
@@ -124,18 +130,19 @@ public class TestRpcBase {
     return server;
   }
 
-  protected static TestRpcService getClient(InetSocketAddress serverAddr,
-                                     Configuration clientConf)
+  protected static TestRpcService getClient(InetSocketAddress serverAddr, Configuration clientConf)
       throws ServiceException {
-    try {
-      return RPC.getProxy(TestRpcService.class, 0, serverAddr, clientConf);
-    } catch (IOException e) {
-      throw new ServiceException(e);
-    }
+    return getClient(serverAddr, clientConf, null);
   }
 
   protected static TestRpcService getClient(InetSocketAddress serverAddr,
-      Configuration clientConf, final RetryPolicy connectionRetryPolicy)
+      Configuration clientConf, RetryPolicy connectionRetryPolicy) throws ServiceException {
+    return getClient(serverAddr, clientConf, connectionRetryPolicy, null);
+  }
+
+  protected static TestRpcService getClient(InetSocketAddress serverAddr,
+      Configuration clientConf, final RetryPolicy connectionRetryPolicy,
+      AtomicBoolean fallbackToSimpleAuth)
       throws ServiceException {
     try {
       return RPC.getProtocolProxy(
@@ -146,17 +153,60 @@ public class TestRpcBase {
           clientConf,
           NetUtils.getDefaultSocketFactory(clientConf),
           RPC.getRpcTimeout(clientConf),
-          connectionRetryPolicy, null).getProxy();
+          connectionRetryPolicy, fallbackToSimpleAuth).getProxy();
     } catch (IOException e) {
       throw new ServiceException(e);
     }
   }
 
-  protected static void stop(Server server, TestRpcService proxy) {
-    if (proxy != null) {
-      try {
-        RPC.stopProxy(proxy);
-      } catch (Exception ignored) {}
+  /**
+   * Try to obtain a proxy of TestRpcService with an index.
+   * @param serverAddr input server address
+   * @param clientConf input client configuration
+   * @param retryPolicy input retryPolicy
+   * @param index input index
+   * @return one proxy of TestRpcService
+   */
+  protected static TestRpcService getMultipleClientWithIndex(InetSocketAddress serverAddr,
+      Configuration clientConf, RetryPolicy retryPolicy, int index)
+      throws ServiceException, IOException {
+    MockConnectionId connectionId = new MockConnectionId(serverAddr,
+        TestRpcService.class, UserGroupInformation.getCurrentUser(),
+        RPC.getRpcTimeout(clientConf), retryPolicy, clientConf, index);
+    return getClient(connectionId, clientConf);
+  }
+
+  /**
+   * Obtain a TestRpcService Proxy by a connectionId.
+   * @param connId input connectionId
+   * @param clientConf  input configuration
+   * @return a TestRpcService Proxy
+   * @throws ServiceException a ServiceException
+   */
+  protected static TestRpcService getClient(ConnectionId connId,
+      Configuration clientConf) throws ServiceException {
+    try {
+      return RPC.getProtocolProxy(
+          TestRpcService.class,
+          0,
+          connId,
+          clientConf,
+          NetUtils.getDefaultSocketFactory(clientConf),
+          null).getProxy();
+    } catch (IOException e) {
+      throw new ServiceException(e);
+    }
+  }
+
+  protected static void stop(Server server, TestRpcService... proxies) {
+    if (proxies != null) {
+      for (TestRpcService proxy : proxies) {
+        if (proxy != null) {
+          try {
+            RPC.stopProxy(proxy);
+          } catch (Exception ignored) {}
+        }
+      }
     }
 
     if (server != null) {
@@ -185,6 +235,40 @@ public class TestRpcBase {
       }
     }
     return count;
+  }
+
+  public static class MockConnectionId extends ConnectionId {
+    private static final int PRIME = 16777619;
+    private final int index;
+
+    public MockConnectionId(InetSocketAddress address, Class<?> protocol,
+        UserGroupInformation ticket, int rpcTimeout, RetryPolicy connectionRetryPolicy,
+        Configuration conf, int index) {
+      super(address, protocol, ticket, rpcTimeout, connectionRetryPolicy, conf);
+      this.index = index;
+    }
+
+    @Override
+    public int hashCode() {
+      return new HashCodeBuilder()
+          .append(PRIME * super.hashCode())
+          .append(this.index)
+          .toHashCode();
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      if (!super.equals(obj)) {
+        return false;
+      }
+      if (obj instanceof MockConnectionId) {
+        MockConnectionId other = (MockConnectionId)obj;
+        return new EqualsBuilder()
+            .append(this.index, other.index)
+            .isEquals();
+      }
+      return false;
+    }
   }
 
   public static class TestTokenIdentifier extends TokenIdentifier {
@@ -292,8 +376,8 @@ public class TestRpcBase {
                 TestProtos.EmptyRequestProto request) throws ServiceException {
       // Ensure clientId is received
       byte[] clientId = Server.getClientId();
-      Assert.assertNotNull(clientId);
-      Assert.assertEquals(ClientId.BYTE_LENGTH, clientId.length);
+      assertNotNull(clientId);
+      assertEquals(ClientId.BYTE_LENGTH, clientId.length);
       return TestProtos.EmptyResponseProto.newBuilder().build();
     }
 

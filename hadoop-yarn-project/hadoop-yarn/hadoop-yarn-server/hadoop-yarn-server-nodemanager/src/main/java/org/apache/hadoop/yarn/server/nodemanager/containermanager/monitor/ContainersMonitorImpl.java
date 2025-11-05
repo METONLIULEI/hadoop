@@ -18,8 +18,9 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.CGroupElasticMemoryController;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.ResourceHandlerModule;
@@ -294,7 +295,7 @@ public class ContainersMonitorImpl extends AbstractService implements
           + "{} is disabled.", this.getClass().getName());
       return false;
     }
-    if (getResourceCalculatorProcessTree("0") == null) {
+    if (getResourceCalculatorProcessTree("1") == null) {
       LOG.info("ResourceCalculatorProcessTree is unavailable on this system. "
           + "{} is disabled.", this.getClass().getName());
       return false;
@@ -497,6 +498,7 @@ public class ContainersMonitorImpl extends AbstractService implements
     public void run() {
 
       while (!stopped && !Thread.currentThread().isInterrupted()) {
+        long start = Time.monotonicNow();
         // Print the processTrees for debugging.
         if (LOG.isDebugEnabled()) {
           StringBuilder tmp = new StringBuilder("[ ");
@@ -537,6 +539,14 @@ public class ContainersMonitorImpl extends AbstractService implements
             pTree.updateProcessTree();    // update process-tree
             long currentVmemUsage = pTree.getVirtualMemorySize();
             long currentPmemUsage = pTree.getRssMemorySize();
+            if (currentVmemUsage < 0 || currentPmemUsage < 0) {
+              // YARN-6862/YARN-5021 If the container just exited or for
+              // another reason the physical/virtual memory is UNAVAILABLE (-1)
+              // the values shouldn't be aggregated.
+              LOG.info("Skipping monitoring container {} because "
+                  + "memory usage is not available.", containerId);
+              continue;
+            }
 
             // if machine has 6 cores and 3 are used,
             // cpuUsagePercentPerCore should be 300%
@@ -579,6 +589,9 @@ public class ContainersMonitorImpl extends AbstractService implements
         // Save the aggregated utilization of the containers
         setContainersUtilization(trackedContainersUtilization);
 
+        long duration = Time.monotonicNow() - start;
+        LOG.debug("Finished monitoring container cost {} ms", duration);
+
         // Publish the container utilization metrics to node manager
         // metrics system.
         NodeManagerMetrics nmMetrics = context.getNodeManagerMetrics();
@@ -589,6 +602,7 @@ public class ContainersMonitorImpl extends AbstractService implements
               trackedContainersUtilization.getVirtualMemory());
           nmMetrics.setContainerCpuUtilization(
               trackedContainersUtilization.getCPU());
+          nmMetrics.addContainerMonitorCostTime(duration);
         }
 
         try {

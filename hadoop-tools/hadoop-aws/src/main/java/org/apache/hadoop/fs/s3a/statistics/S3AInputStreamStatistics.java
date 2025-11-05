@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.fs.s3a.statistics;
 
+import org.apache.hadoop.fs.impl.prefetch.PrefetchingStatistics;
+import org.apache.hadoop.fs.s3a.impl.streams.InputStreamType;
 import org.apache.hadoop.fs.statistics.DurationTracker;
 
 /**
@@ -26,7 +28,7 @@ import org.apache.hadoop.fs.statistics.DurationTracker;
  * It also contains getters for tests.
  */
 public interface S3AInputStreamStatistics extends AutoCloseable,
-    S3AStatisticInterface {
+    S3AStatisticInterface, PrefetchingStatistics {
 
   /**
    * Seek backwards, incrementing the seek and backward seek counters.
@@ -51,6 +53,13 @@ public interface S3AInputStreamStatistics extends AutoCloseable,
    * @return the previous count or zero if this is the first opening.
    */
   long streamOpened();
+
+  /**
+   * A stream of the given type was opened.
+   * @param type type of input stream
+   *  @return the previous count or zero if this is the first opening.
+   */
+  long streamOpened(InputStreamType type);
 
   /**
    * The inner stream was closed.
@@ -95,6 +104,20 @@ public interface S3AInputStreamStatistics extends AutoCloseable,
    * @param actual the actual number of bytes
    */
   void readOperationCompleted(int requested, int actual);
+
+  /**
+   * A vectored read operation has started..
+   * @param numIncomingRanges number of input ranges.
+   * @param numCombinedRanges number of combined ranges.
+   */
+  void readVectoredOperationStarted(int numIncomingRanges,
+                                    int numCombinedRanges);
+
+  /**
+   * Number of bytes discarded during vectored read.
+   * @param discarded discarded bytes during vectored read.
+   */
+  void readVectoredBytesDiscarded(int discarded);
 
   @Override
   void close();
@@ -188,4 +211,15 @@ public interface S3AInputStreamStatistics extends AutoCloseable,
    */
   DurationTracker initiateGetRequest();
 
+  /**
+   * Initiate a stream close/abort.
+   * @param abort was the stream aborted?
+   * @return duration tracker;
+   */
+  DurationTracker initiateInnerStreamClose(boolean abort);
+
+  /**
+   * Stream was leaked.
+   */
+  default void streamLeaked() {};
 }

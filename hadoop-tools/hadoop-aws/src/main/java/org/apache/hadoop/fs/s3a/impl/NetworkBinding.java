@@ -19,17 +19,13 @@
 package org.apache.hadoop.fs.s3a.impl;
 
 import java.io.IOException;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
 import java.net.URISyntaxException;
 
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.SSLSocketFactory;
-
-import com.amazonaws.ClientConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.net.NetUtils;
@@ -43,29 +39,29 @@ import static org.apache.hadoop.fs.s3a.Constants.SSL_CHANNEL_MODE;
 /**
  * Configures network settings when communicating with AWS services.
  */
-public class NetworkBinding {
+public final class NetworkBinding {
 
   private static final Logger LOG =
           LoggerFactory.getLogger(NetworkBinding.class);
-  private static final String AWS_SOCKET_FACTORY_CLASSNAME = "com.amazonaws" +
-          ".thirdparty.apache.http.conn.ssl.SSLConnectionSocketFactory";
+  private static final String BINDING_CLASSNAME = "org.apache.hadoop.fs.s3a.impl.ConfigureShadedAWSSocketFactory";
+
+  private NetworkBinding() {
+  }
 
   /**
    * Configures the {@code SSLConnectionSocketFactory} used by the AWS SDK.
    * A custom Socket Factory can be set using the method
    * {@code setSslSocketFactory()}.
-   * If {@code SSLConnectionSocketFactory} cannot be found on the classpath, the value
-   * of {@link org.apache.hadoop.fs.s3a.Constants#SSL_CHANNEL_MODE} is ignored.
-   *
+   * Uses reflection to do this via {@link ConfigureShadedAWSSocketFactory}
+   * so as to avoid 
    * @param conf the {@link Configuration} used to get the client specified
    *             value of {@code SSL_CHANNEL_MODE}
-   * @param awsConf the {@code ClientConfiguration} to set the
-   *                SSLConnectionSocketFactory for.
+   * @param httpClientBuilder the http client builder.
    * @throws IOException if there is an error while initializing the
    * {@code SSLSocketFactory} other than classloader problems.
    */
   public static void bindSSLChannelMode(Configuration conf,
-      ClientConfiguration awsConf) throws IOException {
+      ApacheHttpClient.Builder httpClientBuilder) throws IOException {
 
     // Validate that SSL_CHANNEL_MODE is set to a valid value.
     String channelModeString = conf.getTrimmed(
@@ -84,26 +80,42 @@ public class NetworkBinding {
 
     DelegatingSSLSocketFactory.initializeDefaultFactory(channelMode);
     try {
-      // Look for AWS_SOCKET_FACTORY_CLASSNAME on the classpath and instantiate
-      // an instance using the DelegatingSSLSocketFactory as the
-      // SSLSocketFactory.
-      Class<?> sslConnectionSocketFactory = Class.forName(
-              AWS_SOCKET_FACTORY_CLASSNAME);
-      Constructor<?> factoryConstructor =
-              sslConnectionSocketFactory.getDeclaredConstructor(
-                      SSLSocketFactory.class, HostnameVerifier.class);
-      awsConf.getApacheHttpClientConfig().setSslSocketFactory(
-              (com.amazonaws.thirdparty.apache.http.conn.ssl.
-                      SSLConnectionSocketFactory) factoryConstructor
-                      .newInstance(DelegatingSSLSocketFactory
-                                      .getDefaultFactory(),
-                              (HostnameVerifier) null));
+      // use reflection to load in our own binding class.
+      // this is *probably* overkill, but it is how we can be fully confident
+      // that no attempt will be made to load/link to the AWS Shaded SDK except
+      // within this try/catch block
+      Class<? extends ConfigureAWSSocketFactory> clazz =
+          (Class<? extends ConfigureAWSSocketFactory>) Class.forName(BINDING_CLASSNAME);
+      clazz.getConstructor()
+          .newInstance()
+          .configureSocketFactory(httpClientBuilder, channelMode);
     } catch (ClassNotFoundException | NoSuchMethodException |
             IllegalAccessException | InstantiationException |
             InvocationTargetException | LinkageError  e) {
       LOG.debug("Unable to create class {}, value of {} will be ignored",
-              AWS_SOCKET_FACTORY_CLASSNAME, SSL_CHANNEL_MODE, e);
+          BINDING_CLASSNAME, SSL_CHANNEL_MODE, e);
     }
+  }
+
+  /**
+   * Is this an AWS endpoint? looks at end of FQDN.
+   * @param endpoint endpoint
+   * @return true if the endpoint matches the requirements for an aws endpoint.
+   */
+  public static boolean isAwsEndpoint(final String endpoint) {
+    return (endpoint.isEmpty()
+        || endpoint.endsWith(".amazonaws.com")
+        || endpoint.endsWith(".amazonaws.com.cn"));
+  }
+
+  /**
+   * Interface used to bind to the socket factory, allows the code which
+   * works with the shaded AWS libraries to exist in their own class.
+   */
+  interface ConfigureAWSSocketFactory {
+    void configureSocketFactory(ApacheHttpClient.Builder httpClientBuilder,
+        DelegatingSSLSocketFactory.SSLChannelMode channelMode)
+        throws IOException;
   }
 
   /**
@@ -116,7 +128,7 @@ public class NetworkBinding {
    * See also {@code com.amazonaws.services.s3.model.Region.fromValue()}
    * for its conversion logic.
    * @param region region from S3 call.
-   * @return the region to use in DDB etc.
+   * @return the region to use in AWS services.
    */
   public static String fixBucketRegion(final String region) {
     return region == null || region.equals("US")

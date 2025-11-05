@@ -24,13 +24,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hadoop.fs.impl.FutureIOSupport;
 import org.apache.hadoop.fs.statistics.impl.IOStatisticsStore;
 import org.apache.hadoop.test.AbstractHadoopTestBase;
 import org.apache.hadoop.util.functional.FunctionRaisingIOE;
@@ -60,14 +59,14 @@ public class TestDurationTracking extends AbstractHadoopTestBase {
 
   private final AtomicInteger invocationCounter = new AtomicInteger(0);
 
-  @Before
+  @BeforeEach
   public void setup() {
     stats = iostatisticsStore()
         .withDurationTracking(REQUESTS)
         .build();
   }
 
-  @After
+  @AfterEach
   public void teardown() {
     LOG.info("stats {}", stats);
   }
@@ -276,7 +275,7 @@ public class TestDurationTracking extends AbstractHadoopTestBase {
    */
   @Test
   public void testDurationThroughEval() throws Throwable {
-    CompletableFuture<Object> eval = FutureIOSupport.eval(
+    CompletableFuture<Object> eval = FutureIO.eval(
         trackDurationOfOperation(stats, REQUESTS, () -> {
           sleepf(100);
           throw new FileNotFoundException("oops");

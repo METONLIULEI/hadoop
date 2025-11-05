@@ -78,6 +78,7 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
     this(testName, 1);
   }
 
+  @SuppressWarnings("deprecation")
   public MiniMRYarnCluster(String testName, int noOfNMs) {
     this(testName, noOfNMs, false);
   }
@@ -85,6 +86,10 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
   @Deprecated
   public MiniMRYarnCluster(String testName, int noOfNMs, boolean enableAHS) {
     super(testName, 1, noOfNMs, 4, 4, enableAHS);
+  }
+
+  public static String copyAppJarIntoTestDir(String testSubdir) {
+    return JarFinder.getJar(LocalContainerLauncher.class, testSubdir);
   }
 
   public static String getResolvedMRHistoryWebAppURLWithoutScheme(
@@ -101,7 +106,7 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
               JHAdminConfig.DEFAULT_MR_HISTORY_WEBAPP_ADDRESS,
               JHAdminConfig.DEFAULT_MR_HISTORY_WEBAPP_PORT);    }
     address = NetUtils.getConnectAddress(address);
-    StringBuffer sb = new StringBuffer();
+    StringBuilder sb = new StringBuilder();
     InetAddress resolved = address.getAddress();
     if (resolved == null || resolved.isAnyLocalAddress() || 
         resolved.isLoopbackAddress()) {

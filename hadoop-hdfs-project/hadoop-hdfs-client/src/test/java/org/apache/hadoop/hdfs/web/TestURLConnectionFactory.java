@@ -27,13 +27,17 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.security.authentication.client.ConnectionConfigurator;
+import static org.apache.hadoop.security.ssl.FileBasedKeyStoresFactory.SSL_MONITORING_THREAD_NAME;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.apache.hadoop.security.ssl.SSLFactory;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.Test;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.slf4j.LoggerFactory;
 
 public final class TestURLConnectionFactory {
@@ -46,14 +50,14 @@ public final class TestURLConnectionFactory {
       @Override
       public HttpURLConnection configure(HttpURLConnection conn)
           throws IOException {
-        Assert.assertEquals(u, conn.getURL());
+        assertEquals(u, conn.getURL());
         conns.add(conn);
         return conn;
       }
     });
 
     fc.openConnection(u);
-    Assert.assertEquals(1, conns.size());
+    assertEquals(1, conns.size());
   }
 
   @Test
@@ -64,9 +68,9 @@ public final class TestURLConnectionFactory {
         GenericTestUtils.LogCapturer.captureLogs(
             LoggerFactory.getLogger(URLConnectionFactory.class));
     URLConnectionFactory.newDefaultURLConnectionFactory(conf);
-    Assert.assertTrue("Expected log for ssl init failure not found!",
-        logs.getOutput().contains(
-        "Cannot load customized ssl related configuration"));
+    assertTrue(logs.getOutput()
+        .contains("Cannot load customized ssl related configuration"),
+        "Expected log for ssl init failure not found!");
   }
 
   @Test
@@ -99,11 +103,11 @@ public final class TestURLConnectionFactory {
     Thread reloaderThread = null;
     for (Thread thread : threads) {
       if ((thread.getName() != null)
-          && (thread.getName().contains("Truststore reloader thread"))) {
+          && (thread.getName().contains(SSL_MONITORING_THREAD_NAME))) {
         reloaderThread = thread;
       }
     }
-    Assert.assertTrue("Reloader is not alive", reloaderThread.isAlive());
+    assertTrue(reloaderThread.isAlive(), "Reloader is not alive");
 
     fs.close();
 
@@ -115,6 +119,6 @@ public final class TestURLConnectionFactory {
       }
       Thread.sleep(1000);
     }
-    Assert.assertFalse("Reloader is still alive", reloaderStillAlive);
+    assertFalse(reloaderStillAlive, "Reloader is still alive");
   }
 }

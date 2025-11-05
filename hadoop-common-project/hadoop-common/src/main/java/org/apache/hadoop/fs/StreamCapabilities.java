@@ -34,7 +34,11 @@ import org.apache.hadoop.classification.InterfaceStability;
 public interface StreamCapabilities {
   /**
    * Stream hflush capability implemented by {@link Syncable#hflush()}.
+   *
+   * Use the {@link #HSYNC} probe to check for the support of Syncable;
+   * it's that presence of {@code hsync()} which matters.
    */
+  @Deprecated
   String HFLUSH = "hflush";
 
   /**
@@ -75,6 +79,35 @@ public interface StreamCapabilities {
    * IOStatisticsSource API.
    */
   String IOSTATISTICS = "iostatistics";
+
+  /**
+   * Support for vectored IO api.
+   * See {@code PositionedReadable#readVectored(List, IntFunction)}.
+   */
+  String VECTOREDIO = "in:readvectored";
+
+  /**
+   * Probe for vector IO implementation details: {@value}.
+   * When performing vectored IO operations, are the buffers returned by readVectored()
+   * potentially sliced subsets of buffers allocated by the allocate() function
+   * passed in the read requests?
+   * If true, this means that the returned buffers may be sliced subsets of the
+   * allocated buffers.
+   */
+  String VECTOREDIO_BUFFERS_SLICED = "fs.capability.vectoredio.sliced";
+
+  /**
+   * Stream abort() capability implemented by {@link Abortable#abort()}.
+   * This matches the Path Capability
+   * {@link CommonPathCapabilities#ABORTABLE_STREAM}.
+   */
+  String ABORTABLE_STREAM =  CommonPathCapabilities.ABORTABLE_STREAM;
+
+  /**
+   * Streams that support IOStatistics context and capture thread-level
+   * IOStatistics.
+   */
+  String IOSTATISTICS_CONTEXT = "fs.capability.iocontext.supported";
 
   /**
    * Capabilities that a stream can support and be queried for.

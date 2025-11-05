@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.federation.resolver.order;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -42,8 +42,7 @@ import org.apache.hadoop.hdfs.server.federation.store.protocol.GetNamenodeRegist
 import org.apache.hadoop.hdfs.server.federation.store.protocol.GetNamenodeRegistrationsResponse;
 import org.apache.hadoop.hdfs.server.federation.store.records.MembershipState;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
-import org.junit.Test;
-import org.mockito.invocation.InvocationOnMock;
+import org.junit.jupiter.api.Test;
 import org.mockito.stubbing.Answer;
 
 /**
@@ -78,12 +77,8 @@ public class TestLocalResolver {
     StringBuilder sb = new StringBuilder("clientX");
     LocalResolver localResolver = new LocalResolver(conf, router);
     LocalResolver spyLocalResolver = spy(localResolver);
-    doAnswer(new Answer<String>() {
-      @Override
-      public String answer(InvocationOnMock invocation) throws Throwable {
-        return sb.toString();
-      }
-    }).when(spyLocalResolver).getClientAddr();
+    doAnswer((Answer<String>) invocation -> sb.toString()
+        ).when(spyLocalResolver).getClientAddr();
 
     // Add the mocks to the resolver
     MultipleDestinationMountTableResolver resolver =

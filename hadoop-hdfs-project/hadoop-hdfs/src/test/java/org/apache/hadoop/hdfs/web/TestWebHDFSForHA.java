@@ -19,6 +19,9 @@
 package org.apache.hadoop.hdfs.web;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
@@ -54,8 +57,8 @@ import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.security.token.SecretManager;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.test.Whitebox;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.eclipse.jetty.util.ajax.JSON;
 
 import javax.servlet.http.HttpServletResponse;
@@ -87,15 +90,15 @@ public class TestWebHDFSForHA {
       cluster.transitionToActive(0);
 
       final Path dir = new Path("/test");
-      Assert.assertTrue(fs.mkdirs(dir));
+      assertTrue(fs.mkdirs(dir));
 
       cluster.shutdownNameNode(0);
       cluster.transitionToActive(1);
 
       final Path dir2 = new Path("/test2");
-      Assert.assertTrue(fs.mkdirs(dir2));
+      assertTrue(fs.mkdirs(dir2));
     } finally {
-      IOUtils.cleanup(null, fs);
+      IOUtils.cleanupWithLogger(null, fs);
       if (cluster != null) {
         cluster.shutdown();
       }
@@ -130,7 +133,7 @@ public class TestWebHDFSForHA {
       verify(fs).renewDelegationToken(token);
       verify(fs).cancelDelegationToken(token);
     } finally {
-      IOUtils.cleanup(null, fs);
+      IOUtils.cleanupWithLogger(null, fs);
       if (cluster != null) {
         cluster.shutdown();
       }
@@ -174,7 +177,7 @@ public class TestWebHDFSForHA {
       } catch (IOException e) {
         // Mimic the UserProvider class logic (server side) by throwing
         // SecurityException here
-        Assert.assertTrue(e instanceof SecretManager.InvalidToken);
+        assertTrue(e instanceof SecretManager.InvalidToken);
         resp = eh.toResponse(new SecurityException(e));
       }
       // The Response (resp) below is what the server will send to client
@@ -197,9 +200,9 @@ public class TestWebHDFSForHA {
       Map<?, ?> m = (Map<?, ?>) JSON.parse(resp.getEntity().toString());
       RemoteException re = JsonUtilClient.toRemoteException(m);
       Exception unwrapped = re.unwrapRemoteException(StandbyException.class);
-      Assert.assertTrue(unwrapped instanceof StandbyException);
+      assertTrue(unwrapped instanceof StandbyException);
     } finally {
-      IOUtils.cleanup(null, fs);
+      IOUtils.cleanupWithLogger(null, fs);
       if (cluster != null) {
         cluster.shutdown();
       }
@@ -236,9 +239,9 @@ public class TestWebHDFSForHA {
       FSDataInputStream in = fs.open(p);
       byte[] buf = new byte[data.length];
       IOUtils.readFully(in, buf, 0, buf.length);
-      Assert.assertArrayEquals(data, buf);
+      assertArrayEquals(data, buf);
     } finally {
-      IOUtils.cleanup(null, fs);
+      IOUtils.cleanupWithLogger(null, fs);
       if (cluster != null) {
         cluster.shutdown();
       }
@@ -262,9 +265,9 @@ public class TestWebHDFSForHA {
       DFSTestUtil.setFakeHttpAddresses(conf, LOGICAL_NAME + "remote");
 
       fs = (WebHdfsFileSystem)FileSystem.get(WEBHDFS_URI, conf);
-      Assert.assertEquals(2, fs.getResolvedNNAddr().length);
+      assertEquals(2, fs.getResolvedNNAddr().length);
     } finally {
-      IOUtils.cleanup(null, fs);
+      IOUtils.cleanupWithLogger(null, fs);
       if (cluster != null) {
         cluster.shutdown();
       }
@@ -275,7 +278,8 @@ public class TestWebHDFSForHA {
    * Make sure the WebHdfsFileSystem will retry based on RetriableException when
    * rpcServer is null in NamenodeWebHdfsMethods while NameNode starts up.
    */
-  @Test (timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testRetryWhileNNStartup() throws Exception {
     final Configuration conf = DFSTestUtil.newHAConfiguration(LOGICAL_NAME);
     MiniDFSCluster cluster = null;
@@ -304,7 +308,7 @@ public class TestWebHDFSForHA {
           } catch (IOException e) {
             result = false;
           } finally {
-            IOUtils.cleanup(null, fs);
+            IOUtils.cleanupWithLogger(null, fs);
           }
           synchronized (TestWebHDFSForHA.this) {
             resultMap.put("mkdirs", result);
@@ -319,7 +323,7 @@ public class TestWebHDFSForHA {
         while (!resultMap.containsKey("mkdirs")) {
           this.wait();
         }
-        Assert.assertTrue(resultMap.get("mkdirs"));
+        assertTrue(resultMap.get("mkdirs"));
       }
     } finally {
       if (cluster != null) {

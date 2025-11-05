@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.tools.dynamometer.workloadgenerator.audit;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.util.Lists;
 import java.util.Optional;
 import java.util.function.Function;
 
@@ -169,6 +169,7 @@ public class AuditReplayMapper extends WorkloadMapper<LongWritable, Text,
   private int numThreads;
   private double rateFactor;
   private long highestTimestamp;
+  private Long highestSequence;
   private List<AuditReplayThread> threads;
   private DelayQueue<AuditReplayCommand> commandQueue;
   private Function<Long, Long> relativeToAbsoluteTimestamp;
@@ -246,7 +247,7 @@ public class AuditReplayMapper extends WorkloadMapper<LongWritable, Text,
   @Override
   public void map(LongWritable lineNum, Text inputLine, Mapper.Context context)
       throws IOException, InterruptedException {
-    AuditReplayCommand cmd = commandParser.parse(inputLine,
+    AuditReplayCommand cmd = commandParser.parse(lineNum.get(), inputLine,
         relativeToAbsoluteTimestamp);
     long delay = cmd.getDelay(TimeUnit.MILLISECONDS);
     // Prevent from loading too many elements into memory all at once
@@ -255,6 +256,7 @@ public class AuditReplayMapper extends WorkloadMapper<LongWritable, Text,
     }
     commandQueue.put(cmd);
     highestTimestamp = cmd.getAbsoluteTimestamp();
+    highestSequence = cmd.getSequence();
   }
 
   @Override

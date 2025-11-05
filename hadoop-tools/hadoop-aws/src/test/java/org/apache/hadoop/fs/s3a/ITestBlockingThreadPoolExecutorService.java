@@ -18,32 +18,33 @@
 
 package org.apache.hadoop.fs.s3a;
 
-import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ListenableFuture;
+import org.apache.hadoop.test.AbstractHadoopTestBase;
 import org.apache.hadoop.util.BlockingThreadPoolExecutorService;
 import org.apache.hadoop.util.SemaphoredDelegatingExecutor;
 import org.apache.hadoop.util.StopWatch;
 
-import org.junit.AfterClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Basic test for S3A's blocking executor service.
  */
-public class ITestBlockingThreadPoolExecutorService {
+@Timeout(60)
+public class ITestBlockingThreadPoolExecutorService extends AbstractHadoopTestBase {
 
   private static final Logger LOG = LoggerFactory.getLogger(
-      BlockingThreadPoolExecutorService.class);
+      ITestBlockingThreadPoolExecutorService.class);
 
   private static final int NUM_ACTIVE_TASKS = 4;
   private static final int NUM_WAITING_TASKS = 2;
@@ -56,10 +57,7 @@ public class ITestBlockingThreadPoolExecutorService {
 
   private static BlockingThreadPoolExecutorService tpe;
 
-  @Rule
-  public Timeout testTimeout = new Timeout(60 * 1000);
-
-  @AfterClass
+  @AfterAll
   public static void afterClass() throws Exception {
     ensureDestroyed();
   }
@@ -70,7 +68,7 @@ public class ITestBlockingThreadPoolExecutorService {
   @Test
   public void testSubmitCallable() throws Exception {
     ensureCreated();
-    ListenableFuture<Integer> f = tpe.submit(callableSleeper);
+    Future<Integer> f = tpe.submit(callableSleeper);
     Integer v = f.get();
     assertEquals(SOME_VALUE, v);
   }

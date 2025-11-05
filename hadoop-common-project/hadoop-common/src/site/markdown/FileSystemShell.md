@@ -37,9 +37,15 @@ See the [Commands Manual](./CommandsManual.html) for generic shell options.
 appendToFile
 ------------
 
-Usage: `hadoop fs -appendToFile <localsrc> ... <dst> `
+Usage: `hadoop fs -appendToFile [-n] <localsrc> ... <dst>`
 
 Append single src, or multiple srcs from local file system to the destination file system. Also reads input from stdin and appends to destination file system.
+
+Options
+
+* The `-n` option represents that use NEW_BLOCK create flag to append file.
+
+Example:
 
 * `hadoop fs -appendToFile localfile /user/hadoop/hadoopfile`
 * `hadoop fs -appendToFile localfile1 localfile2 /user/hadoop/hadoopfile`
@@ -59,7 +65,7 @@ Copies source paths to stdout.
 
 Options
 
-* The `-ignoreCrc` option disables checkshum verification.
+* The `-ignoreCrc` option disables checksum verification.
 
 Example:
 
@@ -73,18 +79,19 @@ Returns 0 on success and -1 on error.
 checksum
 --------
 
-Usage: `hadoop fs -checksum [-v] URI`
+Usage: `hadoop fs -checksum [-v] URI [URI ...]`
 
-Returns the checksum information of a file.
+Returns the checksum information of the file(s).
 
 Options
 
-* The `-v` option displays blocks size for the file.
+* The `-v` option displays blocks size for the file(s).
 
 Example:
 
 * `hadoop fs -checksum hdfs://nn1.example.com/file1`
 * `hadoop fs -checksum file:///etc/hosts`
+* `hadoop fs -checksum file:///etc/hosts hdfs://nn1.example.com/file1`
 
 chgrp
 -----
@@ -136,13 +143,13 @@ Usage: `hadoop fs -count [-q] [-h] [-v] [-x] [-t [<storage type>]] [-u] [-e] [-s
 
 Count the number of directories, files and bytes under the paths that match the specified file pattern. Get the quota and the usage. The output columns with -count are: DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
 
-The -u and -q options control what columns the output contains.  -q means show quotas, -u limits the output to show quotas and usage only.
+The -u and -q options control what columns the output contains.  -q means show quotas and usage, -u limits the output to show quotas only.
 
 The output columns with -count -q are: QUOTA, REMAINING\_QUOTA, SPACE\_QUOTA, REMAINING\_SPACE\_QUOTA, DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
 
 The output columns with -count -u are: QUOTA, REMAINING\_QUOTA, SPACE\_QUOTA, REMAINING\_SPACE\_QUOTA, PATHNAME
 
-The -t option shows the quota and usage for each storage type. The -t option is ignored if -u or -q option is not given. The list of possible parameters that can be used in -t option(case insensitive except the parameter ""): "", "all", "ram_disk", "ssd", "disk" or "archive".
+The -t option shows the quota and usage for each storage type. The -t option is ignored if -u or -q option is not given. The list of possible parameters that can be used in -t option(case insensitive except the parameter): "", "all", "ram_disk", "ssd", "disk" or "archive".
 
 The -h option shows sizes in human readable format.
 
@@ -177,7 +184,7 @@ Returns 0 on success and -1 on error.
 cp
 ----
 
-Usage: `hadoop fs -cp [-f] [-p | -p[topax]] URI [URI ...] <dest> `
+Usage: `hadoop fs -cp [-f] [-p | -p[topax]] [-d] [-t <thread count>] [-q <thread pool queue size>] URI [URI ...] <dest>`
 
 Copy files from source to destination. This command allows multiple sources as well in which case the destination must be a directory.
 
@@ -185,13 +192,19 @@ Copy files from source to destination. This command allows multiple sources as w
 
 Options:
 
-* The -f option will overwrite the destination if it already exists.
-* The -p option will preserve file attributes [topx] (timestamps, ownership, permission, ACL, XAttr). If -p is specified with no *arg*, then preserves timestamps, ownership, permission. If -pa is specified, then preserves permission also because ACL is a super-set of permission. Determination of whether raw namespace extended attributes are preserved is independent of the -p flag.
+* `-f` : Overwrite the destination if it already exists.
+* `-d` : Skip creation of temporary file with the suffix `._COPYING_`.
+* `-p` : Preserve file attributes [topax] (timestamps, ownership, permission, ACL, XAttr). If -p is specified with no *arg*, then preserves timestamps, ownership, permission. If -pa is specified, then preserves permission also because ACL is a super-set of permission. Determination of whether raw namespace extended attributes are preserved is independent of the -p flag.
+* `-t <thread count>` : Number of threads to be used, default is 1. Useful when copying directories containing more than 1 file.
+* `-q <thread pool queue size>` : Thread pool queue size to be used, default is 1024. It takes effect only when thread count greater than 1.
 
 Example:
 
 * `hadoop fs -cp /user/hadoop/file1 /user/hadoop/file2`
+* `hadoop fs -cp -f -d /user/hadoop/file1 /user/hadoop/file2`
 * `hadoop fs -cp /user/hadoop/file1 /user/hadoop/file2 /user/hadoop/dir`
+* `hadoop fs -cp -t 5 /user/hadoop/file1 /user/hadoop/file2 /user/hadoop/dir`
+* `hadoop fs -cp -t 10 -q 2048 /user/hadoop/file1 /user/hadoop/file2 /user/hadoop/dir`
 
 Exit Code:
 
@@ -282,7 +295,7 @@ rather than the default filesystem and checkpoint is created.
 For example
 
 ```
-hadoop fs -expunge --immediate -fs s3a://landsat-pds/
+hadoop fs -expunge -immediate -fs s3a://landsat-pds/
 ```
 
 Refer to the
@@ -323,26 +336,32 @@ Returns 0 on success and -1 on error.
 get
 ---
 
-Usage: `hadoop fs -get [-ignorecrc] [-crc] [-p] [-f] <src> <localdst> `
+Usage: `hadoop fs -get [-ignoreCrc] [-crc] [-p] [-f] [-t <thread count>] [-q <thread pool queue size>] <src> ... <localdst> `
 
-Copy files to the local file system. Files that fail the CRC check may be copied with the -ignorecrc option. Files and CRCs may be copied using the -crc option.
+Copy files to the local file system. Files that fail the CRC check may be copied with the -ignoreCrc option. Files and CRCs may be copied using the -crc option.
+
+Options:
+
+* `-p` : Preserves access and modification times, ownership and the permissions.
+  (assuming the permissions can be propagated across filesystems)
+* `-f` : Overwrites the destination if it already exists.
+* `-ignoreCrc` : Skip CRC checks on the file(s) downloaded.
+* `-crc`: write CRC checksums for the files downloaded.
+* `-t <thread count>` : Number of threads to be used, default is 1.
+  Useful when downloading directories containing more than 1 file.
+* `-q <thread pool queue size>` : Thread pool queue size to be used, default is 1024.
+  It takes effect only when thread count greater than 1.
 
 Example:
 
 * `hadoop fs -get /user/hadoop/file localfile`
 * `hadoop fs -get hdfs://nn.example.com/user/hadoop/file localfile`
+* `hadoop fs -get -t 10 hdfs://nn.example.com/user/hadoop/dir1 localdir`
+* `hadoop fs -get -t 10 -q 2048 hdfs://nn.example.com/user/hadoop/dir* localdir`
 
 Exit Code:
 
 Returns 0 on success and -1 on error.
-
-Options:
-
-* `-p` : Preserves access and modification times, ownership and the permissions.
-(assuming the permissions can be propagated across filesystems)
-* `-f` : Overwrites the destination if it already exists.
-* `-ignorecrc` : Skip CRC checks on the file(s) downloaded.
-* `-crc`: write CRC checksums for the files downloaded.
 
 getfacl
 -------
@@ -392,7 +411,7 @@ Returns 0 on success and non-zero on error.
 getmerge
 --------
 
-Usage: `hadoop fs -getmerge [-nl] <src> <localdst>`
+Usage: `hadoop fs -getmerge [-nl] [-skip-empty-file] <src> <localdst>`
 
 Takes a source directory and a destination file as input and concatenates files in src into the destination local file. Optionally -nl can be set to enable adding a newline character (LF) at the end of each file.
 -skip-empty-file can be used to avoid unwanted newline characters in case of empty files.
@@ -401,6 +420,7 @@ Examples:
 
 * `hadoop fs -getmerge -nl  /src  /opt/output.txt`
 * `hadoop fs -getmerge -nl  /src/file1.txt /src/file2.txt  /output.txt`
+* `hadoop fs -getmerge -nl -skip-empty-file /src/file1.txt /src/file2.txt /output.txt`
 
 Exit Code:
 
@@ -525,7 +545,7 @@ Returns 0 on success and -1 on error.
 put
 ---
 
-Usage: `hadoop fs -put  [-f] [-p] [-l] [-d] [-t <thread count>] [ - | <localsrc1>  .. ]. <dst>`
+Usage: `hadoop fs -put  [-f] [-p] [-l] [-d] [-t <thread count>] [-q <thread pool queue size>] [ - | <localsrc> ...] <dst>`
 
 Copy single src, or multiple srcs from local file system to the destination file system.
 Also reads input from stdin and writes to destination file system if the source is set to "-"
@@ -537,11 +557,13 @@ Options:
 * `-p` : Preserves access and modification times, ownership and the permissions.
 (assuming the permissions can be propagated across filesystems)
 * `-f` : Overwrites the destination if it already exists.
-* `-t <thread count>` : Number of threads to be used, default is 1. Useful
- when uploading a directory containing more than 1 file.
 * `-l` : Allow DataNode to lazily persist the file to disk, Forces a replication
  factor of 1. This flag will result in reduced durability. Use with care.
 * `-d` : Skip creation of temporary file with the suffix `._COPYING_`.
+* `-t <thread count>` : Number of threads to be used, default is 1.
+ Useful when uploading directories containing more than 1 file.
+* `-q <thread pool queue size>` : Thread pool queue size to be used, default is 1024.
+ It takes effect only when thread count greater than 1.
 
 
 Examples:
@@ -550,6 +572,8 @@ Examples:
 * `hadoop fs -put -f localfile1 localfile2 /user/hadoop/hadoopdir`
 * `hadoop fs -put -d localfile hdfs://nn.example.com/hadoop/hadoopfile`
 * `hadoop fs -put - hdfs://nn.example.com/hadoop/hadoopfile` Reads the input from stdin.
+* `hadoop fs -put -t 5 localdir hdfs://nn.example.com/hadoop/hadoopdir`
+* `hadoop fs -put -t 10 -q 2048 localdir1 localdir2 hdfs://nn.example.com/hadoop/hadoopdir`
 
 Exit Code:
 
@@ -760,7 +784,7 @@ timestamp of that URI.
 
 * Use -a option to change only the access time
 * Use -m option to change only the modification time
-* Use -t option to specify timestamp (in format yyyyMMddHHmmss) instead of current time
+* Use -t option to specify timestamp (in format yyyyMMdd:HHmmss) instead of current time
 * Use -c option to not create file if it does not exist
 
 The timestamp format is as follows
@@ -770,13 +794,13 @@ The timestamp format is as follows
 * HH Two digit hour of the day using 24 hour notation (e.g. 23 stands for 11 pm, 11 stands for 11 am)
 * mm Two digit minutes of the hour
 * ss Two digit seconds of the minute
-e.g. 20180809230000 represents August 9th 2018, 11pm
+e.g. 20180809:230000 represents August 9th 2018, 11pm
 
 Example:
 
 * `hadoop fs -touch pathname`
-* `hadoop fs -touch -m -t 20180809230000 pathname`
-* `hadoop fs -touch -t 20180809230000 pathname`
+* `hadoop fs -touch -m -t 20180809:230000 pathname`
+* `hadoop fs -touch -t 20180809:230000 pathname`
 * `hadoop fs -touch -a pathname`
 
 Exit Code: Returns 0 on success and -1 on error.
@@ -837,7 +861,7 @@ Return the help for an individual command.
 ====================================================
 
 The Hadoop FileSystem shell works with Object Stores such as Amazon S3,
-Azure WASB and OpenStack Swift.
+Azure ABFS and Google GCS.
 
 
 
@@ -957,7 +981,7 @@ this will be in the bucket; the `rm` operation will then take time proportional
 to the size of the data. Furthermore, the deleted files will continue to incur
 storage costs.
 
-To avoid this, use the the `-skipTrash` option.
+To avoid this, use the `-skipTrash` option.
 
 ```bash
 hadoop fs -rm -skipTrash s3a://bucket/dataset

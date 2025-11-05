@@ -22,6 +22,11 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.contract.AbstractContractMultipartUploaderTest;
 import org.apache.hadoop.fs.contract.AbstractFSContract;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
+import org.apache.hadoop.test.tags.IntegrationTest;
+import org.apache.hadoop.test.tags.ScaleTest;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import static org.apache.hadoop.fs.contract.ContractTestUtils.skip;
 import static org.apache.hadoop.fs.s3a.S3ATestConstants.DEFAULT_SCALE_TESTS_ENABLED;
@@ -29,9 +34,10 @@ import static org.apache.hadoop.fs.s3a.S3ATestConstants.KEY_HUGE_PARTITION_SIZE;
 import static org.apache.hadoop.fs.s3a.S3ATestConstants.KEY_SCALE_TESTS_ENABLED;
 import static org.apache.hadoop.fs.s3a.S3ATestConstants.SCALE_TEST_TIMEOUT_MILLIS;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.assume;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.assumeNotS3ExpressFileSystem;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.getTestPropertyBool;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.getTestPropertyBytes;
-import static org.apache.hadoop.fs.s3a.S3ATestUtils.maybeEnableS3Guard;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.skipIfAnalyticsAcceleratorEnabled;
 import static org.apache.hadoop.fs.s3a.scale.AbstractSTestS3AHugeFiles.DEFAULT_HUGE_PARTITION_SIZE;
 
 /**
@@ -41,6 +47,8 @@ import static org.apache.hadoop.fs.s3a.scale.AbstractSTestS3AHugeFiles.DEFAULT_H
  * to enable it, and partition size option to control the size of
  * parts uploaded.
  */
+@IntegrationTest
+@ScaleTest
 public class ITestS3AContractMultipartUploader extends
     AbstractContractMultipartUploaderTest {
 
@@ -65,17 +73,6 @@ public class ITestS3AContractMultipartUploader extends
     return (S3AFileSystem) super.getFileSystem();
   }
 
-  /**
-   * Create a configuration, possibly patching in S3Guard options.
-   * @return a configuration
-   */
-  @Override
-  protected Configuration createConfiguration() {
-    Configuration conf = super.createConfiguration();
-    maybeEnableS3Guard(conf);
-    return conf;
-  }
-
   @Override
   protected AbstractFSContract createContract(Configuration conf) {
     return new S3AContract(conf);
@@ -96,20 +93,12 @@ public class ITestS3AContractMultipartUploader extends
     return true;
   }
 
-  /**
-   * Provide a pessimistic time to become consistent.
-   * @return a time in milliseconds
-   */
-  @Override
-  protected int timeToBecomeConsistentMillis() {
-    return 30 * 1000;
-  }
-
   @Override
   protected boolean finalizeConsumesUploadIdImmediately() {
     return false;
   }
 
+  @BeforeEach
   @Override
   public void setup() throws Exception {
     super.setup();
@@ -129,12 +118,35 @@ public class ITestS3AContractMultipartUploader extends
   /**
    * S3 has no concept of directories, so this test does not apply.
    */
+  @Test
+  @Override
   public void testDirectoryInTheWay() throws Exception {
-    skip("unsupported");
+    skip("Unsupported");
   }
 
+  @Test
   @Override
   public void testMultipartUploadReverseOrder() throws Exception {
     skip("skipped for speed");
+  }
+
+  @Test
+  @Override
+  public void testMultipartUploadReverseOrderNonContiguousPartNumbers() throws Exception {
+    assumeNotS3ExpressFileSystem(getFileSystem());
+    super.testMultipartUploadReverseOrderNonContiguousPartNumbers();
+  }
+
+  @Test
+  @Override
+  public void testConcurrentUploads() throws Throwable {
+    assumeNotS3ExpressFileSystem(getFileSystem());
+    // Currently analytics accelerator does not support reading of files that have been overwritten.
+    // This is because the analytics accelerator library caches metadata and data, and when a file
+    // is overwritten, the old data continues to be used, until it is removed from the cache over
+    // time. This will be fixed in https://github.com/awslabs/analytics-accelerator-s3/issues/218.
+    skipIfAnalyticsAcceleratorEnabled(getContract().getConf(),
+        "Analytics Accelerator currently does not support reading of over written files");
+    super.testConcurrentUploads();
   }
 }

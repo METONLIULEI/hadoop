@@ -17,20 +17,26 @@
  */
 package org.apache.hadoop.fs.http.client;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.List;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.type.MapType;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.CommonPathCapabilities;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.DelegationTokenRenewer;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FsStatus;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -53,6 +59,7 @@ import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
 import org.apache.hadoop.hdfs.protocol.FsPermissionExtension;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
+import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing;
 import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
 import org.apache.hadoop.hdfs.protocol.SnapshotStatus;
 import org.apache.hadoop.hdfs.web.JsonUtilClient;
@@ -64,6 +71,7 @@ import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthentica
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticator;
 import org.apache.hadoop.security.token.delegation.web.KerberosDelegationTokenAuthenticator;
 import org.apache.hadoop.util.HttpExceptionUtils;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
@@ -72,8 +80,7 @@ import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 import java.io.BufferedInputStream;
@@ -92,7 +99,6 @@ import java.net.URL;
 import java.security.PrivilegedExceptionAction;
 import java.text.MessageFormat;
 import java.util.HashMap;
-import java.util.Locale;
 import java.util.Map;
 
 import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapabilityArgs;
@@ -136,8 +142,13 @@ public class HttpFSFileSystem extends FileSystem
   public static final String POLICY_NAME_PARAM = "storagepolicy";
   public static final String SNAPSHOT_NAME_PARAM = "snapshotname";
   public static final String OLD_SNAPSHOT_NAME_PARAM = "oldsnapshotname";
+  public static final String SNAPSHOT_DIFF_START_PATH = "snapshotdiffstartpath";
+  public static final String SNAPSHOT_DIFF_INDEX = "snapshotdiffindex";
   public static final String FSACTION_MODE_PARAM = "fsaction";
   public static final String EC_POLICY_NAME_PARAM = "ecpolicy";
+  public static final String OFFSET_PARAM = "offset";
+  public static final String LENGTH_PARAM = "length";
+  public static final String ALLUSERS_PARAM = "allusers";
 
   public static final Short DEFAULT_PERMISSION = 0755;
   public static final String ACLSPEC_DEFAULT = "";
@@ -180,6 +191,7 @@ public class HttpFSFileSystem extends FileSystem
 
   public static final String FILE_STATUSES_JSON = "FileStatuses";
   public static final String FILE_STATUS_JSON = "FileStatus";
+  public static final String FS_STATUS_JSON = "FsStatus";
   public static final String PATH_SUFFIX_JSON = "pathSuffix";
   public static final String TYPE_JSON = "type";
   public static final String LENGTH_JSON = "length";
@@ -200,6 +212,9 @@ public class HttpFSFileSystem extends FileSystem
   public static final String XATTRNAMES_JSON = "XAttrNames";
   public static final String ECPOLICY_JSON = "ecPolicyObj";
   public static final String SYMLINK_JSON = "symlink";
+  public static final String CAPACITY_JSON = "capacity";
+  public static final String USED_JSON = "used";
+  public static final String REMAINING_JSON = "remaining";
 
   public static final String FILE_CHECKSUM_JSON = "FileChecksum";
   public static final String CHECKSUM_ALGORITHM_JSON = "algorithm";
@@ -237,6 +252,7 @@ public class HttpFSFileSystem extends FileSystem
 
   public static final String STORAGE_POLICIES_JSON = "BlockStoragePolicies";
   public static final String STORAGE_POLICY_JSON = "BlockStoragePolicy";
+  public static final String BLOCK_LOCATIONS_JSON = "BlockLocations";
 
   public static final int HTTP_TEMPORARY_REDIRECT = 307;
 
@@ -266,8 +282,14 @@ public class HttpFSFileSystem extends FileSystem
     RENAMESNAPSHOT(HTTP_PUT), GETSNAPSHOTDIFF(HTTP_GET),
     GETSNAPSHOTTABLEDIRECTORYLIST(HTTP_GET), GETSNAPSHOTLIST(HTTP_GET),
     GETSERVERDEFAULTS(HTTP_GET),
-    CHECKACCESS(HTTP_GET), SETECPOLICY(HTTP_PUT), GETECPOLICY(
-        HTTP_GET), UNSETECPOLICY(HTTP_POST), SATISFYSTORAGEPOLICY(HTTP_PUT);
+    CHECKACCESS(HTTP_GET), SETECPOLICY(HTTP_PUT), GETECPOLICY(HTTP_GET), UNSETECPOLICY(
+        HTTP_POST), SATISFYSTORAGEPOLICY(HTTP_PUT), GETSNAPSHOTDIFFLISTING(HTTP_GET),
+    GETFILELINKSTATUS(HTTP_GET),
+    GETSTATUS(HTTP_GET),
+    GETECPOLICIES(HTTP_GET),
+    GETECCODECS(HTTP_GET),
+    GETTRASHROOTS(HTTP_GET),
+    GET_BLOCK_LOCATIONS(HTTP_GET);
 
     private String httpMethod;
 
@@ -774,7 +796,7 @@ public class HttpFSFileSystem extends FileSystem
     Map<String, String> params = new HashMap<String, String>();
     params.put(OP_PARAM, Operation.LISTSTATUS_BATCH.toString());
     if (token != null) {
-      params.put(START_AFTER_PARAM, new String(token, Charsets.UTF_8));
+      params.put(START_AFTER_PARAM, new String(token, StandardCharsets.UTF_8));
     }
     HttpURLConnection conn = getConnection(
         Operation.LISTSTATUS_BATCH.getMethod(),
@@ -789,7 +811,7 @@ public class HttpFSFileSystem extends FileSystem
     byte[] newToken = null;
     if (statuses.length > 0) {
       newToken = statuses[statuses.length - 1].getPath().getName().toString()
-          .getBytes(Charsets.UTF_8);
+          .getBytes(StandardCharsets.UTF_8);
     }
     // Parse the remainingEntries boolean into hasMore
     final long remainingEntries = (Long) listing.get(REMAINING_ENTRIES_JSON);
@@ -1348,7 +1370,7 @@ public class HttpFSFileSystem extends FileSystem
     JSONObject json = (JSONObject) HttpFSUtils.jsonParse(conn);
     Map<String, byte[]> xAttrs = createXAttrMap(
         (JSONArray) json.get(XATTRS_JSON));
-    return xAttrs != null ? xAttrs.get(name) : null;
+    return xAttrs.get(name);
   }
 
   /** Convert xAttrs json to xAttrs map */
@@ -1577,6 +1599,22 @@ public class HttpFSFileSystem extends FileSystem
     return JsonUtilClient.toSnapshotDiffReport(json);
   }
 
+  public SnapshotDiffReportListing getSnapshotDiffReportListing(Path path, String snapshotOldName,
+      String snapshotNewName, byte[] snapshotDiffStartPath, Integer snapshotDiffIndex)
+      throws IOException {
+    Map<String, String> params = new HashMap<>();
+    params.put(OP_PARAM, Operation.GETSNAPSHOTDIFFLISTING.toString());
+    params.put(SNAPSHOT_NAME_PARAM, snapshotNewName);
+    params.put(OLD_SNAPSHOT_NAME_PARAM, snapshotOldName);
+    params.put(SNAPSHOT_DIFF_START_PATH, DFSUtilClient.bytes2String(snapshotDiffStartPath));
+    params.put(SNAPSHOT_DIFF_INDEX, snapshotDiffIndex.toString());
+    HttpURLConnection conn = getConnection(
+        Operation.GETSNAPSHOTDIFFLISTING.getMethod(), params, path, true);
+    HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+    JSONObject json = (JSONObject) HttpFSUtils.jsonParse(conn);
+    return JsonUtilClient.toSnapshotDiffReportListing(json);
+  }
+
   public SnapshottableDirectoryStatus[] getSnapshottableDirectoryList()
       throws IOException {
     Map<String, String> params = new HashMap<String, String>();
@@ -1620,6 +1658,7 @@ public class HttpFSFileSystem extends FileSystem
     case CommonPathCapabilities.FS_SNAPSHOTS:
     case CommonPathCapabilities.FS_STORAGEPOLICY:
     case CommonPathCapabilities.FS_XATTRS:
+    case CommonPathCapabilities.FS_TRUNCATE:
       return true;
     case CommonPathCapabilities.FS_SYMLINKS:
       return false;
@@ -1691,5 +1730,103 @@ public class HttpFSFileSystem extends FileSystem
     HttpURLConnection conn = getConnection(
         Operation.SATISFYSTORAGEPOLICY.getMethod(), params, path, true);
     HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+  }
+
+  @Override
+  public BlockLocation[] getFileBlockLocations(Path path, long start, long len)
+      throws IOException {
+    Map<String, String> params = new HashMap<>();
+    params.put(OP_PARAM, Operation.GETFILEBLOCKLOCATIONS.toString());
+    params.put(OFFSET_PARAM, Long.toString(start));
+    params.put(LENGTH_PARAM, Long.toString(len));
+    HttpURLConnection conn = getConnection(
+        Operation.GETFILEBLOCKLOCATIONS.getMethod(), params, path, true);
+    HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+    JSONObject json = (JSONObject) HttpFSUtils.jsonParse(conn);
+    return toBlockLocations(json);
+  }
+
+  @Override
+  public BlockLocation[] getFileBlockLocations(final FileStatus status,
+      final long offset, final long length) throws IOException {
+    if (status == null) {
+      return null;
+    }
+    return getFileBlockLocations(status.getPath(), offset, length);
+  }
+
+  @Override
+  public FileStatus getFileLinkStatus(final Path path) throws IOException {
+    Map<String, String> params = new HashMap<>();
+    params.put(OP_PARAM, Operation.GETFILELINKSTATUS.toString());
+    HttpURLConnection conn =
+        getConnection(Operation.GETFILELINKSTATUS.getMethod(), params, path, true);
+    HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+    JSONObject json = (JSONObject) HttpFSUtils.jsonParse(conn);
+    HdfsFileStatus status = JsonUtilClient.toFileStatus(json, true);
+    return status.makeQualified(getUri(), path);
+  }
+
+  @Override
+  public FsStatus getStatus(final Path path) throws IOException {
+    Map<String, String> params = new HashMap<>();
+    params.put(OP_PARAM, Operation.GETSTATUS.toString());
+    HttpURLConnection conn =
+        getConnection(Operation.GETSTATUS.getMethod(), params, path, true);
+    HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+    JSONObject json = (JSONObject) HttpFSUtils.jsonParse(conn);
+    return JsonUtilClient.toFsStatus(json);
+  }
+
+  public Collection<ErasureCodingPolicyInfo> getAllErasureCodingPolicies() throws IOException {
+    Map<String, String> params = new HashMap<>();
+    params.put(OP_PARAM, Operation.GETECPOLICIES.toString());
+    Path path = new Path(getUri().toString(), "/");
+    HttpURLConnection conn =
+        getConnection(Operation.GETECPOLICIES.getMethod(), params, path, false);
+    HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+    JSONObject json = (JSONObject) HttpFSUtils.jsonParse(conn);
+    return JsonUtilClient.getAllErasureCodingPolicies(json);
+  }
+
+  public Map<String, String> getAllErasureCodingCodecs() throws IOException {
+    Map<String, String> params = new HashMap<>();
+    params.put(OP_PARAM, Operation.GETECCODECS.toString());
+    Path path = new Path(getUri().toString(), "/");
+    HttpURLConnection conn =
+        getConnection(Operation.GETECCODECS.getMethod(), params, path, false);
+    HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+    JSONObject json = (JSONObject) HttpFSUtils.jsonParse(conn);
+    return JsonUtilClient.getErasureCodeCodecs(json);
+  }
+
+  public Collection<FileStatus> getTrashRoots(boolean allUsers) {
+    Map<String, String> params = new HashMap<String, String>();
+    params.put(OP_PARAM, Operation.GETTRASHROOTS.toString());
+    params.put(ALLUSERS_PARAM, Boolean.toString(allUsers));
+    Path path = new Path(getUri().toString(), "/");
+    try {
+      HttpURLConnection conn = getConnection(Operation.GETTRASHROOTS.getMethod(),
+          params, path, true);
+      HttpExceptionUtils.validateResponse(conn, HttpURLConnection.HTTP_OK);
+      JSONObject json = (JSONObject) HttpFSUtils.jsonParse(conn);
+      return JsonUtilClient.getTrashRoots(json);
+    } catch (IOException e) {
+      return super.getTrashRoots(allUsers);
+    }
+  }
+
+  @VisibleForTesting
+  static BlockLocation[] toBlockLocations(JSONObject json) throws IOException {
+    ObjectMapper mapper = new ObjectMapper();
+    MapType subType = mapper.getTypeFactory().constructMapType(Map.class,
+        String.class, BlockLocation[].class);
+    MapType rootType = mapper.getTypeFactory().constructMapType(Map.class,
+        mapper.constructType(String.class), mapper.constructType(subType));
+
+    Map<String, Map<String, BlockLocation[]>> jsonMap =
+        mapper.readValue(json.toJSONString(), rootType);
+    Map<String, BlockLocation[]> locationMap = jsonMap.get(BLOCK_LOCATIONS_JSON);
+    return locationMap.get(BlockLocation.class.getSimpleName());
   }
 }

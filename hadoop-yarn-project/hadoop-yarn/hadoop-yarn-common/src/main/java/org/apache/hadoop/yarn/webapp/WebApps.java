@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.webapp;
 
-import static org.apache.hadoop.thirdparty.com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.hadoop.util.Preconditions.checkNotNull;
 
 import java.io.IOException;
 import java.net.ConnectException;
@@ -41,11 +41,12 @@ import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.http.RestCsrfPreventionFilter;
-import org.apache.hadoop.security.http.XFrameOptionsFilter;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.eclipse.jetty.webapp.WebAppContext;
+import org.glassfish.jersey.server.ResourceConfig;
+import org.glassfish.jersey.servlet.ServletProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -103,10 +104,10 @@ public class WebApps {
     private String spnegoKeytabKey;
     private String csrfConfigPrefix;
     private String xfsConfigPrefix;
-    private final HashSet<ServletStruct> servlets = new HashSet<ServletStruct>();
-    private final HashMap<String, Object> attributes = new HashMap<String, Object>();
+    private final HashSet<ServletStruct> servlets = new HashSet<>();
+    private final HashMap<String, Object> attributes = new HashMap<>();
     private ApplicationClientProtocol appClientProtocol;
-
+    private ResourceConfig config;
     Builder(String name, Class<T> api, T application, String wsName) {
       this.name = name;
       this.api = api;
@@ -166,6 +167,11 @@ public class WebApps {
       return this;
     }
 
+    public Builder<T> withResourceConfig(ResourceConfig resourceConfig) {
+      this.config = resourceConfig;
+      return this;
+    }
+
     public Builder<T> with(Configuration conf) {
       this.conf = conf;
       return this;
@@ -184,13 +190,13 @@ public class WebApps {
 
     /**
      * Set port range config key and associated configuration object.
-     * @param config configuration.
+     * @param configuration configuration.
      * @param portRangeConfKey port range config key.
      * @return builder object.
      */
-    public Builder<T> withPortRange(Configuration config,
+    public Builder<T> withPortRange(Configuration configuration,
         String portRangeConfKey) {
-      this.conf = config;
+      this.conf = configuration;
       this.portRangeConfigKey = portRangeConfKey;
       return this;
     }
@@ -253,7 +259,7 @@ public class WebApps {
       webapp.setWebServices(wsName);
       String basePath = "/" + name;
       webapp.setRedirectPath(basePath);
-      List<String> pathList = new ArrayList<String>();
+      List<String> pathList = new ArrayList<>();
       if (basePath.equals("/")) { 
         webapp.addServePathSpec("/*");
         pathList.add("/*");
@@ -325,6 +331,19 @@ public class WebApps {
                 YarnConfiguration.YARN_ADMIN_ACL,
                 YarnConfiguration.DEFAULT_YARN_ADMIN_ACL)))
             .setPathSpec(pathList.toArray(new String[0]));
+
+        // Set the X-FRAME-OPTIONS header, use the HttpServer2 default if
+        // the header value is not specified
+        Map<String, String> xfsParameters =
+            getConfigParameters(xfsConfigPrefix);
+
+        if (xfsParameters != null) {
+          String xFrameOptions = xfsParameters.get("xframe-options");
+          if (xFrameOptions != null) {
+            builder.configureXFrame(hasXFSEnabled())
+                .setXFrameOption(xFrameOptions);
+          }
+        }
         // Get port ranges from config.
         IntegerRanges ranges = null;
         if (portRangeConfigKey != null) {
@@ -332,7 +351,7 @@ public class WebApps {
         }
         int startPort = port;
         if (ranges != null && !ranges.isEmpty()) {
-          // Set port ranges if its configured.
+          // Set port ranges if it's configured.
           startPort = ranges.getRangeStart();
           builder.setPortRanges(ranges);
         }
@@ -350,9 +369,15 @@ public class WebApps {
 
         if (httpScheme.equals(WebAppUtils.HTTPS_PREFIX)) {
           String amKeystoreLoc = System.getenv("KEYSTORE_FILE_LOCATION");
+          if (StringUtils.isBlank(amKeystoreLoc)) {
+            amKeystoreLoc = System.getProperty("KEYSTORE_FILE_LOCATION");
+          }
           if (amKeystoreLoc != null) {
             LOG.info("Setting keystore location to " + amKeystoreLoc);
             String password = System.getenv("KEYSTORE_PASSWORD");
+            if (StringUtils.isBlank(password)) {
+              password = System.getProperty("KEYSTORE_PASSWORD");
+            }
             builder.keyStore(amKeystoreLoc, password, "jks");
           } else {
             LOG.info("Loading standard ssl config");
@@ -361,9 +386,15 @@ public class WebApps {
           builder.needsClientAuth(needsClientAuth);
           if (needsClientAuth) {
             String amTruststoreLoc = System.getenv("TRUSTSTORE_FILE_LOCATION");
+            if (StringUtils.isBlank(amTruststoreLoc)) {
+              amTruststoreLoc = System.getProperty("TRUSTSTORE_FILE_LOCATION");
+            }
             if (amTruststoreLoc != null) {
               LOG.info("Setting truststore location to " + amTruststoreLoc);
               String password = System.getenv("TRUSTSTORE_PASSWORD");
+              if (StringUtils.isBlank(password)) {
+                password = System.getProperty("TRUSTSTORE_PASSWORD");
+              }
               builder.trustStore(amTruststoreLoc, password, "jks");
             }
           }
@@ -395,18 +426,11 @@ public class WebApps {
                                    new String[] {"/*"});
         }
 
-        params = getConfigParameters(xfsConfigPrefix);
-
-        if (hasXFSEnabled()) {
-          String xfsClassName = XFrameOptionsFilter.class.getName();
-          HttpServer2.defineFilter(server.getWebAppContext(), xfsClassName,
-              xfsClassName, params,
-              new String[] {"/*"});
-        }
-
+        final Map<String, String> guiceFilterParams = new HashMap<>();
+        guiceFilterParams.put(ServletProperties.FILTER_FORWARD_ON_404, "true");
         HttpServer2.defineFilter(server.getWebAppContext(), "guice",
-          GuiceFilter.class.getName(), null, new String[] { "/*" });
-
+            GuiceFilter.class.getName(), guiceFilterParams, new String[]{"/*"});
+        server.addJerseyResourceConfig(config, "/*", null);
         webapp.setConf(conf);
         webapp.setHttpServer(server);
       } catch (ClassNotFoundException e) {
@@ -449,8 +473,7 @@ public class WebApps {
     }
 
     private Map<String, String> getConfigParameters(String configPrefix) {
-      return configPrefix != null ? conf.getPropsWithPrefix(configPrefix) :
-          null;
+      return configPrefix != null ? conf.getPropsWithPrefix(configPrefix) : null;
     }
 
     public WebApp start() {
@@ -470,10 +493,9 @@ public class WebApps {
       }
       try {
         httpServer.start();
-        LOG.info("Web app " + name + " started at "
-            + httpServer.getConnectorAddress(0).getPort());
+        LOG.info("Web app {} started at {}.", name, httpServer.getConnectorAddress(0).getPort());
       } catch (IOException e) {
-        throw new WebAppException("Error starting http server", e);
+        throw new WebAppException("Error starting http server", e, webApp);
       }
       return webApp;
     }
@@ -488,14 +510,6 @@ public class WebApps {
         String restCsrfClassName = RestCsrfPreventionFilter.class.getName();
         HttpServer2.defineFilter(ui2Context, restCsrfClassName,
             restCsrfClassName, params, new String[]{"/*"});
-      }
-
-      params = getConfigParameters(xfsConfigPrefix);
-
-      if (hasXFSEnabled()) {
-        String xfsClassName = XFrameOptionsFilter.class.getName();
-        HttpServer2.defineFilter(ui2Context, xfsClassName, xfsClassName, params,
-            new String[]{"/*"});
       }
     }
 
@@ -522,7 +536,7 @@ public class WebApps {
    * @return a webapp builder
    */
   public static <T> Builder<T> $for(String prefix, Class<T> api, T app, String wsPrefix) {
-    return new Builder<T>(prefix, api, app, wsPrefix);
+    return new Builder<>(prefix, api, app, wsPrefix);
   }
 
   /**
@@ -535,7 +549,7 @@ public class WebApps {
    * @return a webapp builder
    */
   public static <T> Builder<T> $for(String prefix, Class<T> api, T app) {
-    return new Builder<T>(prefix, api, app);
+    return new Builder<>(prefix, api, app);
   }
 
   // Short cut mostly for tests/demos

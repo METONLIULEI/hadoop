@@ -18,19 +18,22 @@
 package org.apache.hadoop.hdfs.server.federation.metrics;
 
 import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.getBean;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.math.BigInteger;
 import java.util.Iterator;
 import java.util.List;
 
 import javax.management.MalformedObjectNameException;
 
-import org.apache.commons.collections.ListUtils;
+import org.apache.commons.collections4.ListUtils;
 import org.apache.hadoop.hdfs.server.federation.router.Router;
+import org.apache.hadoop.hdfs.server.federation.store.protocol.NamenodeHeartbeatRequest;
 import org.apache.hadoop.hdfs.server.federation.store.records.MembershipState;
 import org.apache.hadoop.hdfs.server.federation.store.records.MembershipStats;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
@@ -39,7 +42,7 @@ import org.apache.hadoop.hdfs.server.federation.store.records.StateStoreVersion;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test the JMX interface for the {@link Router}.
@@ -58,6 +61,7 @@ public class TestRBFMetrics extends TestMetricsBase {
     FederationMBean federationBean = getBean(FEDERATION_BEAN,
         FederationMBean.class);
     validateClusterStatsFederationBean(federationBean);
+    testCapacity(federationBean);
     RouterMBean routerBean = getBean(ROUTER_BEAN, RouterMBean.class);
     validateClusterStatsRouterBean(routerBean);
   }
@@ -215,6 +219,8 @@ public class TestRBFMetrics extends TestMetricsBase {
           json.getLong("numOfEnteringMaintenanceDataNodes"));
       assertEquals(stats.getProvidedSpace(),
           json.getLong("providedSpace"));
+      assertEquals(stats.getPendingSPSPaths(),
+          json.getInt("pendingSPSPaths"));
       nameservicesFound++;
     }
     assertEquals(getNameservices().size(), nameservicesFound);
@@ -289,9 +295,11 @@ public class TestRBFMetrics extends TestMetricsBase {
     int numCorruptsFilesCount = 0;
     long scheduledReplicationBlocks = 0;
     long numberOfMissingBlocksWithReplicationFactorOne = 0;
+    long numberOfBadlyDistributedBlocks = 0;
     long highestPriorityLowRedundancyReplicatedBlocks = 0;
     long highestPriorityLowRedundancyECBlocks = 0;
     long numFiles = 0;
+    int pendingSPSPaths = 0;
     for (MembershipState mock : getActiveMemberships()) {
       MembershipStats stats = mock.getStats();
       numBlocks += stats.getNumOfBlocks();
@@ -308,10 +316,12 @@ public class TestRBFMetrics extends TestMetricsBase {
       scheduledReplicationBlocks += stats.getScheduledReplicationBlocks();
       numberOfMissingBlocksWithReplicationFactorOne +=
           stats.getNumberOfMissingBlocksWithReplicationFactorOne();
+      numberOfBadlyDistributedBlocks += stats.getNumberOfBadlyDistributedBlocks();
       highestPriorityLowRedundancyReplicatedBlocks +=
           stats.getHighestPriorityLowRedundancyReplicatedBlocks();
       highestPriorityLowRedundancyECBlocks +=
           stats.getHighestPriorityLowRedundancyECBlocks();
+      pendingSPSPaths += stats.getPendingSPSPaths();
     }
 
     assertEquals(numBlocks, bean.getNumBlocks());
@@ -334,10 +344,13 @@ public class TestRBFMetrics extends TestMetricsBase {
         bean.getScheduledReplicationBlocks());
     assertEquals(numberOfMissingBlocksWithReplicationFactorOne,
         bean.getNumberOfMissingBlocksWithReplicationFactorOne());
+    assertEquals(numberOfBadlyDistributedBlocks,
+        bean.getNumberOfBadlyDistributedBlocks());
     assertEquals(highestPriorityLowRedundancyReplicatedBlocks,
         bean.getHighestPriorityLowRedundancyReplicatedBlocks());
     assertEquals(highestPriorityLowRedundancyECBlocks,
         bean.getHighestPriorityLowRedundancyECBlocks());
+    assertEquals(pendingSPSPaths, bean.getPendingSPSPaths());
   }
 
   private void validateClusterStatsRouterBean(RouterMBean bean) {
@@ -347,5 +360,35 @@ public class TestRBFMetrics extends TestMetricsBase {
     assertTrue(bean.getRouterStarted().length() > 0);
     assertTrue(bean.getHostAndPort().length() > 0);
     assertFalse(bean.isSecurityEnabled());
+  }
+
+  private void testCapacity(FederationMBean bean) throws IOException {
+    List<MembershipState> memberships = getActiveMemberships();
+    assertTrue(memberships.size() > 1);
+
+    BigInteger availableCapacity = BigInteger.valueOf(0);
+    BigInteger totalCapacity = BigInteger.valueOf(0);
+    BigInteger unitCapacity = BigInteger.valueOf(Long.MAX_VALUE);
+    for (MembershipState mock : memberships) {
+      MembershipStats stats = mock.getStats();
+      stats.setTotalSpace(Long.MAX_VALUE);
+      stats.setAvailableSpace(Long.MAX_VALUE);
+      // reset stats to make the new value persistent
+      mock.setStats(stats);
+      // write back the new namenode information to state store
+      assertTrue(refreshNamenodeRegistration(
+          NamenodeHeartbeatRequest.newInstance(mock)));
+      totalCapacity = totalCapacity.add(unitCapacity);
+      availableCapacity = availableCapacity.add(unitCapacity);
+    }
+
+    // for local cache update
+    assertEquals(totalCapacity, bean.getTotalCapacityBigInt());
+    // not equal since overflow happened.
+    assertNotEquals(totalCapacity, BigInteger.valueOf(bean.getTotalCapacity()));
+    assertEquals(availableCapacity, bean.getRemainingCapacityBigInt());
+    // not equal since overflow happened.
+    assertNotEquals(availableCapacity,
+        BigInteger.valueOf(bean.getRemainingCapacity()));
   }
 }

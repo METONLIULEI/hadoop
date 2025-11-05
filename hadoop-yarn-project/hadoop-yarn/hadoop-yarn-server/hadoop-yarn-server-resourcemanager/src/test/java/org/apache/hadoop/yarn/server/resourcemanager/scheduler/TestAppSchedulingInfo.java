@@ -18,11 +18,17 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.util.*;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.Priority;
@@ -32,9 +38,9 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.TestUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSLeafQueue;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.LocalityAppPlacementAllocator;
 import org.apache.hadoop.yarn.server.scheduler.SchedulerRequestKey;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestAppSchedulingInfo {
 
@@ -50,24 +56,24 @@ public class TestAppSchedulingInfo {
     doReturn(new YarnConfiguration()).when(rmContext).getYarnConfiguration();
     AppSchedulingInfo appSchedulingInfo = new AppSchedulingInfo(appAttemptId,
         "test", queue, null, 0, new ResourceUsage(),
-        new HashMap<String, String>(), rmContext);
+        new HashMap<String, String>(), rmContext, false);
 
     appSchedulingInfo.updatePlacesBlacklistedByApp(new ArrayList<String>(),
         new ArrayList<String>());
-    Assert.assertFalse(appSchedulingInfo.getAndResetBlacklistChanged());
+    assertFalse(appSchedulingInfo.getAndResetBlacklistChanged());
 
     ArrayList<String> blacklistAdditions = new ArrayList<String>();
     blacklistAdditions.add("node1");
     blacklistAdditions.add("node2");
     appSchedulingInfo.updatePlacesBlacklistedByApp(blacklistAdditions,
         new ArrayList<String>());
-    Assert.assertTrue(appSchedulingInfo.getAndResetBlacklistChanged());
+    assertTrue(appSchedulingInfo.getAndResetBlacklistChanged());
 
     blacklistAdditions.clear();
     blacklistAdditions.add("node1");
     appSchedulingInfo.updatePlacesBlacklistedByApp(blacklistAdditions,
         new ArrayList<String>());
-    Assert.assertFalse(appSchedulingInfo.getAndResetBlacklistChanged());
+    assertFalse(appSchedulingInfo.getAndResetBlacklistChanged());
 
     ArrayList<String> blacklistRemovals = new ArrayList<String>();
     blacklistRemovals.add("node1");
@@ -75,11 +81,11 @@ public class TestAppSchedulingInfo {
         blacklistRemovals);
     appSchedulingInfo.updatePlacesBlacklistedByApp(new ArrayList<String>(),
         blacklistRemovals);
-    Assert.assertTrue(appSchedulingInfo.getAndResetBlacklistChanged());
+    assertTrue(appSchedulingInfo.getAndResetBlacklistChanged());
 
     appSchedulingInfo.updatePlacesBlacklistedByApp(new ArrayList<String>(),
         blacklistRemovals);
-    Assert.assertFalse(appSchedulingInfo.getAndResetBlacklistChanged());
+    assertFalse(appSchedulingInfo.getAndResetBlacklistChanged());
   }
 
   @Test
@@ -93,23 +99,23 @@ public class TestAppSchedulingInfo {
     ts.add(TestUtils.toSchedulerKey(Priority.newInstance(2), 6));
     Iterator<SchedulerRequestKey> iter = ts.iterator();
     SchedulerRequestKey sk = iter.next();
-    Assert.assertEquals(0, sk.getPriority().getPriority());
-    Assert.assertEquals(3, sk.getAllocationRequestId());
+    assertEquals(0, sk.getPriority().getPriority());
+    assertEquals(3, sk.getAllocationRequestId());
     sk = iter.next();
-    Assert.assertEquals(0, sk.getPriority().getPriority());
-    Assert.assertEquals(4, sk.getAllocationRequestId());
+    assertEquals(0, sk.getPriority().getPriority());
+    assertEquals(4, sk.getAllocationRequestId());
     sk = iter.next();
-    Assert.assertEquals(1, sk.getPriority().getPriority());
-    Assert.assertEquals(1, sk.getAllocationRequestId());
+    assertEquals(1, sk.getPriority().getPriority());
+    assertEquals(1, sk.getAllocationRequestId());
     sk = iter.next();
-    Assert.assertEquals(1, sk.getPriority().getPriority());
-    Assert.assertEquals(2, sk.getAllocationRequestId());
+    assertEquals(1, sk.getPriority().getPriority());
+    assertEquals(2, sk.getAllocationRequestId());
     sk = iter.next();
-    Assert.assertEquals(2, sk.getPriority().getPriority());
-    Assert.assertEquals(5, sk.getAllocationRequestId());
+    assertEquals(2, sk.getPriority().getPriority());
+    assertEquals(5, sk.getAllocationRequestId());
     sk = iter.next();
-    Assert.assertEquals(2, sk.getPriority().getPriority());
-    Assert.assertEquals(6, sk.getAllocationRequestId());
+    assertEquals(2, sk.getPriority().getPriority());
+    assertEquals(6, sk.getAllocationRequestId());
   }
 
   @Test
@@ -124,8 +130,8 @@ public class TestAppSchedulingInfo {
     doReturn(new YarnConfiguration()).when(rmContext).getYarnConfiguration();
     AppSchedulingInfo  info = new AppSchedulingInfo(
         appAttemptId, "test", queue, mock(ActiveUsersManager.class), 0,
-        new ResourceUsage(), new HashMap<>(), rmContext);
-    Assert.assertEquals(0, info.getSchedulerKeys().size());
+        new ResourceUsage(), new HashMap<>(), rmContext, false);
+    assertEquals(0, info.getSchedulerKeys().size());
 
     Priority pri1 = Priority.newInstance(1);
     ResourceRequest req1 = ResourceRequest.newInstance(pri1,
@@ -139,16 +145,16 @@ public class TestAppSchedulingInfo {
     info.updateResourceRequests(reqs, false);
     ArrayList<SchedulerRequestKey> keys =
         new ArrayList<>(info.getSchedulerKeys());
-    Assert.assertEquals(2, keys.size());
-    Assert.assertEquals(SchedulerRequestKey.create(req1), keys.get(0));
-    Assert.assertEquals(SchedulerRequestKey.create(req2), keys.get(1));
+    assertEquals(2, keys.size());
+    assertEquals(SchedulerRequestKey.create(req1), keys.get(0));
+    assertEquals(SchedulerRequestKey.create(req2), keys.get(1));
 
     // iterate to verify no ConcurrentModificationException
     for (SchedulerRequestKey schedulerKey : info.getSchedulerKeys()) {
       info.allocate(NodeType.OFF_SWITCH, null, schedulerKey, null);
     }
-    Assert.assertEquals(1, info.getSchedulerKeys().size());
-    Assert.assertEquals(SchedulerRequestKey.create(req2),
+    assertEquals(1, info.getSchedulerKeys().size());
+    assertEquals(SchedulerRequestKey.create(req2),
         info.getSchedulerKeys().iterator().next());
 
     req2 = ResourceRequest.newInstance(pri2,
@@ -158,21 +164,69 @@ public class TestAppSchedulingInfo {
     info.updateResourceRequests(reqs, false);
     info.allocate(NodeType.OFF_SWITCH, null, SchedulerRequestKey.create(req2),
         null);
-    Assert.assertEquals(0, info.getSchedulerKeys().size());
+    assertEquals(0, info.getSchedulerKeys().size());
 
     req1 = ResourceRequest.newInstance(pri1,
         ResourceRequest.ANY, Resource.newInstance(1024, 1), 5);
     reqs.clear();
     reqs.add(req1);
     info.updateResourceRequests(reqs, false);
-    Assert.assertEquals(1, info.getSchedulerKeys().size());
-    Assert.assertEquals(SchedulerRequestKey.create(req1),
+    assertEquals(1, info.getSchedulerKeys().size());
+    assertEquals(SchedulerRequestKey.create(req1),
         info.getSchedulerKeys().iterator().next());
     req1 = ResourceRequest.newInstance(pri1,
         ResourceRequest.ANY, Resource.newInstance(1024, 1), 0);
     reqs.clear();
     reqs.add(req1);
     info.updateResourceRequests(reqs, false);
-    Assert.assertEquals(0, info.getSchedulerKeys().size());
+    assertEquals(0, info.getSchedulerKeys().size());
+  }
+
+  @Test
+  public void testApplicationPlacementType() {
+    String DEFAULT_APPLICATION_PLACEMENT_TYPE_CLASS =
+        LocalityAppPlacementAllocator.class.getName();
+    Configuration conf = new Configuration();
+    RMContext rmContext = mock(RMContext.class);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
+    ApplicationId appIdImpl = ApplicationId.newInstance(0, 1);
+    ApplicationAttemptId appAttemptId =
+        ApplicationAttemptId.newInstance(appIdImpl, 1);
+    Queue queue = mock(Queue.class);
+    AppSchedulingInfo info = new AppSchedulingInfo(appAttemptId, "test", queue,
+        mock(ActiveUsersManager.class), 0, new ResourceUsage(), new HashMap<>(),
+        rmContext, false);
+    assertEquals(info.getApplicationSchedulingEnvs(), new HashMap<>());
+    // This should return null as nothing is set in the conf.
+    assertNull(info.getDefaultResourceRequestAppPlacementType());
+    conf = new Configuration();
+    conf.set(YarnConfiguration.APPLICATION_PLACEMENT_TYPE_CLASS,
+        DEFAULT_APPLICATION_PLACEMENT_TYPE_CLASS);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
+    info = new AppSchedulingInfo(appAttemptId, "test", queue,
+        mock(ActiveUsersManager.class), 0, new ResourceUsage(), new HashMap<>(),
+        rmContext, false);
+    assertEquals(info.getDefaultResourceRequestAppPlacementType(),
+        DEFAULT_APPLICATION_PLACEMENT_TYPE_CLASS);
+  }
+
+  @Test
+  public void testApplicationPlacementTypeNotConfigured() {
+    Configuration conf = new Configuration();
+    RMContext rmContext = mock(RMContext.class);
+    when(rmContext.getYarnConfiguration()).thenReturn(conf);
+    ApplicationId appIdImpl = ApplicationId.newInstance(0, 1);
+    ApplicationAttemptId appAttemptId =
+        ApplicationAttemptId.newInstance(appIdImpl, 1);
+    Queue queue = mock(Queue.class);
+    HashMap<String, String> applicationSchedulingEnvs = new HashMap<>();
+    applicationSchedulingEnvs.put("APPLICATION_PLACEMENT_TYPE_CLASS",
+        LocalityAppPlacementAllocator.class.getName());
+    AppSchedulingInfo info = new AppSchedulingInfo(appAttemptId, "test", queue,
+        mock(ActiveUsersManager.class), 0, new ResourceUsage(),
+        applicationSchedulingEnvs, rmContext, false);
+    // This should be set from applicationSchedulingEnvs
+    assertEquals(info.getDefaultResourceRequestAppPlacementType(),
+        LocalityAppPlacementAllocator.class.getName());
   }
 }

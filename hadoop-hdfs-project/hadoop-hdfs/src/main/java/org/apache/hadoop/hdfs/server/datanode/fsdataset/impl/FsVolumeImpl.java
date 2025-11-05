@@ -20,12 +20,14 @@ package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.RandomAccessFile;
 import java.net.URI;
 import java.nio.channels.ClosedChannelException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Collection;
@@ -86,9 +88,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
@@ -170,7 +172,8 @@ public class FsVolumeImpl implements FsVolumeSpi {
     this.usage = usage;
     if (this.usage != null) {
       reserved = new ReservedSpaceCalculator.Builder(conf)
-          .setUsage(this.usage).setStorageType(storageType).build();
+          .setUsage(this.usage).setStorageType(storageType)
+          .setDir(currentDir != null ? currentDir.getParent() : "NULL").build();
       boolean fixedSizeVolume = conf.getBoolean(
           DFSConfigKeys.DFS_DATANODE_FIXED_VOLUME_SIZE_KEY,
           DFSConfigKeys.DFS_DATANODE_FIXED_VOLUME_SIZE_DEFAULT);
@@ -319,7 +322,7 @@ public class FsVolumeImpl implements FsVolumeSpi {
   }
 
   @VisibleForTesting
-  int getReferenceCount() {
+  public int getReferenceCount() {
     return this.reference.getReferenceCount();
   }
 
@@ -349,7 +352,7 @@ public class FsVolumeImpl implements FsVolumeSpi {
   }
 
   @VisibleForTesting
-  File getCurrentDir() {
+  public File getCurrentDir() {
     return currentDir;
   }
 
@@ -498,7 +501,7 @@ public class FsVolumeImpl implements FsVolumeSpi {
         return used;
       }
     }
-    return getDfUsed() - getDfsUsed();
+    return Math.max(getDfUsed() - getDfsUsed(), 0L);
   }
 
   /**
@@ -545,6 +548,10 @@ public class FsVolumeImpl implements FsVolumeSpi {
   @VisibleForTesting
   long getRecentReserved() {
     return recentReserved;
+  }
+
+  public Map<String, BlockPoolSlice> getBlockPoolSlices() {
+    return bpSlices;
   }
 
   long getReserved(){
@@ -865,7 +872,15 @@ public class FsVolumeImpl implements FsVolumeSpi {
               }
 
               File blkFile = getBlockFile(bpid, block);
-              File metaFile = FsDatasetUtil.findMetaFile(blkFile);
+              File metaFile ;
+              try {
+                 metaFile = FsDatasetUtil.findMetaFile(blkFile);
+              } catch (FileNotFoundException e){
+                LOG.warn("nextBlock({}, {}): {}", storageID, bpid,
+                    e.getMessage());
+                continue;
+              }
+
               block.setGenerationStamp(
                   Block.getGenerationStamp(metaFile.getName()));
               block.setNumBytes(blkFile.length());
@@ -915,7 +930,7 @@ public class FsVolumeImpl implements FsVolumeSpi {
       boolean success = false;
       try (BufferedWriter writer = new BufferedWriter(
           new OutputStreamWriter(fileIoProvider.getFileOutputStream(
-              FsVolumeImpl.this, getTempSaveFile()), "UTF-8"))) {
+              FsVolumeImpl.this, getTempSaveFile()), StandardCharsets.UTF_8))) {
         WRITER.writeValue(writer, state);
         success = true;
       } finally {
@@ -1276,7 +1291,9 @@ public class FsVolumeImpl implements FsVolumeSpi {
 
     // rename meta file to rbw directory
     // rename block file to rbw directory
+    long oldReplicaLength = replicaInfo.getNumBytes() + replicaInfo.getMetadataLength();
     newReplicaInfo.moveReplicaFrom(replicaInfo, newBlkFile);
+    getBlockPoolSlice(bpid).decDfsUsed(oldReplicaLength);
 
     reserveSpaceForReplica(bytesReserved);
     return newReplicaInfo;
@@ -1451,7 +1468,7 @@ public class FsVolumeImpl implements FsVolumeSpi {
           long blockId = Block.getBlockId(file.getName());
           verifyFileLocation(file, bpFinalizedDir,
               blockId);
-          report.add(new ScanInfo(blockId, null, file, this));
+          report.add(new ScanInfo(blockId, dir, null, fileNames.get(i), this));
         }
         continue;
       }
@@ -1474,7 +1491,8 @@ public class FsVolumeImpl implements FsVolumeSpi {
         }
       }
       verifyFileLocation(blockFile, bpFinalizedDir, blockId);
-      report.add(new ScanInfo(blockId, blockFile, metaFile, this));
+      report.add(new ScanInfo(blockId, dir, blockFile.getName(),
+          metaFile == null ? null : metaFile.getName(), this));
     }
   }
 

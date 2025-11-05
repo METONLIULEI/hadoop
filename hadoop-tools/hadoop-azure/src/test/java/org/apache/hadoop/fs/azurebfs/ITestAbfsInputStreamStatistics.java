@@ -21,7 +21,7 @@ package org.apache.hadoop.fs.azurebfs;
 import java.io.IOException;
 
 import org.assertj.core.api.Assertions;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +31,12 @@ import org.apache.hadoop.fs.azurebfs.services.AbfsInputStreamContext;
 import org.apache.hadoop.fs.azurebfs.services.AbfsInputStreamStatisticsImpl;
 import org.apache.hadoop.fs.azurebfs.services.AbfsOutputStream;
 import org.apache.hadoop.fs.azurebfs.services.AbfsRestOperation;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.StoreStatisticNames;
 import org.apache.hadoop.io.IOUtils;
+import static org.apache.hadoop.fs.statistics.IOStatisticAssertions.extractStatistics;
+import static org.apache.hadoop.fs.statistics.IOStatisticAssertions.lookupMeanStatistic;
+import static org.apache.hadoop.fs.statistics.IOStatisticsLogging.ioStatisticsToPrettyString;
 
 public class ITestAbfsInputStreamStatistics
     extends AbstractAbfsIntegrationTest {
@@ -62,7 +67,8 @@ public class ITestAbfsInputStreamStatistics
     try {
 
       outputStream = createAbfsOutputStreamWithFlushEnabled(fs, initValuesPath);
-      inputStream = abfss.openFileForRead(initValuesPath, fs.getFsStatistics());
+      inputStream = abfss.openFileForRead(initValuesPath, fs.getFsStatistics(),
+          getTestTracingContext(fs, false));
 
       AbfsInputStreamStatisticsImpl stats =
           (AbfsInputStreamStatisticsImpl) inputStream.getStreamStatistics();
@@ -106,7 +112,8 @@ public class ITestAbfsInputStreamStatistics
       //Writing a default buffer in a file.
       out.write(defBuffer);
       out.hflush();
-      in = abfss.openFileForRead(seekStatPath, fs.getFsStatistics());
+      in = abfss.openFileForRead(seekStatPath, fs.getFsStatistics(),
+          getTestTracingContext(fs, false));
 
       /*
        * Writing 1MB buffer to the file, this would make the fCursor(Current
@@ -121,6 +128,7 @@ public class ITestAbfsInputStreamStatistics
        */
       for (int i = 0; i < OPERATIONS; i++) {
         in.seek(0);
+        in.read();
         in.seek(ONE_MB);
       }
 
@@ -149,21 +157,17 @@ public class ITestAbfsInputStreamStatistics
        * are in buffer.
        *
        * seekInBuffer - Since all seeks were in buffer, the seekInBuffer
-       * would be equal to 2 * OPERATIONS.
+       * would be equal to OPERATIONS.
        *
        */
-      assertEquals("Mismatch in seekOps value", 2 * OPERATIONS,
-          stats.getSeekOperations());
-      assertEquals("Mismatch in backwardSeekOps value", OPERATIONS,
-          stats.getBackwardSeekOperations());
-      assertEquals("Mismatch in forwardSeekOps value", OPERATIONS,
-          stats.getForwardSeekOperations());
-      assertEquals("Mismatch in bytesBackwardsOnSeek value",
-          OPERATIONS * ONE_MB, stats.getBytesBackwardsOnSeek());
-      assertEquals("Mismatch in bytesSkippedOnSeek value",
-          0, stats.getBytesSkippedOnSeek());
-      assertEquals("Mismatch in seekInBuffer value", 2 * OPERATIONS,
-          stats.getSeekInBuffer());
+      assertEquals(2 * OPERATIONS, stats.getSeekOperations(), "Mismatch in seekOps value");
+      assertEquals(OPERATIONS, stats.getBackwardSeekOperations(),
+          "Mismatch in backwardSeekOps value");
+      assertEquals(OPERATIONS, stats.getForwardSeekOperations(), "Mismatch in forwardSeekOps value");
+      assertEquals(OPERATIONS * ONE_MB, stats.getBytesBackwardsOnSeek(),
+          "Mismatch in bytesBackwardsOnSeek value");
+      assertEquals(0, stats.getBytesSkippedOnSeek(), "Mismatch in bytesSkippedOnSeek value");
+      assertEquals(OPERATIONS, stats.getSeekInBuffer(), "Mismatch in seekInBuffer value");
 
       in.close();
       // Verifying whether stats are readable after stream is closed.
@@ -196,7 +200,8 @@ public class ITestAbfsInputStreamStatistics
        */
       out.write(defBuffer);
       out.hflush();
-      in = abfss.openFileForRead(readStatPath, fs.getFsStatistics());
+      in = abfss.openFileForRead(readStatPath, fs.getFsStatistics(),
+          getTestTracingContext(fs, false));
 
       /*
        * Doing file read 10 times.
@@ -221,12 +226,9 @@ public class ITestAbfsInputStreamStatistics
        * total remote read ops is 1.
        *
        */
-      assertEquals("Mismatch in bytesRead value", OPERATIONS,
-          stats.getBytesRead());
-      assertEquals("Mismatch in readOps value", OPERATIONS,
-          stats.getReadOperations());
-      assertEquals("Mismatch in remoteReadOps value", 1,
-          stats.getRemoteReadOperations());
+      assertEquals(OPERATIONS, stats.getBytesRead(), "Mismatch in bytesRead value");
+      assertEquals(OPERATIONS, stats.getReadOperations(), "Mismatch in readOps value");
+      assertEquals(1, stats.getRemoteReadOperations(), "Mismatch in remoteReadOps value");
 
       in.close();
       // Verifying if stats are still readable after stream is closed.
@@ -254,6 +256,7 @@ public class ITestAbfsInputStreamStatistics
             .withReadBufferSize(getConfiguration().getReadBufferSize())
             .withReadAheadQueueDepth(getConfiguration().getReadAheadQueueDepth())
             .withStreamStatistics(null)
+            .withReadAheadRange(getConfiguration().getReadAheadRange())
             .build();
 
     AbfsOutputStream out = null;
@@ -267,18 +270,18 @@ public class ITestAbfsInputStreamStatistics
       out.hflush();
 
       // AbfsRestOperation Instance required for eTag.
-      AbfsRestOperation abfsRestOperation =
-          fs.getAbfsClient().getPathStatus(nullStatFilePath.toUri().getPath(), false);
+      AbfsRestOperation abfsRestOperation = fs.getAbfsClient()
+          .getPathStatus(nullStatFilePath.toUri().getPath(), false,
+              getTestTracingContext(fs, false), null);
 
       // AbfsInputStream with no StreamStatistics.
       in = new AbfsInputStream(fs.getAbfsClient(), null,
-          nullStatFilePath.toUri().getPath(), ONE_KB,
-          abfsInputStreamContext,
-          abfsRestOperation.getResult().getResponseHeader("ETag"));
+          nullStatFilePath.toUri().getPath(), ONE_KB, abfsInputStreamContext,
+          abfsRestOperation.getResult().getResponseHeader("ETag"),
+          getTestTracingContext(fs, false));
 
       // Verifying that AbfsInputStream Operations works with null statistics.
-      assertNotEquals("AbfsInputStream read() with null statistics should "
-          + "work", -1, in.read());
+      assertNotEquals(-1, in.read(), "AbfsInputStream read() with null statistics should "+ "work");
       in.seek(ONE_KB);
 
       // Verifying toString() with no StreamStatistics.
@@ -317,7 +320,8 @@ public class ITestAbfsInputStreamStatistics
       out.write(defBuffer);
       out.close();
 
-      in = abfss.openFileForRead(readAheadCountersPath, fs.getFsStatistics());
+      in = abfss.openFileForRead(readAheadCountersPath, fs.getFsStatistics(),
+          getTestTracingContext(fs, false));
 
       /*
        * Reading 1KB after each i * KB positions. Hence the reads are from 0
@@ -384,14 +388,16 @@ public class ITestAbfsInputStreamStatistics
       abfsOutputStream.hflush();
 
       abfsInputStream =
-          abfss.openFileForRead(actionHttpGetRequestPath, fs.getFsStatistics());
+          abfss.openFileForRead(actionHttpGetRequestPath,
+              fs.getFsStatistics(), getTestTracingContext(fs, false));
       abfsInputStream.read();
-      AbfsInputStreamStatisticsImpl abfsInputStreamStatistics =
-          (AbfsInputStreamStatisticsImpl) abfsInputStream.getStreamStatistics();
-
-      LOG.info("AbfsInputStreamStats info: {}", abfsInputStreamStatistics.toString());
+      IOStatistics ioStatistics = extractStatistics(fs);
+      LOG.info("AbfsInputStreamStats info: {}",
+          ioStatisticsToPrettyString(ioStatistics));
       Assertions.assertThat(
-          abfsInputStreamStatistics.getActionHttpGetRequest())
+          lookupMeanStatistic(ioStatistics,
+              AbfsStatistic.HTTP_GET_REQUEST.getStatName()
+                  + StoreStatisticNames.SUFFIX_MEAN).mean())
           .describedAs("Mismatch in time taken by a GET request")
           .isGreaterThan(0.0);
     } finally {
@@ -406,6 +412,6 @@ public class ITestAbfsInputStreamStatistics
    * @param statistic   the name of operation or statistic being asserted.
    */
   private void checkInitValue(long actualValue, String statistic) {
-    assertEquals("Mismatch in " + statistic + " value", 0, actualValue);
+    assertEquals(0, actualValue, "Mismatch in " + statistic + " value");
   }
 }

@@ -52,7 +52,7 @@ import org.apache.hadoop.net.NetworkTopology;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.thirdparty.com.google.common.collect.HashMultiset;
 import org.apache.hadoop.thirdparty.com.google.common.collect.Multiset;
 
@@ -803,7 +803,7 @@ public abstract class CombineFileInputFormat<K, V>
     }
 
     public String toString() {
-      StringBuffer buf = new StringBuffer();
+      StringBuilder buf = new StringBuilder();
       buf.append("[");
       for (PathFilter f: filters) {
         buf.append(f);

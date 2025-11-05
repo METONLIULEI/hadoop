@@ -17,12 +17,12 @@
  */
 package org.apache.hadoop.hdfs.server.federation.store.records;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -37,7 +37,7 @@ import org.apache.hadoop.hdfs.server.federation.resolver.order.DestinationOrder;
 import org.apache.hadoop.hdfs.server.federation.router.RouterQuotaUsage;
 import org.apache.hadoop.hdfs.server.federation.store.driver.StateStoreSerializer;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test the Mount Table entry in the State Store.
@@ -266,7 +266,7 @@ public class TestMountTable {
       fail("Mount table entry should be created failed.");
     } catch (Exception e) {
       GenericTestUtils.assertExceptionContains(
-          MountTable.ERROR_MSG_INVAILD_DEST_NS, e);
+          MountTable.ERROR_MSG_INVALID_DEST_NS, e);
     }
 
     destinations.clear();

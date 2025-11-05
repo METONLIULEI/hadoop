@@ -133,8 +133,8 @@ class StripedBlockReader {
           block.getNumBytes() - offsetInBlock, true, "", peer, source,
           null, stripedReader.getCachingStrategy(), -1, conf);
     } catch (IOException e) {
-      LOG.info("Exception while creating remote block reader, datanode {}",
-          source, e);
+      LOG.info("Exception while creating remote block reader for {}, datanode {}",
+          block, source, e);
       IOUtils.closeStream(peer);
       return null;
     }
@@ -158,7 +158,7 @@ class StripedBlockReader {
       return peer;
     } finally {
       if (!success) {
-        IOUtils.cleanup(null, peer);
+        IOUtils.cleanupWithLogger(null, peer);
         IOUtils.closeSocket(sock);
       }
     }

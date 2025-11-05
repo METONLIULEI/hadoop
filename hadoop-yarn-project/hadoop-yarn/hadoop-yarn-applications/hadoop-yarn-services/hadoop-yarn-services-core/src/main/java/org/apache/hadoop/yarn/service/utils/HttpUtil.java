@@ -24,23 +24,22 @@ import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivilegedExceptionAction;
 
-import javax.ws.rs.core.HttpHeaders;
+import javax.ws.rs.client.Client;
+import javax.ws.rs.client.ClientBuilder;
+import javax.ws.rs.client.Invocation;
 import javax.ws.rs.core.MediaType;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
-import org.apache.hadoop.security.authentication.util.KerberosUtil;
+import org.apache.hadoop.thirdparty.com.google.common.net.HttpHeaders;
 import org.ietf.jgss.GSSContext;
 import org.ietf.jgss.GSSException;
 import org.ietf.jgss.GSSManager;
 import org.ietf.jgss.GSSName;
-import org.ietf.jgss.Oid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.sun.jersey.api.client.Client;
-import com.sun.jersey.api.client.WebResource.Builder;
 
 /**
  * Http connection utilities.
@@ -72,8 +71,6 @@ public class HttpUtil {
           @Override
           public String run() throws Exception {
             try {
-              // This Oid for Kerberos GSS-API mechanism.
-              Oid mechOid = KerberosUtil.getOidInstance("GSS_KRB5_MECH_OID");
               GSSManager manager = GSSManager.getInstance();
               // GSS name for server
               GSSName serverName = manager.createName("HTTP@" + server,
@@ -81,8 +78,9 @@ public class HttpUtil {
               // Create a GSSContext for authentication with the service.
               // We're passing client credentials as null since we want them to
               // be read from the Subject.
+              // We're passing Oid as null to use the default.
               GSSContext gssContext = manager.createContext(
-                  serverName.canonicalize(mechOid), mechOid, null,
+                  serverName.canonicalize(null), null, null,
                   GSSContext.DEFAULT_LIFETIME);
               gssContext.requestMutualAuth(true);
               gssContext.requestCredDeleg(true);
@@ -95,9 +93,8 @@ public class HttpUtil {
               LOG.debug("Got valid challenge for host {}", serverName);
               return new String(BASE_64_CODEC.encode(outToken),
                   StandardCharsets.US_ASCII);
-            } catch (GSSException | IllegalAccessException
-                | NoSuchFieldException | ClassNotFoundException e) {
-              LOG.error("Error: {}", e);
+            } catch (GSSException e) {
+              LOG.error("Error: ", e);
               throw new AuthenticationException(e);
             }
           }
@@ -105,13 +102,13 @@ public class HttpUtil {
     return challenge;
   }
 
-  public static Builder connect(String url) throws URISyntaxException,
+  public static Invocation.Builder connect(String url) throws URISyntaxException,
       IOException, InterruptedException {
     boolean useKerberos = UserGroupInformation.isSecurityEnabled();
     URI resource = new URI(url);
-    Client client = Client.create();
-    Builder builder = client
-        .resource(url).type(MediaType.APPLICATION_JSON);
+    Client client = ClientBuilder.newClient();
+    Invocation.Builder builder = client
+        .target(url).request(MediaType.APPLICATION_JSON);
     if (useKerberos) {
       String challenge = generateToken(resource.getHost());
       builder.header(HttpHeaders.AUTHORIZATION, "Negotiate " +

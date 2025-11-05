@@ -21,7 +21,6 @@ package org.apache.hadoop.fs.azure;
 import com.microsoft.azure.storage.*;
 import com.microsoft.azure.storage.blob.*;
 import com.microsoft.azure.storage.core.Base64;
-import org.junit.Assert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,6 +49,7 @@ import static org.apache.hadoop.fs.azure.AzureNativeFileSystemStore.DEFAULT_STOR
 import static org.apache.hadoop.fs.azure.AzureNativeFileSystemStore.KEY_USE_LOCAL_SAS_KEY_MODE;
 import static org.apache.hadoop.fs.azure.AzureNativeFileSystemStore.KEY_USE_SECURE_MODE;
 import static org.apache.hadoop.fs.azure.integration.AzureTestUtils.verifyWasbAccountNameInConfig;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Helper class to create WASB file systems backed by either a mock in-memory
@@ -65,7 +65,7 @@ public final class AzureBlobStorageTestAccount implements AutoCloseable,
   public static final String ACCOUNT_KEY_PROPERTY_NAME = "fs.azure.account.key.";
   public static final String TEST_ACCOUNT_NAME_PROPERTY_NAME = "fs.azure.account.name";
   public static final String WASB_TEST_ACCOUNT_NAME_WITH_DOMAIN = "fs.azure.wasb.account.name";
-  public static final String MOCK_ACCOUNT_NAME = "mockAccount.blob.core.windows.net";
+  public static final String MOCK_ACCOUNT_NAME = "mockAccount-c01112a3-2a23-433e-af2a-e808ea385136.blob.core.windows.net";
   public static final String WASB_ACCOUNT_NAME_DOMAIN_SUFFIX = ".blob.core.windows.net";
   public static final String WASB_ACCOUNT_NAME_DOMAIN_SUFFIX_REGEX = "\\.blob(\\.preprod)?\\.core\\.windows\\.net";
   public static final String MOCK_CONTAINER_NAME = "mockContainer";
@@ -212,9 +212,9 @@ public final class AzureBlobStorageTestAccount implements AutoCloseable,
    * @return
    */
   private boolean wasGeneratedByMe(MetricsRecord currentRecord) {
-    Assert.assertNotNull("null filesystem", fs);
-    Assert.assertNotNull("null filesystemn instance ID",
-        fs.getInstrumentation().getFileSystemInstanceId());
+    assertNotNull(fs, "null filesystem");
+    assertNotNull(fs.getInstrumentation().getFileSystemInstanceId(),
+        "null filesystemn instance ID");
     String myFsId = fs.getInstrumentation().getFileSystemInstanceId().toString();
     for (MetricsTag currentTag : currentRecord.tags()) {
       if (currentTag.name().equalsIgnoreCase("wasbFileSystemId")) {

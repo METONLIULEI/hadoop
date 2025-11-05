@@ -38,7 +38,16 @@ import org.apache.hadoop.classification.InterfaceStability;
 public final class StoreStatisticNames {
 
   /** {@value}. */
+  public static final String OP_ABORT = "op_abort";
+
+  /** access() API call {@value}. */
+  public static final String OP_ACCESS = "op_access";
+
+  /** {@value}. */
   public static final String OP_APPEND = "op_append";
+
+  /** {@value}. */
+  public static final String OP_BULK_DELETE = "op_bulk-delete";
 
   /** {@value}. */
   public static final String OP_COPY_FROM_LOCAL_FILE =
@@ -46,6 +55,9 @@ public final class StoreStatisticNames {
 
   /** {@value}. */
   public static final String OP_CREATE = "op_create";
+
+  /** {@value}. */
+  public static final String OP_CREATE_FILE = "op_createfile";
 
   /** {@value}. */
   public static final String OP_CREATE_NON_RECURSIVE =
@@ -82,6 +94,12 @@ public final class StoreStatisticNames {
   public static final String OP_IS_FILE = "op_is_file";
 
   /** {@value}. */
+  public static final String OP_HFLUSH = "op_hflush";
+
+  /** {@value}. */
+  public static final String OP_HSYNC = "op_hsync";
+
+  /** {@value}. */
   public static final String OP_IS_DIRECTORY = "op_is_directory";
 
   /** {@value}. */
@@ -101,7 +119,13 @@ public final class StoreStatisticNames {
   public static final String OP_MODIFY_ACL_ENTRIES = "op_modify_acl_entries";
 
   /** {@value}. */
+  public static final String OP_MSYNC = "op_msync";
+
+  /** {@value}. */
   public static final String OP_OPEN = "op_open";
+
+  /** Call to openFile() {@value}. */
+  public static final String OP_OPENFILE = "op_openfile";
 
   /** {@value}. */
   public static final String OP_REMOVE_ACL = "op_remove_acl";
@@ -152,9 +176,21 @@ public final class StoreStatisticNames {
   public static final String DELEGATION_TOKENS_ISSUED
       = "delegation_tokens_issued";
 
+  /**
+   * How long did any store client creation take?
+   */
+  public static final String STORE_CLIENT_CREATION = "store_client_creation";
+
+  /** Probe for store existing: {@value}. */
+  public static final String STORE_EXISTS_PROBE
+      = "store_exists_probe";
+
   /** Requests throttled and retried: {@value}. */
   public static final String STORE_IO_THROTTLED
       = "store_io_throttled";
+
+  /** Rate limiting was reported {@value}. */
+  public static final String STORE_IO_RATE_LIMITED = "store_io_rate_limited";
 
   /** Requests made of a store: {@value}. */
   public static final String STORE_IO_REQUEST
@@ -165,6 +201,10 @@ public final class StoreStatisticNames {
    */
   public static final String STORE_IO_RETRY
       = "store_io_retry";
+
+  public static final String STORE_IO_RATE_LIMITED_DURATION
+      = "store_io_rate_limited_duration";
+
 
   /**
    * A store's equivalent of a paged LIST request was initiated: {@value}.
@@ -215,6 +255,13 @@ public final class StoreStatisticNames {
    */
   public static final String OBJECT_MULTIPART_UPLOAD_ABORTED =
       "object_multipart_aborted";
+
+  /**
+   * Object multipart list request.
+   * Value :{@value}.
+   */
+  public static final String OBJECT_MULTIPART_UPLOAD_LIST =
+      "object_multipart_list";
 
   /**
    * Object put/multipart upload count.
@@ -302,6 +349,12 @@ public final class StoreStatisticNames {
       "action_executor_acquired";
 
   /**
+   * A file was opened: {@value}.
+   */
+  public static final String ACTION_FILE_OPENED
+      = "action_file_opened";
+
+  /**
    * An HTTP HEAD request was made: {@value}.
    */
   public static final String ACTION_HTTP_HEAD_REQUEST
@@ -312,6 +365,71 @@ public final class StoreStatisticNames {
    */
   public static final String ACTION_HTTP_GET_REQUEST
       = "action_http_get_request";
+
+  /**
+   * An HTTP DELETE request was made: {@value}.
+   */
+  public static final String ACTION_HTTP_DELETE_REQUEST
+      = "action_http_delete_request";
+
+  /**
+   * An HTTP PUT request was made: {@value}.
+   */
+  public static final String ACTION_HTTP_PUT_REQUEST
+      = "action_http_put_request";
+
+  /**
+   * An HTTP PATCH request was made: {@value}.
+   */
+  public static final String ACTION_HTTP_PATCH_REQUEST
+      = "action_http_patch_request";
+
+  /**
+   * HTTP error response: {@value}.
+   */
+  public static final String HTTP_RESPONSE_400
+      = "http_response_400";
+
+  /**
+   * HTTP error response: {@value}.
+   * Returned by some stores for throttling events.
+   */
+  public static final String HTTP_RESPONSE_429
+      = "http_response_429";
+
+  /**
+   * Other 4XX HTTP response: {@value}.
+   * (404 responses are excluded as they are rarely 'errors'
+   * and will be reported differently if they are.
+   */
+  public static final String HTTP_RESPONSE_4XX
+      = "http_response_4XX";
+
+  /**
+   * HTTP error response: {@value}.
+   * Sign of server-side problems, possibly transient
+   */
+  public static final String HTTP_RESPONSE_500
+      = "http_response_500";
+
+  /**
+   * HTTP error response: {@value}.
+   * AWS Throttle.
+   */
+  public static final String HTTP_RESPONSE_503
+      = "http_response_503";
+
+  /**
+   * Other 5XX HTTP response: {@value}.
+   */
+  public static final String HTTP_RESPONSE_5XX
+      = "http_response_5XX";
+
+  /**
+   * An HTTP POST request was made: {@value}.
+   */
+  public static final String ACTION_HTTP_POST_REQUEST
+      = "action_http_post_request";
 
   /**
    * An HTTP HEAD request was made: {@value}.
@@ -345,6 +463,15 @@ public final class StoreStatisticNames {
 
   public static final String MULTIPART_UPLOAD_STARTED
       = "multipart_upload_started";
+
+  public static final String MULTIPART_UPLOAD_LIST
+      = "multipart_upload_list";
+
+  public static final String CONDITIONAL_CREATE
+          = "conditional_create";
+
+  public static final String CONDITIONAL_CREATE_FAILED
+          = "conditional_create_failed";
 
   private StoreStatisticNames() {
   }

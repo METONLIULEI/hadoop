@@ -36,6 +36,7 @@ import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.fs.ParentNotDirectoryException;
 import org.apache.hadoop.fs.StreamCapabilities;
 import org.apache.hadoop.fs.Syncable;
+import org.apache.hadoop.fs.impl.StoreImplementationUtils;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.HdfsDataOutputStream;
@@ -66,14 +67,13 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.DataChecksum.Type;
 import org.apache.hadoop.util.Progressable;
-import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
-import org.apache.htrace.core.TraceScope;
+import org.apache.hadoop.tracing.TraceScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Write.RECOVER_LEASE_ON_CLOSE_EXCEPTION_DEFAULT;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.Write.RECOVER_LEASE_ON_CLOSE_EXCEPTION_KEY;
@@ -113,6 +113,8 @@ public class DFSOutputStream extends FSOutputSummer
 
   protected final String src;
   protected final long fileId;
+  private final String namespace;
+  private final String uniqKey;
   protected final long blockSize;
   protected final int bytesPerChecksum;
 
@@ -195,6 +197,15 @@ public class DFSOutputStream extends FSOutputSummer
     this.dfsClient = dfsClient;
     this.src = src;
     this.fileId = stat.getFileId();
+    this.namespace = stat.getNamespace();
+    if (this.namespace == null) {
+      String defaultKey = dfsClient.getConfiguration().get(
+          HdfsClientConfigKeys.DFS_OUTPUT_STREAM_UNIQ_DEFAULT_KEY,
+          HdfsClientConfigKeys.DFS_OUTPUT_STREAM_UNIQ_DEFAULT_KEY_DEFAULT);
+      this.uniqKey = defaultKey + "_" + this.fileId;
+    } else {
+      this.uniqKey = this.namespace + "_" + this.fileId;
+    }
     this.blockSize = stat.getBlockSize();
     this.blockReplication = stat.getReplication();
     this.fileEncryptionInfo = stat.getFileEncryptionInfo();
@@ -345,7 +356,7 @@ public class DFSOutputStream extends FSOutputSummer
       streamer = new DataStreamer(lastBlock, stat, dfsClient, src, progress,
           checksum, cachingStrategy, byteArrayManager);
       getStreamer().setBytesCurBlock(lastBlock.getBlockSize());
-      adjustPacketChunkSize(stat);
+      adjustPacketChunkSize(lastBlock);
       getStreamer().setPipelineInConstruction(lastBlock);
     } else {
       computePacketChunkSize(dfsClient.getConf().getWritePacketSize(),
@@ -357,14 +368,14 @@ public class DFSOutputStream extends FSOutputSummer
     }
   }
 
-  private void adjustPacketChunkSize(HdfsFileStatus stat) throws IOException{
+  private void adjustPacketChunkSize(LocatedBlock lastBlock) throws IOException{
 
-    long usedInLastBlock = stat.getLen() % blockSize;
+    long usedInLastBlock = lastBlock.getBlockSize();
     int freeInLastBlock = (int)(blockSize - usedInLastBlock);
 
     // calculate the amount of free space in the pre-existing
     // last crc chunk
-    int usedInCksum = (int)(stat.getLen() % bytesPerChecksum);
+    int usedInCksum = (int)(lastBlock.getBlockSize() % bytesPerChecksum);
     int freeInCksum = bytesPerChecksum - usedInCksum;
 
     // if there is space in the last block, then we have to
@@ -483,9 +494,10 @@ public class DFSOutputStream extends FSOutputSummer
       currentPacket = createPacket(packetSize, chunksPerPacket, getStreamer()
           .getBytesCurBlock(), getStreamer().getAndIncCurrentSeqno(), false);
       DFSClient.LOG.debug("WriteChunk allocating new packet seqno={},"
-              + " src={}, packetSize={}, chunksPerPacket={}, bytesCurBlock={}",
+              + " src={}, packetSize={}, chunksPerPacket={}, bytesCurBlock={},"
+              + " output stream={}",
           currentPacket.getSeqno(), src, packetSize, chunksPerPacket,
-          getStreamer().getBytesCurBlock() + ", " + this);
+          getStreamer().getBytesCurBlock(), this);
     }
   }
 
@@ -524,8 +536,13 @@ public class DFSOutputStream extends FSOutputSummer
     }
 
     if (!getStreamer().getAppendChunk()) {
-      final int psize = (int) Math
-          .min(blockSize - getStreamer().getBytesCurBlock(), writePacketSize);
+      int psize = 0;
+      if (blockSize == getStreamer().getBytesCurBlock()) {
+        psize = writePacketSize;
+      } else {
+        psize = (int) Math
+            .min(blockSize - getStreamer().getBytesCurBlock(), writePacketSize);
+      }
       computePacketChunkSize(psize, bytesPerChecksum);
     }
   }
@@ -563,13 +580,7 @@ public class DFSOutputStream extends FSOutputSummer
 
   @Override
   public boolean hasCapability(String capability) {
-    switch (StringUtils.toLowerCase(capability)) {
-    case StreamCapabilities.HSYNC:
-    case StreamCapabilities.HFLUSH:
-      return true;
-    default:
-      return false;
-    }
+    return StoreImplementationUtils.isProbeForSyncable(capability);
   }
 
   /**
@@ -823,7 +834,7 @@ public class DFSOutputStream extends FSOutputSummer
 
   void setClosed() {
     closed = true;
-    dfsClient.endFileLease(fileId);
+    dfsClient.endFileLease(getUniqKey());
     getStreamer().release();
   }
 
@@ -926,7 +937,7 @@ public class DFSOutputStream extends FSOutputSummer
   protected void recoverLease(boolean recoverLeaseOnCloseException) {
     if (recoverLeaseOnCloseException) {
       try {
-        dfsClient.endFileLease(fileId);
+        dfsClient.endFileLease(getUniqKey());
         dfsClient.recoverLease(src);
         leaseRecovered = true;
       } catch (Exception e) {
@@ -938,8 +949,8 @@ public class DFSOutputStream extends FSOutputSummer
   void completeFile() throws IOException {
     // get last block before destroying the streamer
     ExtendedBlock lastBlock = getStreamer().getBlock();
-    try (TraceScope ignored =
-        dfsClient.getTracer().newScope("completeFile")) {
+    try (TraceScope ignored = dfsClient.getTracer()
+        .newScope("DFSOutputStream#completeFile")) {
       completeFile(lastBlock);
     }
   }
@@ -995,7 +1006,10 @@ public class DFSOutputStream extends FSOutputSummer
           DFSClient.LOG.info(msg);
           throw new IOException(msg);
         }
-        try {
+        try (TraceScope scope = dfsClient.getTracer()
+            .newScope("DFSOutputStream#completeFile: Retry")) {
+          scope.addKVAnnotation("retries left", retries);
+          scope.addKVAnnotation("sleeptime (sleeping for)", sleeptime);
           if (retries == 0) {
             throw new IOException("Unable to close file because the last block "
                 + last + " does not have enough number of replicas.");
@@ -1084,6 +1098,16 @@ public class DFSOutputStream extends FSOutputSummer
   @VisibleForTesting
   public long getFileId() {
     return fileId;
+  }
+
+  @VisibleForTesting
+  public String getNamespace() {
+    return namespace;
+  }
+
+  @VisibleForTesting
+  public String getUniqKey() {
+    return this.uniqKey;
   }
 
   /**

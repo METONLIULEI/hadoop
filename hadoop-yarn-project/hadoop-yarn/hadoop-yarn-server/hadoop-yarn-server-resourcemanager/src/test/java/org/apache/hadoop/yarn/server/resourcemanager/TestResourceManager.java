@@ -19,8 +19,11 @@
 package org.apache.hadoop.yarn.server.resourcemanager;
 
 import static org.apache.hadoop.yarn.server.resourcemanager.MockNM.createMockNodeStatus;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.Collection;
@@ -29,6 +32,7 @@ import java.util.concurrent.TimeoutException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.http.lib.StaticUserWebFilter;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.security.AuthenticationFilterInitializer;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -50,12 +54,10 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateS
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.converter.FSConfigConverterTestCommons;
 import org.apache.hadoop.yarn.server.security.http.RMAuthenticationFilterInitializer;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,14 +67,13 @@ public class TestResourceManager {
 
   private ResourceManager resourceManager = null;
 
-  @Rule
-  public ExpectedException thrown = ExpectedException.none();
   private FSConfigConverterTestCommons converterTestCommons;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     YarnConfiguration conf = new YarnConfiguration();
     UserGroupInformation.setConfiguration(conf);
+    DefaultMetricsSystem.setMiniClusterMode(true);
     resourceManager = new ResourceManager();
     resourceManager.init(conf);
     resourceManager.getRMContext().getContainerTokenSecretManager().rollMasterKey();
@@ -82,7 +83,7 @@ public class TestResourceManager {
     converterTestCommons.setUp();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     resourceManager.stop();
     converterTestCommons.tearDown();
@@ -243,7 +244,8 @@ public class TestResourceManager {
     }
   }
 
-  @Test (timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testResourceManagerInitConfigValidation() throws Exception {
     Configuration conf = new YarnConfiguration();
     conf.setInt(YarnConfiguration.GLOBAL_RM_AM_MAX_ATTEMPTS, -1);
@@ -285,7 +287,8 @@ public class TestResourceManager {
     }
   }
 
-  @Test(timeout = 50000)
+  @Test
+  @Timeout(value = 50)
   public void testFilterOverrides() throws Exception {
     String filterInitializerConfKey = "hadoop.http.filter.initializers";
     String[] filterInitializers =
@@ -324,11 +327,11 @@ public class TestResourceManager {
         // just want to test filter settings
         String tmp = resourceManager.getConfig().get(filterInitializerConfKey);
         if (filterInitializer.contains(this.getClass().getName())) {
-          Assert.assertEquals(RMAuthenticationFilterInitializer.class.getName()
+          assertEquals(RMAuthenticationFilterInitializer.class.getName()
               + "," + this.getClass().getName(), tmp);
         } else {
-          Assert.assertEquals(
-            RMAuthenticationFilterInitializer.class.getName(), tmp);
+          assertEquals(
+              RMAuthenticationFilterInitializer.class.getName(), tmp);
         }
         resourceManager.stop();
       }
@@ -350,10 +353,10 @@ public class TestResourceManager {
         // just want to test filter settings
         String tmp = resourceManager.getConfig().get(filterInitializerConfKey);
         if (filterInitializer.equals(StaticUserWebFilter.class.getName())) {
-          Assert.assertEquals(RMAuthenticationFilterInitializer.class.getName()
+          assertEquals(RMAuthenticationFilterInitializer.class.getName()
               + "," + StaticUserWebFilter.class.getName(), tmp);
         } else {
-          Assert.assertEquals(
+          assertEquals(
             RMAuthenticationFilterInitializer.class.getName(), tmp);
         }
         resourceManager.stop();
@@ -368,18 +371,21 @@ public class TestResourceManager {
    */
   @Test
   public void testUserProvidedUGIConf() throws Exception {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Invalid attribute value for "
+
+    IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
+      Configuration dummyConf = new YarnConfiguration();
+      dummyConf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION,
+          "DUMMYAUTH");
+      ResourceManager dummyResourceManager = new ResourceManager();
+      try {
+        dummyResourceManager.init(dummyConf);
+      } finally {
+        dummyResourceManager.stop();
+      }
+    });
+
+    assertThat(exception.getMessage()).contains("Invalid attribute value for "
         + CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION
         + " of DUMMYAUTH");
-    Configuration dummyConf = new YarnConfiguration();
-    dummyConf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION,
-        "DUMMYAUTH");
-    ResourceManager dummyResourceManager = new ResourceManager();
-    try {
-      dummyResourceManager.init(dummyConf);
-    } finally {
-      dummyResourceManager.stop();
-    }
   }
 }

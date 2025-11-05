@@ -21,11 +21,16 @@ package org.apache.hadoop.fs.azurebfs;
 import java.io.IOException;
 import java.util.Map;
 
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.azurebfs.services.AbfsCounters;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+
+import static org.apache.hadoop.fs.CommonConfigurationKeys.IOSTATISTICS_LOGGING_LEVEL;
+import static org.apache.hadoop.fs.CommonConfigurationKeys.IOSTATISTICS_LOGGING_LEVEL_INFO;
 
 /**
  * Tests AzureBlobFileSystem Statistics.
@@ -37,6 +42,14 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
   public ITestAbfsStatistics() throws Exception {
   }
 
+  @BeforeEach
+  public void setUp() throws Exception {
+    super.setup();
+    // Setting IOStats to INFO level, to see the IOStats after close().
+    getFileSystem().getConf().set(IOSTATISTICS_LOGGING_LEVEL,
+        IOSTATISTICS_LOGGING_LEVEL_INFO);
+  }
+
   /**
    * Testing the initial value of statistics.
    */
@@ -46,14 +59,21 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
 
     AbfsCounters abfsCounters =
         new AbfsCountersImpl(getFileSystem().getUri());
-    Map<String, Long> metricMap = abfsCounters.toMap();
+    IOStatistics ioStatistics = abfsCounters.getIOStatistics();
 
-    for (Map.Entry<String, Long> entry : metricMap.entrySet()) {
-      String key = entry.getKey();
-      Long value = entry.getValue();
+    //Initial value verification for counters
+    for (Map.Entry<String, Long> entry : ioStatistics.counters().entrySet()) {
+      checkInitialValue(entry.getKey(), entry.getValue(), 0);
+    }
 
-      //Verify if initial value of statistic is 0.
-      checkInitialValue(key, value);
+    //Initial value verification for gauges
+    for (Map.Entry<String, Long> entry : ioStatistics.gauges().entrySet()) {
+      checkInitialValue(entry.getKey(), entry.getValue(), 0);
+    }
+
+    //Initial value verifications for DurationTrackers
+    for (Map.Entry<String, Long> entry : ioStatistics.maximums().entrySet()) {
+      checkInitialValue(entry.getKey(), entry.getValue(), -1);
     }
   }
 
@@ -71,7 +91,7 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
 
     fs.mkdirs(createDirectoryPath);
     fs.createNonRecursive(createFilePath, FsPermission
-        .getDefault(), false, 1024, (short) 1, 1024, null);
+        .getDefault(), false, 1024, (short) 1, 1024, null).close();
 
     Map<String, Long> metricMap = fs.getInstrumentationMap();
     /*
@@ -79,7 +99,6 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
     getFileStatus is called 1 time after creating file and 1 time at time of
     initialising.
      */
-    assertAbfsStatistics(AbfsStatistic.CALL_CREATE, 1, metricMap);
     assertAbfsStatistics(AbfsStatistic.CALL_CREATE_NON_RECURSIVE, 1, metricMap);
     assertAbfsStatistics(AbfsStatistic.FILES_CREATED, 1, metricMap);
     assertAbfsStatistics(AbfsStatistic.DIRECTORIES_CREATED, 1, metricMap);
@@ -97,7 +116,7 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
       fs.mkdirs(path(getMethodName() + "Dir" + i));
       fs.createNonRecursive(path(getMethodName() + i),
           FsPermission.getDefault(), false, 1024, (short) 1,
-          1024, null);
+          1024, null).close();
     }
 
     metricMap = fs.getInstrumentationMap();
@@ -106,7 +125,6 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
     getFileStatus is called 1 time at initialise() plus number of times file
     is created.
      */
-    assertAbfsStatistics(AbfsStatistic.CALL_CREATE, NUMBER_OF_OPS, metricMap);
     assertAbfsStatistics(AbfsStatistic.CALL_CREATE_NON_RECURSIVE, NUMBER_OF_OPS,
         metricMap);
     assertAbfsStatistics(AbfsStatistic.FILES_CREATED, NUMBER_OF_OPS, metricMap);
@@ -140,7 +158,7 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
     files_deleted counters.
      */
     fs.mkdirs(createDirectoryPath);
-    fs.create(path(createDirectoryPath + getMethodName()));
+    fs.create(path(createDirectoryPath + getMethodName())).close();
     fs.delete(createDirectoryPath, true);
 
     Map<String, Long> metricMap = fs.getInstrumentationMap();
@@ -159,7 +177,7 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
     directories_deleted is called or not.
      */
     fs.mkdirs(createDirectoryPath);
-    fs.create(createFilePath);
+    fs.create(createFilePath).close();
     fs.delete(createDirectoryPath, true);
     metricMap = fs.getInstrumentationMap();
 
@@ -179,9 +197,9 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
     Path createFilePath = path(getMethodName());
     Path destCreateFilePath = path(getMethodName() + "New");
 
-    fs.create(createFilePath);
-    fs.open(createFilePath);
-    fs.append(createFilePath);
+    fs.create(createFilePath).close();
+    fs.open(createFilePath).close();
+    fs.append(createFilePath).close();
     assertTrue(fs.rename(createFilePath, destCreateFilePath));
 
     Map<String, Long> metricMap = fs.getInstrumentationMap();
@@ -191,12 +209,12 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
     assertAbfsStatistics(AbfsStatistic.CALL_RENAME, 1, metricMap);
 
     //Testing if file exists at path.
-    assertTrue(String.format("File with name %s should exist",
-        destCreateFilePath),
-        fs.exists(destCreateFilePath));
-    assertFalse(String.format("File with name %s should not exist",
-        createFilePath),
-        fs.exists(createFilePath));
+    assertTrue(
+       fs.exists(destCreateFilePath), String.format("File with name %s should exist",
+        destCreateFilePath));
+    assertFalse(
+       fs.exists(createFilePath), String.format("File with name %s should not exist",
+        createFilePath));
 
     metricMap = fs.getInstrumentationMap();
     //Testing exists() calls.
@@ -205,11 +223,11 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
     //re-initialising Abfs to reset statistic values.
     fs.initialize(fs.getUri(), fs.getConf());
 
-    fs.create(destCreateFilePath);
+    fs.create(destCreateFilePath).close();
 
     for (int i = 0; i < NUMBER_OF_OPS; i++) {
       fs.open(destCreateFilePath);
-      fs.append(destCreateFilePath);
+      fs.append(destCreateFilePath).close();
     }
 
     metricMap = fs.getInstrumentationMap();
@@ -224,12 +242,12 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
       assertTrue(fs.rename(createFilePath, destCreateFilePath));
 
       //check if first name is existing and 2nd is not existing.
-      assertTrue(String.format("File with name %s should exist",
-          destCreateFilePath),
-          fs.exists(destCreateFilePath));
-      assertFalse(String.format("File with name %s should not exist",
-          createFilePath),
-          fs.exists(createFilePath));
+      assertTrue(
+         fs.exists(destCreateFilePath), String.format("File with name %s should exist",
+          destCreateFilePath));
+      assertFalse(
+         fs.exists(createFilePath), String.format("File with name %s should not exist",
+          createFilePath));
 
     }
 
@@ -251,8 +269,10 @@ public class ITestAbfsStatistics extends AbstractAbfsIntegrationTest {
    *
    * @param statName  name of the statistic to be checked.
    * @param statValue value of the statistic.
+   * @param expectedInitialValue initial value expected from this statistic.
    */
-  private void checkInitialValue(String statName, long statValue) {
-    assertEquals("Mismatch in " + statName, 0, statValue);
+  private void checkInitialValue(String statName, long statValue,
+      long expectedInitialValue) {
+    assertEquals(expectedInitialValue, statValue, "Mismatch in " + statName);
   }
 }

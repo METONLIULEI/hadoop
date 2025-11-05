@@ -35,8 +35,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
-
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
@@ -48,11 +46,14 @@ import org.apache.hadoop.hdfs.protocol.OpenFileEntry;
 import org.apache.hadoop.hdfs.protocol.OpenFilesIterator;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.util.Daemon;
-
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.Time;
+
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -135,8 +136,8 @@ public class LeaseManager {
    * calling this method.
    */
   synchronized long getNumUnderConstructionBlocks() {
-    assert this.fsnamesystem.hasReadLock() : "The FSNamesystem read lock wasn't"
-      + "acquired before counting under construction blocks";
+    assert this.fsnamesystem.hasReadLock(RwLockMode.GLOBAL) :
+        "The FSNamesystem read lock wasn't acquired before counting under construction blocks";
     long numUCBlocks = 0;
     for (Long id : getINodeIdWithLeases()) {
       INode inode = fsnamesystem.getFSDirectory().getInode(id);
@@ -207,7 +208,7 @@ public class LeaseManager {
    */
   public Set<INodesInPath> getINodeWithLeases(final INodeDirectory
       ancestorDir) throws IOException {
-    assert fsnamesystem.hasReadLock();
+    assert fsnamesystem.hasReadLock(RwLockMode.FS);
     final long startTimeMs = Time.monotonicNow();
     Set<INodesInPath> iipSet = new HashSet<>();
     final INode[] inodes = getINodesWithLease();
@@ -284,7 +285,7 @@ public class LeaseManager {
    */
   public BatchedListEntries<OpenFileEntry> getUnderConstructionFiles(
       final long prevId, final String path) throws IOException {
-    assert fsnamesystem.hasReadLock();
+    assert fsnamesystem.hasReadLock(RwLockMode.FS);
     SortedMap<Long, Lease> remainingLeases;
     synchronized (this) {
       remainingLeases = leasesById.tailMap(prevId, false);
@@ -300,8 +301,13 @@ public class LeaseManager {
     Iterator<Long> inodeIdIterator = inodeIds.iterator();
     while (inodeIdIterator.hasNext()) {
       Long inodeId = inodeIdIterator.next();
-      final INodeFile inodeFile =
-          fsnamesystem.getFSDirectory().getInode(inodeId).asFile();
+      INode ucFile = fsnamesystem.getFSDirectory().getInode(inodeId);
+      if (ucFile == null) {
+        //probably got deleted
+        continue;
+      }
+
+      final INodeFile inodeFile = ucFile.asFile();
       if (!inodeFile.isUnderConstruction()) {
         LOG.warn("The file {} is not under construction but has lease.",
             inodeFile.getFullPathName());
@@ -537,13 +543,13 @@ public class LeaseManager {
             continue;
           }
 
-          fsnamesystem.writeLockInterruptibly();
+          fsnamesystem.writeLockInterruptibly(RwLockMode.GLOBAL);
           try {
             if (!fsnamesystem.isInSafeMode()) {
               needSync = checkLeases(candidates);
             }
           } finally {
-            fsnamesystem.writeUnlock("leaseManager");
+            fsnamesystem.writeUnlock(RwLockMode.GLOBAL, "leaseManager");
             // lease reassignments should to be sync'ed.
             if (needSync) {
               fsnamesystem.getEditLog().logSync();
@@ -568,7 +574,7 @@ public class LeaseManager {
 
   private synchronized boolean checkLeases(Collection<Lease> leasesToCheck) {
     boolean needSync = false;
-    assert fsnamesystem.hasWriteLock();
+    assert fsnamesystem.hasWriteLock(RwLockMode.GLOBAL);
 
     long start = monotonicNow();
     for (Lease leaseToCheck : leasesToCheck) {

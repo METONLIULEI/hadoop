@@ -23,11 +23,12 @@ import com.microsoft.azure.storage.blob.CloudBlobClient;
 import com.microsoft.azure.storage.blob.CloudBlobContainer;
 import com.microsoft.azure.storage.blob.CloudBlockBlob;
 
-import org.junit.Assume;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
+
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Test AzureBlobFileSystem back compatibility with WASB.
@@ -42,21 +43,25 @@ public class ITestAzureBlobFileSystemBackCompat extends
   @Test
   public void testBlobBackCompat() throws Exception {
     final AzureBlobFileSystem fs = this.getFileSystem();
-    Assume.assumeFalse("This test does not support namespace enabled account",
-            this.getFileSystem().getIsNamespaceEnabled());
+    assumeThat(getIsNamespaceEnabled(getFileSystem()))
+        .as("This test does not support namespace enabled account")
+        .isFalse();
     String storageConnectionString = getBlobConnectionString();
     CloudStorageAccount storageAccount = CloudStorageAccount.parse(storageConnectionString);
     CloudBlobClient blobClient = storageAccount.createCloudBlobClient();
     CloudBlobContainer container = blobClient.getContainerReference(this.getFileSystemName());
     container.createIfNotExists();
 
-    CloudBlockBlob blockBlob = container.getBlockBlobReference("test/10/10/10");
+    Path testPath = getUniquePath("test");
+    CloudBlockBlob blockBlob = container
+        .getBlockBlobReference(testPath + "/10/10/10");
     blockBlob.uploadText("");
 
-    blockBlob = container.getBlockBlobReference("test/10/123/3/2/1/3");
+    blockBlob = container.getBlockBlobReference(testPath + "/10/123/3/2/1/3");
     blockBlob.uploadText("");
 
-    FileStatus[] fileStatuses = fs.listStatus(new Path("/test/10/"));
+    FileStatus[] fileStatuses = fs
+        .listStatus(new Path(String.format("/%s/10/", testPath)));
     assertEquals(2, fileStatuses.length);
     assertEquals("10", fileStatuses[0].getPath().getName());
     assertTrue(fileStatuses[0].isDirectory());
@@ -71,6 +76,12 @@ public class ITestAzureBlobFileSystemBackCompat extends
     if (isIPAddress()) {
       connectionString = "DefaultEndpointsProtocol=http;BlobEndpoint=http://"
               + this.getHostName() + ":8880/" + this.getAccountName().split("\\.") [0]
+              + ";AccountName=" + this.getAccountName().split("\\.")[0]
+              + ";AccountKey=" + this.getAccountKey();
+    }
+    else if (this.getConfiguration().isHttpsAlwaysUsed()) {
+      connectionString = "DefaultEndpointsProtocol=https;BlobEndpoint=https://"
+              + this.getAccountName().replaceFirst("\\.dfs\\.", ".blob.")
               + ";AccountName=" + this.getAccountName().split("\\.")[0]
               + ";AccountKey=" + this.getAccountKey();
     }

@@ -26,7 +26,7 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Random;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test base of common utilities for tests not only raw coders but also block
@@ -159,7 +159,7 @@ public abstract class TestCoderBase {
     byte[][] recovered = toArrays(recoveredChunks);
     boolean result = Arrays.deepEquals(erased, recovered);
     if (!result) {
-      assertTrue("Decoding and comparing failed.", result);
+      assertTrue(result, "Decoding and comparing failed.");
     }
   }
 
@@ -518,5 +518,17 @@ public abstract class TestCoderBase {
     if (buffer.hasRemaining()) {
       buffer.position(buffer.position() + 1);
     }
+  }
+
+  /**
+   * Pollute some chunk.
+   * @param chunks
+   */
+  protected void polluteSomeChunk(ECChunk[] chunks) {
+    int idx = new Random().nextInt(chunks.length);
+    ByteBuffer buffer = chunks[idx].getBuffer();
+    buffer.mark();
+    buffer.put((byte) ((buffer.get(buffer.position()) + 1)));
+    buffer.reset();
   }
 }

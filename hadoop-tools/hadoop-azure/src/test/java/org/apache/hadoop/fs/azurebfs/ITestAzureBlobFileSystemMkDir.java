@@ -20,15 +20,22 @@ package org.apache.hadoop.fs.azurebfs;
 
 import java.util.UUID;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-
-import static org.apache.hadoop.fs.contract.ContractTestUtils.assertMkdirs;
+import org.apache.hadoop.fs.azurebfs.services.AbfsBlobClient;
+import org.apache.hadoop.fs.azurebfs.services.AbfsClient;
 
 import static org.apache.hadoop.fs.azurebfs.AbfsStatistic.CONNECTIONS_MADE;
+import static org.apache.hadoop.fs.azurebfs.constants.ConfigurationKeys.FS_AZURE_ENABLE_MKDIR_OVERWRITE;
+import static org.apache.hadoop.fs.azurebfs.constants.FileSystemConfigurations.DEFAULT_FS_AZURE_ENABLE_MKDIR_OVERWRITE;
+import static org.apache.hadoop.fs.contract.ContractTestUtils.assertMkdirs;
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
  * Test mkdir operation.
@@ -41,10 +48,44 @@ public class ITestAzureBlobFileSystemMkDir extends AbstractAbfsIntegrationTest {
 
   @Test
   public void testCreateDirWithExistingDir() throws Exception {
+    assumeThat(DEFAULT_FS_AZURE_ENABLE_MKDIR_OVERWRITE || !getIsNamespaceEnabled(getFileSystem()))
+        .isTrue();
     final AzureBlobFileSystem fs = getFileSystem();
-    Path path = new Path("testFolder");
+    Path path = path("testFolder");
     assertMkdirs(fs, path);
     assertMkdirs(fs, path);
+  }
+
+  @Test
+  public void testMkdirExistingDirOverwriteFalse() throws Exception {
+    assumeThat(DEFAULT_FS_AZURE_ENABLE_MKDIR_OVERWRITE)
+        .as("Ignore test until default overwrite is set to false")
+        .isFalse();
+    assumeThat(getIsNamespaceEnabled(getFileSystem()))
+        .as("Ignore test for Non-HNS accounts").isTrue();
+    //execute test only for HNS account with default overwrite=false
+    Configuration config = new Configuration(this.getRawConfiguration());
+    config.set(FS_AZURE_ENABLE_MKDIR_OVERWRITE, Boolean.toString(false));
+    AzureBlobFileSystem fs = getFileSystem(config);
+    Path path = path("testFolder");
+    assertMkdirs(fs, path); //checks that mkdirs returns true
+    long timeCreated = fs.getFileStatus(path).getModificationTime();
+    assertMkdirs(fs, path); //call to existing dir should return success
+    assertEquals(timeCreated, fs.getFileStatus(path).getModificationTime(),
+        "LMT should not be updated for existing dir");
+  }
+
+  @Test
+  public void createDirWithExistingFilename() throws Exception {
+    assumeThat(DEFAULT_FS_AZURE_ENABLE_MKDIR_OVERWRITE
+        && getIsNamespaceEnabled(getFileSystem()))
+        .as("Ignore test until default overwrite is set to false")
+        .isFalse();
+    final AzureBlobFileSystem fs = getFileSystem();
+    Path path = path("testFilePath");
+    fs.create(path).close();
+    assertTrue(fs.getFileStatus(path).isFile());
+    intercept(FileAlreadyExistsException.class, () -> fs.mkdirs(path));
   }
 
   @Test
@@ -86,7 +127,13 @@ public class ITestAzureBlobFileSystemMkDir extends AbstractAbfsIntegrationTest {
     fs.mkdirs(dirPath);
 
     // One request to server
-    mkdirRequestCount++;
+    AbfsClient client = fs.getAbfsStore().getClientHandler().getIngressClient();
+    if (client instanceof AbfsBlobClient && !getIsNamespaceEnabled(fs)) {
+      // 1 GetBlobProperties + 1 ListBlobs + 1 PutBlob call.
+      mkdirRequestCount +=3;
+    } else {
+      mkdirRequestCount++;
+    }
 
     assertAbfsStatistics(
         CONNECTIONS_MADE,
@@ -98,11 +145,27 @@ public class ITestAzureBlobFileSystemMkDir extends AbstractAbfsIntegrationTest {
     fs.mkdirs(dirPath);
 
     // One request to server
-    mkdirRequestCount++;
+    if (client instanceof AbfsBlobClient && !getIsNamespaceEnabled(fs)) {
+      // 1 ListBlobs + 1 GetBlobProperties
+      mkdirRequestCount +=2;
+    } else {
+      mkdirRequestCount++;
+    }
 
     assertAbfsStatistics(
         CONNECTIONS_MADE,
         totalConnectionMadeBeforeTest + mkdirRequestCount,
         fs.getInstrumentationMap());
+  }
+
+  @Test
+  public void testMkdirWithExistingFilename() throws Exception {
+    AzureBlobFileSystem fs = Mockito.spy(getFileSystem());
+    AzureBlobFileSystemStore store = Mockito.spy(fs.getAbfsStore());
+    Mockito.doReturn(store).when(fs).getAbfsStore();
+
+    fs.create(new Path("/testFilePath"));
+    intercept(FileAlreadyExistsException.class, () -> fs.mkdirs(new Path("/testFilePath")));
+    intercept(FileAlreadyExistsException.class, () -> fs.mkdirs(new Path("/testFilePath/newDir")));
   }
 }

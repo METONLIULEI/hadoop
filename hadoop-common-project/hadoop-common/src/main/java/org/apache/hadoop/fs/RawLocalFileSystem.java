@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,7 +19,7 @@
 
 package org.apache.hadoop.fs;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 import java.io.BufferedOutputStream;
 import java.io.DataOutput;
@@ -33,8 +33,11 @@ import java.io.OutputStream;
 import java.io.FileDescriptor;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousFileChannel;
+import java.nio.channels.CompletionHandler;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileTime;
@@ -43,21 +46,35 @@ import java.util.EnumSet;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.StringTokenizer;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+import java.util.function.IntFunction;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.impl.StoreImplementationUtils;
+import org.apache.hadoop.fs.impl.VectorIOBufferPool;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.IOStatisticsAggregator;
+import org.apache.hadoop.fs.statistics.IOStatisticsContext;
 import org.apache.hadoop.fs.statistics.IOStatisticsSource;
 import org.apache.hadoop.fs.statistics.BufferedIOStatisticsOutputStream;
 import org.apache.hadoop.fs.statistics.impl.IOStatisticsStore;
+import org.apache.hadoop.io.ByteBufferPool;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.nativeio.NativeIO;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
 
+import static org.apache.hadoop.fs.VectoredReadUtils.LOG_BYTE_BUFFER_RELEASED;
+import static org.apache.hadoop.fs.VectoredReadUtils.hasVectorIOCapability;
+import static org.apache.hadoop.fs.VectoredReadUtils.sortRangeList;
+import static org.apache.hadoop.fs.VectoredReadUtils.validateRangeRequest;
 import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapabilityArgs;
 import static org.apache.hadoop.fs.statistics.StreamStatisticNames.STREAM_READ_BYTES;
 import static org.apache.hadoop.fs.statistics.StreamStatisticNames.STREAM_READ_EXCEPTIONS;
@@ -98,7 +115,12 @@ public class RawLocalFileSystem extends FileSystem {
     }
   }
   
-  /** Convert a path to a File. */
+  /**
+   * Convert a path to a File.
+   *
+   * @param path the path.
+   * @return file.
+   */
   public File pathToFile(Path path) {
     checkPath(path);
     if (!path.isAbsolute()) {
@@ -123,7 +145,9 @@ public class RawLocalFileSystem extends FileSystem {
   class LocalFSFileInputStream extends FSInputStream implements
       HasFileDescriptor, IOStatisticsSource, StreamCapabilities {
     private FileInputStream fis;
+    private final File name;
     private long position;
+    private AsynchronousFileChannel asyncChannel = null;
 
     /**
      * Minimal set of counters.
@@ -137,8 +161,22 @@ public class RawLocalFileSystem extends FileSystem {
             STREAM_READ_SKIP_BYTES)
         .build();
 
+    /** Reference to the bytes read counter for slightly faster counting. */
+    private final AtomicLong bytesRead;
+
+    /**
+     * Thread level IOStatistics aggregator to update in close().
+     */
+    private final IOStatisticsAggregator
+        ioStatisticsAggregator;
+
     public LocalFSFileInputStream(Path f) throws IOException {
-      fis = new FileInputStream(pathToFile(f));
+      name = pathToFile(f);
+      fis = new FileInputStream(name);
+      bytesRead = ioStatistics.getCounterReference(
+          STREAM_READ_BYTES);
+      ioStatisticsAggregator =
+          IOStatisticsContext.getCurrentIOStatisticsContext().getAggregator();
     }
     
     @Override
@@ -161,16 +199,26 @@ public class RawLocalFileSystem extends FileSystem {
       return false;
     }
     
-    /*
-     * Just forward to the fis
+    /**
+     * Just forward to the fis.
      */
     @Override
     public int available() throws IOException { return fis.available(); }
     @Override
-    public void close() throws IOException { fis.close(); }
-    @Override
     public boolean markSupported() { return false; }
-    
+
+    @Override
+    public void close() throws IOException {
+      try {
+        fis.close();
+        if (asyncChannel != null) {
+          asyncChannel.close();
+        }
+      } finally {
+        ioStatisticsAggregator.aggregate(ioStatistics);
+      }
+    }
+
     @Override
     public int read() throws IOException {
       try {
@@ -178,7 +226,7 @@ public class RawLocalFileSystem extends FileSystem {
         if (value >= 0) {
           this.position++;
           statistics.incrementBytesRead(1);
-          ioStatistics.incrementCounter(STREAM_READ_BYTES);
+          bytesRead.addAndGet(1);
         }
         return value;
       } catch (IOException e) {                 // unexpected exception
@@ -196,7 +244,7 @@ public class RawLocalFileSystem extends FileSystem {
         if (value > 0) {
           this.position += value;
           statistics.incrementBytesRead(value);
-          ioStatistics.incrementCounter(STREAM_READ_BYTES, value);
+          bytesRead.addAndGet(value);
         }
         return value;
       } catch (IOException e) {                 // unexpected exception
@@ -246,13 +294,12 @@ public class RawLocalFileSystem extends FileSystem {
 
     @Override
     public boolean hasCapability(String capability) {
-      // a bit inefficient, but intended to make it easier to add
-      // new capabilities.
       switch (capability.toLowerCase(Locale.ENGLISH)) {
       case StreamCapabilities.IOSTATISTICS:
+      case StreamCapabilities.IOSTATISTICS_CONTEXT:
         return true;
       default:
-        return false;
+        return hasVectorIOCapability(capability);
       }
     }
 
@@ -260,8 +307,151 @@ public class RawLocalFileSystem extends FileSystem {
     public IOStatistics getIOStatistics() {
       return ioStatistics;
     }
+
+    AsynchronousFileChannel getAsyncChannel() throws IOException {
+      if (asyncChannel == null) {
+        synchronized (this) {
+          asyncChannel = AsynchronousFileChannel.open(name.toPath(),
+                  StandardOpenOption.READ);
+        }
+      }
+      return asyncChannel;
+    }
+
+    @Override
+    public void readVectored(List<? extends FileRange> ranges,
+                             IntFunction<ByteBuffer> allocate) throws IOException {
+      readVectored(ranges, allocate, LOG_BYTE_BUFFER_RELEASED);
+    }
+
+    @Override
+    public void readVectored(final List<? extends FileRange> ranges,
+        final IntFunction<ByteBuffer> allocate,
+        final Consumer<ByteBuffer> release) throws IOException {
+
+      // Validate, but do not pass in a file length as it may change.
+      List<? extends FileRange> sortedRanges = sortRangeList(ranges);
+      // Set up all of the futures, so that the caller can await on
+      // their completion.
+      for (FileRange range: sortedRanges) {
+        validateRangeRequest(range);
+        range.setData(new CompletableFuture<>());
+      }
+      final ByteBufferPool pool = new VectorIOBufferPool(allocate, release);
+      // Initiate the asynchronous reads.
+      new AsyncHandler(getAsyncChannel(),
+          sortedRanges,
+          pool)
+          .initiateRead();
+    }
   }
-  
+
+  /**
+   * A CompletionHandler that implements readFully and translates back
+   * into the form of CompletionHandler that our users expect.
+   * <p>
+   * All reads are started in {@link #initiateRead()};
+   * the handler then receives callbacks on success
+   * {@link #completed(Integer, Integer)}, and on failure
+   * by {@link #failed(Throwable, Integer)}.
+   * These are mapped to the specific range in the read, and its
+   * outcome updated.
+   */
+  private static class AsyncHandler implements CompletionHandler<Integer, Integer> {
+    /** File channel to read from. */
+    private final AsynchronousFileChannel channel;
+
+    /** Ranges to fetch. */
+    private final List<? extends FileRange> ranges;
+
+    /**
+     * Pool providing allocate/release operations.
+     */
+    private final ByteBufferPool allocateRelease;
+
+    /** Buffers being read. */
+    private final ByteBuffer[] buffers;
+
+    /**
+     * Instantiate.
+     * @param channel open channel.
+     * @param ranges ranges to read.
+     * @param allocateRelease pool for allocating buffers, and releasing on failure
+     */
+    AsyncHandler(
+        final AsynchronousFileChannel channel,
+        final List<? extends FileRange> ranges,
+        final ByteBufferPool allocateRelease) {
+      this.channel = channel;
+      this.ranges = ranges;
+      this.buffers = new ByteBuffer[ranges.size()];
+      this.allocateRelease = allocateRelease;
+    }
+
+    /**
+     * Initiate the read operation.
+     * <p>
+     * Allocate all buffers, queue the read into the channel,
+     * providing this object as the handler.
+     */
+    private void initiateRead() {
+      for(int i = 0; i < ranges.size(); ++i) {
+        FileRange range = ranges.get(i);
+        buffers[i] = allocateRelease.getBuffer(false, range.getLength());
+        final ByteBuffer buffer = buffers[i];
+        LOG.debug("Reading file range {} into buffer {}", range, System.identityHashCode(buffer));
+        channel.read(buffer, range.getOffset(), i, this);
+      }
+    }
+
+    /**
+     * Callback for a completed full/partial read.
+     * <p>
+     * For an EOF the number of bytes may be -1.
+     * That is mapped to a {@link #failed(Throwable, Integer)} outcome.
+     * @param result The bytes read.
+     * @param rangeIndex range index within the range list.
+     */
+    @Override
+    public void completed(Integer result, Integer rangeIndex) {
+      FileRange range = ranges.get(rangeIndex);
+      ByteBuffer buffer = buffers[rangeIndex];
+      LOG.debug("Completed read range {} into buffer {} outcome={} remaining={}",
+          range, System.identityHashCode(buffer), result, buffer.remaining());
+      if (result == -1) {
+        // no data was read back.
+        failed(new EOFException("Read past End of File"), rangeIndex);
+      } else {
+        if (buffer.remaining() > 0) {
+          // issue a read for the rest of the buffer
+          channel.read(buffer, range.getOffset() + buffer.position(), rangeIndex, this);
+        } else {
+          // Flip the buffer and declare success.
+          buffer.flip();
+          range.getData().complete(buffer);
+        }
+      }
+    }
+
+    /**
+     * The read of the range failed.
+     * <p>
+     * Release the buffer supplied for this range, then
+     * report to the future as {{completeExceptionally(exc)}}
+     * @param exc exception.
+     * @param rangeIndex range index within the range list.
+     */
+    @Override
+    public void failed(Throwable exc, Integer rangeIndex) {
+      LOG.debug("Failed while reading range {} ", rangeIndex, exc);
+      // release the buffer
+      allocateRelease.putBuffer(buffers[rangeIndex]);
+      // report the failure.
+      ranges.get(rangeIndex).getData().completeExceptionally(exc);
+    }
+
+  }
+
   @Override
   public FSDataInputStream open(Path f, int bufferSize) throws IOException {
     getFileStatus(f);
@@ -285,7 +475,7 @@ public class RawLocalFileSystem extends FileSystem {
    * For create()'s FSOutputStream.
    *********************************************************/
   final class LocalFSFileOutputStream extends OutputStream implements
-      IOStatisticsSource, StreamCapabilities {
+      IOStatisticsSource, StreamCapabilities, Syncable {
     private FileOutputStream fos;
 
     /**
@@ -297,9 +487,19 @@ public class RawLocalFileSystem extends FileSystem {
             STREAM_WRITE_EXCEPTIONS)
         .build();
 
+    /**
+     * Thread level IOStatistics aggregator to update in close().
+     */
+    private final IOStatisticsAggregator
+        ioStatisticsAggregator;
+
     private LocalFSFileOutputStream(Path f, boolean append,
         FsPermission permission) throws IOException {
       File file = pathToFile(f);
+      // store the aggregator before attempting any IO.
+      ioStatisticsAggregator =
+          IOStatisticsContext.getCurrentIOStatisticsContext().getAggregator();
+
       if (!append && permission == null) {
         permission = FsPermission.getFileDefault();
       }
@@ -318,7 +518,7 @@ public class RawLocalFileSystem extends FileSystem {
             success = true;
           } finally {
             if (!success) {
-              IOUtils.cleanup(LOG, this.fos);
+              IOUtils.cleanupWithLogger(LOG, this.fos);
             }
           }
         }
@@ -326,10 +526,17 @@ public class RawLocalFileSystem extends FileSystem {
     }
 
     /*
-     * Just forward to the fos
+     * Close the fos; update the IOStatisticsContext.
      */
     @Override
-    public void close() throws IOException { fos.close(); }
+    public void close() throws IOException {
+      try {
+        fos.close();
+      } finally {
+        ioStatisticsAggregator.aggregate(ioStatistics);
+      }
+    }
+
     @Override
     public void flush() throws IOException { fos.flush(); }
     @Override
@@ -355,14 +562,30 @@ public class RawLocalFileSystem extends FileSystem {
     }
 
     @Override
+    public void hflush() throws IOException {
+      flush();
+    }
+
+    /**
+     * HSync calls sync on fhe file descriptor after a local flush() call.
+     * @throws IOException failure
+     */
+    @Override
+    public void hsync() throws IOException {
+      flush();
+      fos.getFD().sync();
+    }
+
+    @Override
     public boolean hasCapability(String capability) {
       // a bit inefficient, but intended to make it easier to add
       // new capabilities.
       switch (capability.toLowerCase(Locale.ENGLISH)) {
       case StreamCapabilities.IOSTATISTICS:
+      case StreamCapabilities.IOSTATISTICS_CONTEXT:
         return true;
       default:
-        return false;
+        return StoreImplementationUtils.isProbeForSyncable(capability);
       }
     }
 
@@ -1161,11 +1384,18 @@ public class RawLocalFileSystem extends FileSystem {
     case CommonPathCapabilities.FS_PATHHANDLES:
     case CommonPathCapabilities.FS_PERMISSIONS:
     case CommonPathCapabilities.FS_TRUNCATE:
+      // block locations are generated locally
+    case CommonPathCapabilities.VIRTUAL_BLOCK_LOCATIONS:
       return true;
     case CommonPathCapabilities.FS_SYMLINKS:
       return FileSystem.areSymlinksEnabled();
     default:
       return super.hasPathCapability(path, capability);
     }
+  }
+
+  @VisibleForTesting
+  static void setUseDeprecatedFileStatus(boolean useDeprecatedFileStatus) {
+    RawLocalFileSystem.useDeprecatedFileStatus = useDeprecatedFileStatus;
   }
 }

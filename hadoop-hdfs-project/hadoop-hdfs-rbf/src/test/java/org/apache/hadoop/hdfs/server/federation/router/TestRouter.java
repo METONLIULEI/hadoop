@@ -19,10 +19,10 @@ package org.apache.hadoop.hdfs.server.federation.router;
 
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 
 import java.io.IOException;
@@ -41,18 +41,18 @@ import org.apache.hadoop.hdfs.server.federation.resolver.ActiveNamenodeResolver;
 import org.apache.hadoop.hdfs.server.federation.resolver.FileSubclusterResolver;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.service.Service.STATE;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
- * The the safe mode for the {@link Router} controlled by
+ * The safe mode for the {@link Router} controlled by
  * {@link SafeModeTimer}.
  */
 public class TestRouter {
 
   private static Configuration conf;
 
-  @BeforeClass
+  @BeforeAll
   public static void create() throws IOException {
     // Basic configuration without the state store
     conf = new Configuration();
@@ -223,10 +223,14 @@ public class TestRouter {
 
   @Test
   public void testSwitchRouter() throws IOException {
-    assertRouterHeartbeater(true, true);
-    assertRouterHeartbeater(true, false);
-    assertRouterHeartbeater(false, true);
-    assertRouterHeartbeater(false, false);
+    assertRouterHeartbeater(true, true, true);
+    assertRouterHeartbeater(true, true, false);
+    assertRouterHeartbeater(true, false, true);
+    assertRouterHeartbeater(true, false, false);
+    assertRouterHeartbeater(false, true, true);
+    assertRouterHeartbeater(false, true, false);
+    assertRouterHeartbeater(false, false, true);
+    assertRouterHeartbeater(false, false, false);
   }
 
   /**
@@ -235,15 +239,19 @@ public class TestRouter {
    * @param expectedRouterHeartbeat expect the routerHeartbeat enable state.
    * @param expectedNNHeartbeat expect the nnHeartbeat enable state.
    */
-  private void assertRouterHeartbeater(boolean expectedRouterHeartbeat,
+  private void assertRouterHeartbeater(boolean enableRpcServer, boolean expectedRouterHeartbeat,
       boolean expectedNNHeartbeat) throws IOException {
     final Router router = new Router();
-    Configuration baseCfg = new RouterConfigBuilder(conf).rpc().build();
+    Configuration baseCfg = new RouterConfigBuilder(conf).rpc(enableRpcServer).build();
     baseCfg.setBoolean(RBFConfigKeys.DFS_ROUTER_HEARTBEAT_ENABLE,
         expectedRouterHeartbeat);
     baseCfg.setBoolean(RBFConfigKeys.DFS_ROUTER_NAMENODE_HEARTBEAT_ENABLE,
         expectedNNHeartbeat);
     router.init(baseCfg);
+
+    // RouterId can not be null , used by RouterHeartbeatService.updateStateStore()
+    assertNotNull(router.getRouterId());
+
     RouterHeartbeatService routerHeartbeatService =
         router.getRouterHeartbeatService();
     if (expectedRouterHeartbeat) {

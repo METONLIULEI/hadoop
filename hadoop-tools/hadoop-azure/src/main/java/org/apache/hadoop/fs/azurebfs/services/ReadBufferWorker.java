@@ -20,16 +20,22 @@ package org.apache.hadoop.fs.azurebfs.services;
 
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.fs.PathIOException;
 import org.apache.hadoop.fs.azurebfs.contracts.services.ReadBufferStatus;
 
 class ReadBufferWorker implements Runnable {
 
   protected static final CountDownLatch UNLEASH_WORKERS = new CountDownLatch(1);
   private int id;
+  private ReadBufferManager bufferManager;
+  private AtomicBoolean isRunning = new AtomicBoolean(true);
 
-  ReadBufferWorker(final int id) {
+  ReadBufferWorker(final int id, final ReadBufferManager bufferManager) {
     this.id = id;
+    this.bufferManager = bufferManager;
   }
 
   /**
@@ -50,9 +56,8 @@ class ReadBufferWorker implements Runnable {
     } catch (InterruptedException ex) {
       Thread.currentThread().interrupt();
     }
-    ReadBufferManager bufferManager = ReadBufferManager.getBufferManager();
     ReadBuffer buffer;
-    while (true) {
+    while (isRunning()) {
       try {
         buffer = bufferManager.getNextBlockToRead();   // blocks, until a buffer is available for this thread
       } catch (InterruptedException ex) {
@@ -69,14 +74,27 @@ class ReadBufferWorker implements Runnable {
               // If AbfsInputStream was created with bigger buffer size than
               // read-ahead buffer size, make sure a valid length is passed
               // for remote read
-              Math.min(buffer.getRequestedLength(), buffer.getBuffer().length));
+              Math.min(buffer.getRequestedLength(), buffer.getBuffer().length),
+              buffer.getTracingContext());
 
           bufferManager.doneReading(buffer, ReadBufferStatus.AVAILABLE, bytesRead);  // post result back to ReadBufferManager
+        } catch (IOException ex) {
+          buffer.setErrException(ex);
+          bufferManager.doneReading(buffer, ReadBufferStatus.READ_FAILED, 0);
         } catch (Exception ex) {
-          buffer.setErrException(new IOException(ex));
+          buffer.setErrException(new PathIOException(buffer.getStream().getPath(), ex));
           bufferManager.doneReading(buffer, ReadBufferStatus.READ_FAILED, 0);
         }
       }
     }
+  }
+
+  public void stop() {
+    isRunning.set(false);
+  }
+
+  @VisibleForTesting
+  public boolean isRunning() {
+    return isRunning.get();
   }
 }

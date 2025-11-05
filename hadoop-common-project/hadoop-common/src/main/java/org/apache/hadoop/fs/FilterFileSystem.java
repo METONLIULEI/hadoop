@@ -233,7 +233,7 @@ public class FilterFileSystem extends FileSystem {
    * 
    * @param src file name
    * @param replication new replication
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    * @return true if successful;
    *         false if file does not exist or is a directory
    */
@@ -304,7 +304,7 @@ public class FilterFileSystem extends FileSystem {
    * Set the current working directory for the given file system. All relative
    * paths will be resolved relative to it.
    * 
-   * @param newDir
+   * @param newDir new dir.
    */
   @Override
   public void setWorkingDirectory(Path newDir) {
@@ -730,6 +730,11 @@ public class FilterFileSystem extends FileSystem {
       final PathHandle pathHandle,
       final OpenFileParameters parameters) throws IOException {
     return fs.openFileWithOptions(pathHandle, parameters);
+  }
+
+  @Override
+  public Path getEnclosingRoot(Path path) throws IOException {
+    return fs.getEnclosingRoot(path);
   }
 
   @Override

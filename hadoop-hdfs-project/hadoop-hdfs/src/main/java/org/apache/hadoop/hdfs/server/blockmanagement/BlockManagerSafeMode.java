@@ -32,11 +32,12 @@ import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress.Co
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Status;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Step;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StepType;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.util.Daemon;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -109,7 +110,7 @@ class BlockManagerSafeMode {
   /** Timestamp of the safe mode initialized. */
   private long startTime;
   /** the safe mode monitor thread. */
-  private final Daemon smmthread = new Daemon(new SafeModeMonitor());
+  private final Daemon smmthread;
 
   /** time of the last status printout */
   private long lastStatusReport;
@@ -156,6 +157,7 @@ class BlockManagerSafeMode {
         MILLISECONDS);
 
     this.inRollBack = isInRollBackMode(NameNode.getStartupOption(conf));
+    this.smmthread = new Daemon(new SafeModeMonitor(conf));
 
     LOG.info("{} = {}", DFS_NAMENODE_SAFEMODE_THRESHOLD_PCT_KEY, threshold);
     LOG.info("{} = {}", DFS_NAMENODE_SAFEMODE_MIN_DATANODES_KEY,
@@ -168,7 +170,7 @@ class BlockManagerSafeMode {
    * @param total initial total blocks
    */
   void activate(long total) {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     assert status == BMSafeModeStatus.OFF;
 
     startTime = monotonicNow();
@@ -202,7 +204,7 @@ class BlockManagerSafeMode {
    * If safe mode is not currently on, this is a no-op.
    */
   void checkSafeMode() {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     if (namesystem.inTransitionToActive()) {
       return;
     }
@@ -218,6 +220,7 @@ class BlockManagerSafeMode {
           initializeReplQueuesIfNecessary();
           reportStatus("STATE* Safe mode extension entered.", true);
         } else {
+          // TODO: let the smmthread to leave the safemode.
           // PENDING_THRESHOLD -> OFF
           leaveSafeMode(false);
         }
@@ -243,7 +246,7 @@ class BlockManagerSafeMode {
    * @param deltaTotal the change in number of total blocks expected
    */
   void adjustBlockTotals(int deltaSafe, int deltaTotal) {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     if (!isSafeModeTrackingBlocks()) {
       return;
     }
@@ -277,7 +280,7 @@ class BlockManagerSafeMode {
    * set after the image has been loaded.
    */
   boolean isSafeModeTrackingBlocks() {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     return haEnabled && status != BMSafeModeStatus.OFF;
   }
 
@@ -285,7 +288,7 @@ class BlockManagerSafeMode {
    * Set total number of blocks.
    */
   void setBlockTotal(long total) {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     synchronized (this) {
       this.blockTotal = total;
       this.blockThreshold = (long) (total * threshold);
@@ -371,7 +374,7 @@ class BlockManagerSafeMode {
    * @return true if it leaves safe mode successfully else false
    */
   boolean leaveSafeMode(boolean force) {
-    assert namesystem.hasWriteLock() : "Leaving safe mode needs write lock!";
+    assert namesystem.hasWriteLock(RwLockMode.BM) : "Leaving safe mode needs write lock!";
 
     final long bytesInFuture = getBytesInFuture();
     if (bytesInFuture > 0) {
@@ -425,7 +428,7 @@ class BlockManagerSafeMode {
           BlockManagerSafeMode.STEP_AWAITING_REPORTED_BLOCKS);
       prog.endPhase(Phase.SAFEMODE);
     }
-
+    namesystem.checkAndProvisionSnapshotTrashRoots();
     return true;
   }
 
@@ -442,7 +445,7 @@ class BlockManagerSafeMode {
    */
   synchronized void incrementSafeBlockCount(int storageNum,
       BlockInfo storedBlock) {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     if (status == BMSafeModeStatus.OFF) {
       return;
     }
@@ -474,7 +477,7 @@ class BlockManagerSafeMode {
    * If safe mode is not currently on, this is a no-op.
    */
   synchronized void decrementSafeBlockCount(BlockInfo b) {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     if (status == BMSafeModeStatus.OFF) {
       return;
     }
@@ -497,7 +500,7 @@ class BlockManagerSafeMode {
    * @param brr block report replica which belongs to no file in BlockManager
    */
   void checkBlocksWithFutureGS(BlockReportReplica brr) {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     if (status == BMSafeModeStatus.OFF) {
       return;
     }
@@ -531,7 +534,8 @@ class BlockManagerSafeMode {
   }
 
   void close() {
-    assert namesystem.hasWriteLock() : "Closing bmSafeMode needs write lock!";
+    assert namesystem.hasWriteLock(RwLockMode.GLOBAL)
+        : "Closing bmSafeMode needs write lock!";
     try {
       smmthread.interrupt();
       smmthread.join(3000);
@@ -565,7 +569,7 @@ class BlockManagerSafeMode {
 
   /** Check if we are ready to initialize replication queues. */
   private void initializeReplQueuesIfNecessary() {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     // Whether it has reached the threshold for initializing replication queues.
     boolean canInitializeReplQueues = blockManager.shouldPopulateReplQueues() &&
         blockSafe >= blockReplQueueThreshold;
@@ -580,7 +584,7 @@ class BlockManagerSafeMode {
    * @return true if both block and datanode threshold are met else false.
    */
   private boolean areThresholdsMet() {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     // Calculating the number of live datanodes is time-consuming
     // in large clusters. Skip it when datanodeThreshold is zero.
     // We need to evaluate getNumLiveDataNodes only when
@@ -625,7 +629,7 @@ class BlockManagerSafeMode {
    * Print status every 20 seconds.
    */
   private void reportStatus(String msg, boolean rightNow) {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.BM);
     long curTime = monotonicNow();
     if(!rightNow && (curTime - lastStatusReport < 20 * 1000)) {
       return;
@@ -638,15 +642,28 @@ class BlockManagerSafeMode {
    * Periodically check whether it is time to leave safe mode.
    * This thread starts when the threshold level is reached.
    */
-  private class SafeModeMonitor implements Runnable {
+  final private class SafeModeMonitor implements Runnable {
     /** Interval in msec for checking safe mode. */
-    private static final long RECHECK_INTERVAL = 1000;
+    private long recheckInterval;
+
+    private SafeModeMonitor(Configuration conf) {
+      recheckInterval = conf.getLong(
+          DFSConfigKeys.DFS_NAMENODE_SAFEMODE_RECHECK_INTERVAL_KEY,
+          DFSConfigKeys.DFS_NAMENODE_SAFEMODE_RECHECK_INTERVAL_DEFAULT);
+      if (recheckInterval < 1) {
+        LOG.warn("Invalid value for " +
+            DFSConfigKeys.DFS_NAMENODE_SAFEMODE_RECHECK_INTERVAL_KEY +
+            ". Should be greater than 0, but is {}", recheckInterval);
+        recheckInterval = DFSConfigKeys.DFS_NAMENODE_SAFEMODE_RECHECK_INTERVAL_DEFAULT;
+      }
+      LOG.info("Using {} as SafeModeMonitor Interval", recheckInterval);
+    }
 
     @Override
     public void run() {
       while (namesystem.isRunning()) {
         try {
-          namesystem.writeLock();
+          namesystem.writeLock(RwLockMode.GLOBAL);
           if (status == BMSafeModeStatus.OFF) { // Not in safe mode.
             break;
           }
@@ -656,11 +673,11 @@ class BlockManagerSafeMode {
             break;
           }
         } finally {
-          namesystem.writeUnlock();
+          namesystem.writeUnlock(RwLockMode.GLOBAL, "leaveSafeMode");
         }
 
         try {
-          Thread.sleep(RECHECK_INTERVAL);
+          Thread.sleep(recheckInterval);
         } catch (InterruptedException ignored) {
         }
       }

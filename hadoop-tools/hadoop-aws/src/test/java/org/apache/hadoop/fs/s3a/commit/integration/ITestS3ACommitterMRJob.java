@@ -22,6 +22,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -34,15 +35,16 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
+import org.apache.hadoop.fs.s3a.Constants;
+import org.apache.hadoop.util.Sets;
 import org.assertj.core.api.Assertions;
-import org.junit.FixMethodOrder;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.MethodSorters;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,13 +75,16 @@ import org.apache.hadoop.util.DurationInfo;
 
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.disableFilesystemCaching;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.lsR;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.removeBaseAndBucketOverrides;
 import static org.apache.hadoop.fs.s3a.S3AUtils.applyLocatedFiles;
 import static org.apache.hadoop.fs.s3a.commit.CommitConstants.FS_S3A_COMMITTER_STAGING_TMP_PATH;
-import static org.apache.hadoop.fs.s3a.commit.CommitConstants.MAGIC;
+import static org.apache.hadoop.fs.s3a.commit.CommitConstants.MAGIC_PATH_PREFIX;
 import static org.apache.hadoop.fs.s3a.commit.CommitConstants._SUCCESS;
 import static org.apache.hadoop.fs.s3a.commit.InternalCommitterConstants.FS_S3A_COMMITTER_UUID;
 import static org.apache.hadoop.fs.s3a.commit.staging.Paths.getMultipartUploadCommitsDirectory;
 import static org.apache.hadoop.fs.s3a.commit.staging.StagingCommitterConstants.STAGING_UPLOADS;
+import static org.apache.hadoop.mapred.JobConf.MAPRED_TASK_ENV;
+import static org.apache.hadoop.mapreduce.lib.input.FileInputFormat.LIST_STATUS_NUM_THREADS;
 
 /**
  * Test an MR Job with all the different committers.
@@ -102,12 +107,15 @@ import static org.apache.hadoop.fs.s3a.commit.staging.StagingCommitterConstants.
  *   </li>
  *   <li>
  *     The test suites are declared to be executed in ascending order, so
- *     that for a specific binding, the order is {@link #test_000()},
- *     {@link #test_100()} {@link #test_200_execute()} and finally
+ *     that for a specific binding, the order is
+ *     {@link #test_000()},
+ *     {@link #test_100()}
+ *     {@link #test_200_execute()} and finally
  *     {@link #test_500()}.
  *   </li>
  *   <li>
- *     {@link #test_000()} calls {@link CommitterTestBinding#validate()} to
+ *     {@link #test_000()} calls
+ *     {@link CommitterTestBinding#validate()} to
  *     as to validate the state of the committer. This is primarily to
  *     verify that the binding setup mechanism is working.
  *   </li>
@@ -117,7 +125,8 @@ import static org.apache.hadoop.fs.s3a.commit.staging.StagingCommitterConstants.
  *     for any preflight tests.
  *   </li>
  *   <li>
- *     The {@link #test_200_execute()} test runs the MR job for that
+ *     The {@link #test_200_execute()}
+ *     test runs the MR job for that
  *     particular binding with standard reporting and verification of the
  *     outcome.
  *   </li>
@@ -133,8 +142,9 @@ import static org.apache.hadoop.fs.s3a.commit.staging.StagingCommitterConstants.
  * generally no useful information about the job in the local S3AFileSystem
  * instance.
  */
-@RunWith(Parameterized.class)
-@FixMethodOrder(MethodSorters.NAME_ASCENDING)
+@TestMethodOrder(MethodOrderer.Alphanumeric.class)
+@ParameterizedClass(name="binding={0}")
+@MethodSource("params")
 public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
 
   private static final Logger LOG =
@@ -145,7 +155,6 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
    *
    * @return the committer binding for this run.
    */
-  @Parameterized.Parameters(name = "{0}")
   public static Collection<Object[]> params() {
     return Arrays.asList(new Object[][]{
         {new DirectoryCommitterTestBinding()},
@@ -159,6 +168,9 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
    */
   private final CommitterTestBinding committerTestBinding;
 
+  @TempDir
+  private java.nio.file.Path localFilesDir;
+
   /**
    * Parameterized constructor.
    * @param committerTestBinding binding for the test.
@@ -169,6 +181,7 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
   }
 
   @Override
+  @BeforeEach
   public void setup() throws Exception {
     super.setup();
     // configure the test binding for this specific test case.
@@ -179,20 +192,15 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
   protected Configuration createConfiguration() {
     Configuration conf = super.createConfiguration();
     disableFilesystemCaching(conf);
+    removeBaseAndBucketOverrides(conf,
+        LIST_STATUS_NUM_THREADS);
+    conf.setInt(LIST_STATUS_NUM_THREADS, 16);
     return conf;
   }
-
-  @Rule
-  public final TemporaryFolder localFilesDir = new TemporaryFolder();
 
   @Override
   protected String committerName() {
     return committerTestBinding.getCommitterName();
-  }
-
-  @Override
-  public boolean useInconsistentClient() {
-    return committerTestBinding.useInconsistentClient();
   }
 
   /**
@@ -201,8 +209,8 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
   @Test
   public void test_000() throws Throwable {
     committerTestBinding.validate();
-
   }
+
   @Test
   public void test_100() throws Throwable {
     committerTestBinding.test_100();
@@ -211,6 +219,7 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
   @Test
   public void test_200_execute() throws Exception {
     describe("Run an MR with committer %s", committerName());
+    LOG.info("Local Temp directory is {}", localFilesDir);
 
     S3AFileSystem fs = getFileSystem();
     // final dest is in S3A
@@ -218,9 +227,6 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
     // that and URI creation fails.
 
     Path outputPath = path("ITestS3ACommitterMRJob-execute-"+ committerName());
-    // create and delete to force in a tombstone marker -see HADOOP-16207
-    fs.mkdirs(outputPath);
-    fs.delete(outputPath, true);
 
     String commitUUID = UUID.randomUUID().toString();
     String suffix = isUniqueFilenames() ? ("-" + commitUUID) : "";
@@ -230,7 +236,7 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
     List<String> expectedFiles = new ArrayList<>(numFiles);
     Set<String> expectedKeys = Sets.newHashSet();
     for (int i = 0; i < numFiles; i += 1) {
-      File file = localFilesDir.newFile(i + ".text");
+      File file = localFilesDir.resolve(i + ".text").toFile();
       try (FileOutputStream out = new FileOutputStream(file)) {
         out.write(("file " + i).getBytes(StandardCharsets.UTF_8));
       }
@@ -247,7 +253,7 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
     mrJob.setOutputFormatClass(LoggingTextOutputFormat.class);
     FileOutputFormat.setOutputPath(mrJob, outputPath);
 
-    File mockResultsFile = localFilesDir.newFile("committer.bin");
+    File mockResultsFile = localFilesDir.resolve("committer.bin").toFile();
     mockResultsFile.delete();
     String committerPath = "file:" + mockResultsFile;
     jobConf.set("mock-results-file", committerPath);
@@ -256,8 +262,10 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
     jobConf.set(FS_S3A_COMMITTER_UUID, commitUUID);
 
     mrJob.setInputFormatClass(TextInputFormat.class);
-    FileInputFormat.addInputPath(mrJob,
-        new Path(localFilesDir.getRoot().toURI()));
+
+    final URI inputPath = localFilesDir.toUri();
+    LOG.info("Job input path {}", inputPath);
+    FileInputFormat.addInputPath(mrJob, new Path(inputPath));
 
     mrJob.setMapperClass(MapClass.class);
     mrJob.setNumReduceTasks(0);
@@ -303,7 +311,6 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
       fail(message);
     }
 
-    waitForConsistency();
     Path successPath = new Path(outputPath, _SUCCESS);
     SuccessData successData = validateSuccessFile(outputPath,
         committerName(),
@@ -341,19 +348,21 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
     assertPathDoesNotExist("temporary dir should only be from"
             + " classic file committers",
         new Path(outputPath, CommitConstants.TEMPORARY));
-    customPostExecutionValidation(outputPath, successData);
+    customPostExecutionValidation(outputPath, successData, jobID);
   }
 
   @Override
   protected void applyCustomConfigOptions(final JobConf jobConf)
       throws IOException {
+    jobConf.set(MAPRED_TASK_ENV, "AWS_REGION=" + jobConf.get(Constants.AWS_REGION));
+    jobConf.set("yarn.app.mapreduce.am.env", "AWS_REGION=" + jobConf.get(Constants.AWS_REGION));
     committerTestBinding.applyCustomConfigOptions(jobConf);
   }
 
   @Override
   protected void customPostExecutionValidation(final Path destPath,
-      final SuccessData successData) throws Exception {
-    committerTestBinding.validateResult(destPath, successData);
+      final SuccessData successData, String jobId) throws Exception {
+    committerTestBinding.validateResult(destPath, successData, jobId);
   }
 
   /**
@@ -484,12 +493,6 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
     }
 
     /**
-     * Should the inconsistent S3A client be used?
-     * @return true for inconsistent listing
-     */
-    public abstract boolean useInconsistentClient();
-
-    /**
      * Override point for any committer specific validation operations;
      * called after the base assertions have all passed.
      * @param destPath destination of work
@@ -497,7 +500,7 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
      * @throws Exception failure
      */
     protected void validateResult(Path destPath,
-        SuccessData successData)
+        SuccessData successData, String jobId)
         throws Exception {
 
     }
@@ -527,9 +530,9 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
      * @throws Throwable failure.
      */
     public void validate() throws Throwable {
-      assertNotNull("Not bound to a cluster", binding);
-      assertNotNull("No cluster filesystem", getClusterFS());
-      assertNotNull("No yarn cluster", binding.getYarn());
+      assertNotNull(binding, "Not bound to a cluster");
+      assertNotNull(getClusterFS(), "No cluster filesystem");
+      assertNotNull(binding.getYarn(), "No yarn cluster");
     }
   }
 
@@ -541,13 +544,6 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
 
     private DirectoryCommitterTestBinding() {
       super(DirectoryStagingCommitter.NAME);
-    }
-
-    /**
-     * @return true for inconsistent listing
-     */
-    public boolean useInconsistentClient() {
-      return true;
     }
 
     /**
@@ -584,12 +580,6 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
       super(PartitionedStagingCommitter.NAME);
     }
 
-    /**
-     * @return true for inconsistent listing
-     */
-    public boolean useInconsistentClient() {
-      return true;
-    }
   }
 
   /**
@@ -604,14 +594,7 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
     }
 
     /**
-     * @return we need a consistent store.
-     */
-    public boolean useInconsistentClient() {
-      return false;
-    }
-
-    /**
-     * The result validation here is that there isn't a __magic directory
+     * The result validation here is that there isn't a "MAGIC PATH" directory
      * any more.
      * @param destPath destination of work
      * @param successData loaded success data
@@ -619,9 +602,9 @@ public class ITestS3ACommitterMRJob extends AbstractYarnClusterITest {
      */
     @Override
     protected void validateResult(final Path destPath,
-        final SuccessData successData)
+        final SuccessData successData, final String jobId)
         throws Exception {
-      Path magicDir = new Path(destPath, MAGIC);
+      Path magicDir = new Path(destPath, MAGIC_PATH_PREFIX + jobId);
 
       // if an FNFE isn't raised on getFileStatus, list out the directory
       // tree

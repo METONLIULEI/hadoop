@@ -28,9 +28,6 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.util.List;
 
-import org.apache.hadoop.thirdparty.com.google.common.math.LongMath;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
@@ -40,10 +37,15 @@ import org.apache.hadoop.hdfs.server.protocol.NamenodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.util.Daemon;
+import org.apache.hadoop.util.Lists;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.math.LongMath;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The Checkpointer is responsible for supporting periodic checkpoints 
@@ -243,16 +245,22 @@ class Checkpointer extends Daemon {
 
       if(needReloadImage) {
         LOG.info("Loading image with txid " + sig.mostRecentCheckpointTxId);
-        File file = bnStorage.findImageFile(NameNodeFile.IMAGE,
-            sig.mostRecentCheckpointTxId);
-        bnImage.reloadFromImageFile(file, backupNode.getNamesystem());
+        backupNode.namesystem.writeLock(RwLockMode.GLOBAL);
+        try {
+          File file = bnStorage.findImageFile(NameNodeFile.IMAGE,
+              sig.mostRecentCheckpointTxId);
+          bnImage.reloadFromImageFile(file, backupNode.getNamesystem());
+        } finally {
+          backupNode.namesystem.writeUnlock(
+              RwLockMode.GLOBAL, "doCheckpointByBackupNode");
+        }
       }
       rollForwardByApplyingLogs(manifest, bnImage, backupNode.getNamesystem());
     }
     
     long txid = bnImage.getLastAppliedTxId();
     
-    backupNode.namesystem.writeLock();
+    backupNode.namesystem.writeLock(RwLockMode.GLOBAL);
     try {
       backupNode.namesystem.setImageLoaded();
       if(backupNode.namesystem.getBlocksTotal() > 0) {
@@ -266,7 +274,7 @@ class Checkpointer extends Daemon {
         bnImage.updateStorageVersion();
       }
     } finally {
-      backupNode.namesystem.writeUnlock("doCheckpoint");
+      backupNode.namesystem.writeUnlock(RwLockMode.GLOBAL, "doCheckpoint");
     }
 
     if(cpCmd.needToReturnImage()) {
@@ -304,7 +312,7 @@ class Checkpointer extends Daemon {
       FSNamesystem dstNamesystem) throws IOException {
     NNStorage dstStorage = dstImage.getStorage();
   
-    List<EditLogInputStream> editsStreams = Lists.newArrayList();    
+    List<EditLogInputStream> editsStreams = Lists.newArrayList();
     for (RemoteEditLog log : manifest.getLogs()) {
       if (log.getEndTxId() > dstImage.getLastAppliedTxId()) {
         File f = dstStorage.findFinalizedEditsFile(

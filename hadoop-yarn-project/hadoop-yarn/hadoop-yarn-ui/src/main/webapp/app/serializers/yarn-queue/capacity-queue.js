@@ -26,7 +26,7 @@ export default DS.JSONAPISerializer.extend({
       var children = [];
       if (payload.queues && payload.queues.queue) {
         payload.queues.queue.forEach(function(queue) {
-          children.push(queue.queueName);
+          children.push(queue.queuePath);
         });
       }
 
@@ -40,10 +40,10 @@ export default DS.JSONAPISerializer.extend({
           var maxAMResource = defaultPartitionResource.amLimit;
           includedData.push({
             type: "YarnUser",
-            id: u.username + "_" + payload.queueName,
+            id: u.username + "_" + payload.queuePath,
             attributes: {
               name: u.username,
-              queueName: payload.queueName,
+              queueName: payload.queuePath,
               usedMemoryMB: u.resourcesUsed.memory || 0,
               usedVCore: u.resourcesUsed.vCores || 0,
               maxMemoryMB: u.userResourceLimit.memory || 0,
@@ -60,7 +60,7 @@ export default DS.JSONAPISerializer.extend({
 
           relationshipUserData.push({
             type: "YarnUser",
-            id: u.username + "_" + payload.queueName,
+            id: u.username + "_" + payload.queuePath,
           });
         });
       }
@@ -83,7 +83,25 @@ export default DS.JSONAPISerializer.extend({
           usedCapacity: payload.usedCapacity,
           absoluteCapacity: 'absoluteCapacity' in payload ? payload.absoluteCapacity : payload.capacity,
           absoluteMaxCapacity: 'absoluteMaxCapacity' in payload ? payload.absoluteMaxCapacity : payload.maxCapacity,
-          absoluteUsedCapacity: 'absoluteUsedCapacity' in payload ? payload.absoluteUsedCapacity : payload.usedCapacity,
+          absoluteUsedCapacity: 'absoluteUsedCapacity' in payload ? payload.absoluteUsedCapacity : payload.usedCapacity
+        };
+      }
+
+      //add here the partitioninfo
+      ///scheduler/schedulerInfo/queues/queue[2]/resources/resourceUsagesByPartition/partitionName
+      //resources.resourceUsagesByPartition[].used.memory
+      var resourcePartitions = [];
+      var resourceUsagesByPartitionMap = {};
+      if ("resources" in payload){
+        resourcePartitions = payload.resources.resourceUsagesByPartition.map(
+          res => res.partitionName || PARTITION_LABEL);
+          resourceUsagesByPartitionMap = payload.resources.resourceUsagesByPartition.reduce((init, res) => {
+          init[res.partitionName || PARTITION_LABEL] = res;
+          return init;
+        }, {});
+      }else{
+        resourceUsagesByPartitionMap[PARTITION_LABEL] = {
+          partitionName: ""
         };
       }
 
@@ -92,6 +110,7 @@ export default DS.JSONAPISerializer.extend({
         type: primaryModelClass.modelName, // yarn-queue
         attributes: {
           name: payload.queueName,
+          queuePath: payload.queuePath,
           parent: payload.myParent,
           children: children,
           capacity: payload.capacity,
@@ -100,15 +119,27 @@ export default DS.JSONAPISerializer.extend({
           absCapacity: payload.absoluteCapacity,
           absMaxCapacity: payload.absoluteMaxCapacity,
           absUsedCapacity: payload.absoluteUsedCapacity,
+          weight: payload.weight,
+          normalizedWeight: payload.normalizedWeight,
+          creationMethod: payload.creationMethod,
           state: payload.state,
+          orderingPolicyInfo: payload.orderingPolicyInfo,
           userLimit: payload.userLimit,
           userLimitFactor: payload.userLimitFactor,
           preemptionDisabled: payload.preemptionDisabled,
+          intraQueuePreemptionDisabled: payload.intraQueuePreemptionDisabled,
           numPendingApplications: payload.numPendingApplications,
           numActiveApplications: payload.numActiveApplications,
+          numContainers: payload.numContainers,
+          maxApplications: payload.maxApplications,
+          maxApplicationsPerUser: payload.maxApplicationsPerUser,
+          nodeLabels: payload.nodeLabels,
+          defaultNodeLabelExpression: payload.defaultNodeLabelExpression,
           resources: payload.resources,
+          defaultPriority: payload.defaultPriority,
           partitions: partitions,
           partitionMap: partitionMap,
+          resourceUsagesByPartitionMap: resourceUsagesByPartitionMap,
           type: "capacity",
         },
         // Relationships
@@ -136,9 +167,9 @@ export default DS.JSONAPISerializer.extend({
       if (payload.queues && payload.queues.queue) {
         for (var i = 0; i < payload.queues.queue.length; i++) {
           var queue = payload.queues.queue[i];
-          queue.myParent = payload.queueName;
+          queue.myParent = payload.queuePath;
           var childResult = this.handleQueue(store, primaryModelClass, queue,
-            queue.queueName,
+            queue.queuePath,
             requestType);
 
           data = data.concat(childResult.data);

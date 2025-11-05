@@ -23,6 +23,8 @@ import static org.apache.hadoop.metrics2.lib.Interns.info;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -40,6 +42,7 @@ import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import org.apache.hadoop.metrics2.lib.MutableGaugeInt;
 import org.apache.hadoop.metrics2.lib.MutableGaugeLong;
 import org.apache.hadoop.metrics2.lib.MutableRate;
+import org.apache.hadoop.util.Sets;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -50,7 +53,7 @@ import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.thirdparty.com.google.common.base.Splitter;
 
 @InterfaceAudience.Private
@@ -62,6 +65,20 @@ public class QueueMetrics implements MetricsSource {
   @Metric("# of apps completed") MutableCounterInt appsCompleted;
   @Metric("# of apps killed") MutableCounterInt appsKilled;
   @Metric("# of apps failed") MutableCounterInt appsFailed;
+
+  @Metric("# of Unmanaged apps submitted")
+  private MutableCounterInt unmanagedAppsSubmitted;
+  @Metric("# of Unmanaged running apps")
+  private MutableGaugeInt unmanagedAppsRunning;
+  @Metric("# of Unmanaged pending apps")
+  private MutableGaugeInt unmanagedAppsPending;
+  @Metric("# of Unmanaged apps completed")
+  private MutableCounterInt unmanagedAppsCompleted;
+  @Metric("# of Unmanaged apps killed")
+  private MutableCounterInt unmanagedAppsKilled;
+  @Metric("# of Unmanaged apps failed")
+  private MutableCounterInt unmanagedAppsFailed;
+
   @Metric("Aggregate # of allocated node-local containers")
     MutableCounterLong aggregateNodeLocalContainersAllocated;
   @Metric("Aggregate # of allocated rack-local containers")
@@ -101,6 +118,9 @@ public class QueueMetrics implements MetricsSource {
   @Metric("Reserved CPU in virtual cores") MutableGaugeInt reservedVCores;
   @Metric("# of reserved containers") MutableGaugeInt reservedContainers;
 
+  // INTERNAL ONLY
+  private static final String CONFIGURATION_VALIDATION = "yarn.configuration-validation";
+
   private final MutableGaugeInt[] runningTime;
   private TimeBucketMetrics<ApplicationId> runBuckets;
 
@@ -119,7 +139,7 @@ public class QueueMetrics implements MetricsSource {
   protected final MetricsRegistry registry;
   protected final String queueName;
   private QueueMetrics parent;
-  private final Queue parentQueue;
+  private Queue parentQueue;
   protected final MetricsSystem metricsSystem;
   protected final Map<String, QueueMetrics> users;
   protected final Configuration conf;
@@ -163,11 +183,16 @@ public class QueueMetrics implements MetricsSource {
     "AggregatePreemptedSeconds.";
   private static final String AGGREGATE_PREEMPTED_SECONDS_METRIC_DESC =
     "Aggregate Preempted Seconds for NAME";
+  protected Set<String> storedPartitionMetrics = Sets.newConcurrentHashSet();
 
   public QueueMetrics(MetricsSystem ms, String queueName, Queue parent,
       boolean enableUserMetrics, Configuration conf) {
 
-    registry = new MetricsRegistry(RECORD_INFO);
+    if (this instanceof PartitionQueueMetrics) {
+      registry = new MetricsRegistry(P_RECORD_INFO);
+    } else {
+      registry = new MetricsRegistry(RECORD_INFO);
+    }
     this.queueName = queueName;
 
     this.parent = parent != null ? parent.getMetrics() : null;
@@ -229,7 +254,7 @@ public class QueueMetrics implements MetricsSource {
    * Simple metrics cache to help prevent re-registrations.
    */
   private static final Map<String, QueueMetrics> QUEUE_METRICS =
-      new HashMap<String, QueueMetrics>();
+      new ConcurrentHashMap<>();
 
   /**
    * Returns the metrics cache to help prevent re-registrations.
@@ -293,7 +318,7 @@ public class QueueMetrics implements MetricsSource {
    *  QueueMetrics (B)
    *    metrics
    *
-   * @param partition
+   * @param partition Node Partition
    * @return QueueMetrics
    */
   public synchronized QueueMetrics getPartitionQueueMetrics(String partition) {
@@ -319,11 +344,34 @@ public class QueueMetrics implements MetricsSource {
           "Metrics for queue: " + this.queueName,
           queueMetrics.tag(PARTITION_INFO, partitionJMXStr).tag(QUEUE_INFO,
               this.queueName));
-      getQueueMetrics().put(metricName, queueMetrics);
+      if (!isConfigurationValidationSet(conf)) {
+        getQueueMetrics().put(metricName, queueMetrics);
+      }
+      registerPartitionMetricsCreation(metricName);
       return queueMetrics;
     } else {
       return metrics;
     }
+  }
+
+  /**
+   * Check whether we are in a configuration validation mode. INTERNAL ONLY.
+   *
+   * @param conf the configuration to check
+   * @return true if
+   */
+  public static boolean isConfigurationValidationSet(Configuration conf) {
+    return conf.getBoolean(CONFIGURATION_VALIDATION, false);
+  }
+
+  /**
+   * Set configuration validation mode. INTERNAL ONLY.
+   *
+   * @param conf the configuration to update
+   * @param value the value for the validation mode
+   */
+  public static void setConfigurationValidation(Configuration conf, boolean value) {
+    conf.setBoolean(CONFIGURATION_VALIDATION, value);
   }
 
   /**
@@ -362,6 +410,7 @@ public class QueueMetrics implements MetricsSource {
                 partitionJMXStr));
       }
       getQueueMetrics().put(metricName, metrics);
+      registerPartitionMetricsCreation(metricName);
     }
     return metrics;
   }
@@ -401,102 +450,157 @@ public class QueueMetrics implements MetricsSource {
     registry.snapshot(collector.addRecord(registry.info()), all);
   }
 
-  public void submitApp(String user) {
+  public void submitApp(String user, boolean unmanagedAM) {
     appsSubmitted.incr();
+    if(unmanagedAM) {
+      unmanagedAppsSubmitted.incr();
+    }
     QueueMetrics userMetrics = getUserMetrics(user);
     if (userMetrics != null) {
-      userMetrics.submitApp(user);
+      userMetrics.submitApp(user, unmanagedAM);
     }
     if (parent != null) {
-      parent.submitApp(user);
+      parent.submitApp(user, unmanagedAM);
     }
   }
 
-  public void submitAppAttempt(String user) {
+
+  public void submitAppAttempt(String user, boolean unmanagedAM) {
     appsPending.incr();
+    if(unmanagedAM) {
+      unmanagedAppsPending.incr();
+    }
     QueueMetrics userMetrics = getUserMetrics(user);
     if (userMetrics != null) {
-      userMetrics.submitAppAttempt(user);
+      userMetrics.submitAppAttempt(user, unmanagedAM);
     }
     if (parent != null) {
-      parent.submitAppAttempt(user);
+      parent.submitAppAttempt(user, unmanagedAM);
     }
   }
 
-  public void runAppAttempt(ApplicationId appId, String user) {
+  public void runAppAttempt(ApplicationId appId, String user,
+      boolean unmanagedAM) {
     runBuckets.add(appId, System.currentTimeMillis());
     appsRunning.incr();
     appsPending.decr();
+
+    if(unmanagedAM) {
+      unmanagedAppsRunning.incr();
+      unmanagedAppsPending.decr();
+    }
+
     QueueMetrics userMetrics = getUserMetrics(user);
     if (userMetrics != null) {
-      userMetrics.runAppAttempt(appId, user);
+      userMetrics.runAppAttempt(appId, user, unmanagedAM);
     }
     if (parent != null) {
-      parent.runAppAttempt(appId, user);
+      parent.runAppAttempt(appId, user, unmanagedAM);
     }
   }
 
-  public void finishAppAttempt(
-      ApplicationId appId, boolean isPending, String user) {
+  public void finishAppAttempt(ApplicationId appId, boolean isPending,
+      String user, boolean unmanagedAM) {
     runBuckets.remove(appId);
     if (isPending) {
       appsPending.decr();
     } else {
       appsRunning.decr();
     }
+
+    if(unmanagedAM) {
+      if (isPending) {
+        unmanagedAppsPending.decr();
+      } else {
+        unmanagedAppsRunning.decr();
+      }
+    }
     QueueMetrics userMetrics = getUserMetrics(user);
     if (userMetrics != null) {
-      userMetrics.finishAppAttempt(appId, isPending, user);
+      userMetrics.finishAppAttempt(appId, isPending, user, unmanagedAM);
     }
     if (parent != null) {
-      parent.finishAppAttempt(appId, isPending, user);
+      parent.finishAppAttempt(appId, isPending, user, unmanagedAM);
     }
   }
 
-  public void finishApp(String user, RMAppState rmAppFinalState) {
+  public void finishApp(String user, RMAppState rmAppFinalState,
+      boolean unmanagedAM) {
     switch (rmAppFinalState) {
       case KILLED: appsKilled.incr(); break;
       case FAILED: appsFailed.incr(); break;
       default: appsCompleted.incr();  break;
     }
+
+    if(unmanagedAM) {
+      switch (rmAppFinalState) {
+      case KILLED:
+        unmanagedAppsKilled.incr();
+        break;
+      case FAILED:
+        unmanagedAppsFailed.incr();
+        break;
+      default:
+        unmanagedAppsCompleted.incr();
+        break;
+      }
+    }
+
     QueueMetrics userMetrics = getUserMetrics(user);
     if (userMetrics != null) {
-      userMetrics.finishApp(user, rmAppFinalState);
+      userMetrics.finishApp(user, rmAppFinalState, unmanagedAM);
     }
     if (parent != null) {
-      parent.finishApp(user, rmAppFinalState);
+      parent.finishApp(user, rmAppFinalState, unmanagedAM);
     }
   }
-  
-  public void moveAppFrom(AppSchedulingInfo app) {
+
+
+  public void moveAppFrom(AppSchedulingInfo app, boolean unmanagedAM) {
     if (app.isPending()) {
       appsPending.decr();
     } else {
       appsRunning.decr();
     }
+    if(unmanagedAM) {
+      if (app.isPending()) {
+        unmanagedAppsPending.decr();
+      } else {
+        unmanagedAppsRunning.decr();
+      }
+    }
+
     QueueMetrics userMetrics = getUserMetrics(app.getUser());
     if (userMetrics != null) {
-      userMetrics.moveAppFrom(app);
+      userMetrics.moveAppFrom(app, unmanagedAM);
     }
     if (parent != null) {
-      parent.moveAppFrom(app);
+      parent.moveAppFrom(app, unmanagedAM);
     }
   }
-  
-  public void moveAppTo(AppSchedulingInfo app) {
+
+  public void moveAppTo(AppSchedulingInfo app, boolean unmanagedAM) {
     if (app.isPending()) {
       appsPending.incr();
     } else {
       appsRunning.incr();
     }
+    if(unmanagedAM) {
+      if (app.isPending()) {
+        unmanagedAppsPending.incr();
+      } else {
+        unmanagedAppsRunning.incr();
+      }
+    }
     QueueMetrics userMetrics = getUserMetrics(app.getUser());
     if (userMetrics != null) {
-      userMetrics.moveAppTo(app);
+      userMetrics.moveAppTo(app, unmanagedAM);
     }
     if (parent != null) {
-      parent.moveAppTo(app);
+      parent.moveAppTo(app, unmanagedAM);
     }
   }
+
 
   /**
    * Set available resources. To be called by scheduler periodically as
@@ -525,7 +629,7 @@ public class QueueMetrics implements MetricsSource {
   /**
    * Set Available resources with support for resource vectors.
    *
-   * @param limit
+   * @param limit Resource.
    */
   public void setAvailableResources(Resource limit) {
     availableMB.set(limit.getMemorySize());
@@ -553,7 +657,7 @@ public class QueueMetrics implements MetricsSource {
    * resources become available.
    *
    * @param partition Node Partition
-   * @param user
+   * @param user Name of the user.
    * @param limit resource limit
    */
   public void setAvailableResourcesToUser(String partition, String user,
@@ -579,8 +683,8 @@ public class QueueMetrics implements MetricsSource {
    * Increment pending resource metrics
    *
    * @param partition Node Partition
-   * @param user
-   * @param containers
+   * @param user Name of the user.
+   * @param containers containers count.
    * @param res the TOTAL delta of resources note this is different from the
    *          other APIs which use per container resource
    */
@@ -774,8 +878,8 @@ public class QueueMetrics implements MetricsSource {
   /**
    * Allocate Resource for container size change.
    * @param partition Node Partition
-   * @param user
-   * @param res
+   * @param user Name of the user
+   * @param res Resource.
    */
   public void allocateResources(String partition, String user, Resource res) {
     allocatedMB.incr(res.getMemorySize());
@@ -1024,16 +1128,32 @@ public class QueueMetrics implements MetricsSource {
     return appsSubmitted.value();
   }
 
+  public int getUnmanagedAppsSubmitted() {
+    return unmanagedAppsSubmitted.value();
+  }
+
   public int getAppsRunning() {
     return appsRunning.value();
+  }
+
+  public int getUnmanagedAppsRunning() {
+    return unmanagedAppsRunning.value();
   }
 
   public int getAppsPending() {
     return appsPending.value();
   }
 
+  public int getUnmanagedAppsPending() {
+    return unmanagedAppsPending.value();
+  }
+
   public int getAppsCompleted() {
     return appsCompleted.value();
+  }
+
+  public int getUnmanagedAppsCompleted() {
+    return unmanagedAppsCompleted.value();
   }
 
   public int getAppsKilled() {
@@ -1042,6 +1162,10 @@ public class QueueMetrics implements MetricsSource {
 
   public int getAppsFailed() {
     return appsFailed.value();
+  }
+
+  public int getUnmanagedAppsFailed() {
+    return unmanagedAppsFailed.value();
   }
 
   public Resource getAllocatedResources() {
@@ -1238,5 +1362,27 @@ public class QueueMetrics implements MetricsSource {
 
   public Queue getParentQueue() {
     return parentQueue;
+  }
+
+  protected void registerPartitionMetricsCreation(String metricName) {
+    if (storedPartitionMetrics != null) {
+      storedPartitionMetrics.add(metricName);
+    }
+  }
+
+  public void setParentQueue(Queue parentQueue) {
+    this.parentQueue = parentQueue;
+
+    if (storedPartitionMetrics == null) {
+      return;
+    }
+
+    for (String partitionMetric : storedPartitionMetrics) {
+      QueueMetrics metric = getQueueMetrics().get(partitionMetric);
+
+      if (metric != null && metric.parentQueue != null) {
+        metric.parentQueue = parentQueue;
+      }
+    }
   }
 }

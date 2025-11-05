@@ -24,21 +24,22 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
-import com.amazonaws.services.s3.model.InitiateMultipartUploadRequest;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
-import org.assertj.core.api.Assertions;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import org.apache.hadoop.util.Lists;
+import org.apache.hadoop.util.Sets;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathExistsException;
 import org.apache.hadoop.mapreduce.JobContext;
 
+
 import static org.apache.hadoop.fs.s3a.commit.CommitConstants.*;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
-import static org.mockito.Mockito.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.reset;
 import static org.apache.hadoop.fs.s3a.commit.staging.StagingTestBase.*;
 
 /** Mocking test of the partitioned committer. */
@@ -47,19 +48,19 @@ public class TestStagingPartitionedTaskCommit
 
   @Override
   PartitionedStagingCommitter newJobCommitter() throws IOException {
-    return new PartitionedStagingCommitter(outputPath,
+    return new PartitionedStagingCommitter(getOutputPath(),
         createTaskAttemptForJob());
   }
 
   @Override
   PartitionedStagingCommitter newTaskCommitter() throws Exception {
-    return new PartitionedStagingCommitter(outputPath, getTAC());
+    return new PartitionedStagingCommitter(getOutputPath(), getTAC());
   }
 
   // The set of files used by this test
   private static List<String> relativeFiles = Lists.newArrayList();
 
-  @BeforeClass
+  @BeforeAll
   public static void createRelativeFileList() {
     for (String dateint : Arrays.asList("20161115", "20161116")) {
       for (String hour : Arrays.asList("14", "15")) {
@@ -104,7 +105,7 @@ public class TestStagingPartitionedTaskCommit
 
     // test failure when one partition already exists
     reset(mockS3);
-    Path existsPath = new Path(outputPath, relativeFiles.get(1)).getParent();
+    Path existsPath = new Path(getOutputPath(), relativeFiles.get(1)).getParent();
     pathExists(mockS3, existsPath);
 
     intercept(PathExistsException.class, "",
@@ -133,7 +134,7 @@ public class TestStagingPartitionedTaskCommit
 
     // test success when one partition already exists
     reset(mockS3);
-    pathExists(mockS3, new Path(outputPath, relativeFiles.get(2)).getParent());
+    pathExists(mockS3, new Path(getOutputPath(), relativeFiles.get(2)).getParent());
 
     committer.commitTask(getTAC());
     verifyFilesCreated(committer);
@@ -146,17 +147,17 @@ public class TestStagingPartitionedTaskCommit
   protected void verifyFilesCreated(
       final PartitionedStagingCommitter committer) {
     Set<String> files = Sets.newHashSet();
-    for (InitiateMultipartUploadRequest request :
+    for (CreateMultipartUploadRequest request :
         getMockResults().getRequests().values()) {
-      assertEquals(BUCKET, request.getBucketName());
-      files.add(request.getKey());
+      assertEquals(BUCKET, request.bucket());
+      files.add(request.key());
     }
-    Assertions.assertThat(files)
+    assertThat(files)
         .describedAs("Should have the right number of uploads")
         .hasSize(relativeFiles.size());
 
     Set<String> expected = buildExpectedList(committer);
-    Assertions.assertThat(files)
+    assertThat(files)
         .describedAs("Should have correct paths")
         .containsExactlyInAnyOrderElementsOf(expected);
   }
@@ -178,7 +179,7 @@ public class TestStagingPartitionedTaskCommit
 
     // test success when one partition already exists
     reset(mockS3);
-    pathExists(mockS3, new Path(outputPath, relativeFiles.get(3)).getParent());
+    pathExists(mockS3, new Path(getOutputPath(), relativeFiles.get(3)).getParent());
 
     committer.commitTask(getTAC());
     verifyFilesCreated(committer);

@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.net;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
@@ -219,7 +219,8 @@ public class DFSNetworkTopology extends NetworkTopology {
     }
     if (excludedNodes != null) {
       for (Node excludedNode : excludedNodes) {
-        if (excludeRoot != null && isNodeInScope(excludedNode, excludedScope)) {
+        if ((excludeRoot != null && isNodeInScope(excludedNode, excludedScope)) ||
+            !isNodeInScope(excludedNode, scope)) {
           continue;
         }
         if (excludedNode instanceof DatanodeDescriptor) {

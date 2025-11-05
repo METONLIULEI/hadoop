@@ -79,8 +79,8 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.util.TimelineServiceHelper;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import com.sun.jersey.api.client.ClientHandlerException;
+import org.apache.hadoop.classification.VisibleForTesting;
+import javax.ws.rs.ProcessingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -1141,9 +1141,9 @@ public class JobHistoryEventHandler extends AbstractService
                   + error.getErrorCode());
         }
       }
-    } catch (YarnException | IOException | ClientHandlerException ex) {
-      LOG.error("Error putting entity " + tEntity.getEntityId() + " to Timeline"
-          + "Server", ex);
+    } catch (YarnException | IOException | ProcessingException ex) {
+      LOG.error("Error putting entity {} to Timeline Server",
+          tEntity.getEntityId(), ex);
     }
   }
 
@@ -1481,7 +1481,7 @@ public class JobHistoryEventHandler extends AbstractService
       summaryFileOut.writeUTF(mi.getJobSummary().getJobSummaryString());
       summaryFileOut.close();
       doneDirFS.setPermission(qualifiedSummaryDoneFile, new FsPermission(
-          JobHistoryUtils.HISTORY_INTERMEDIATE_FILE_PERMISSIONS));
+          JobHistoryUtils.getConfiguredHistoryIntermediateUserDoneDirPermissions(getConfig())));
     } catch (IOException e) {
       LOG.info("Unable to write out JobSummaryInfo to ["
           + qualifiedSummaryDoneFile + "]", e);
@@ -1738,8 +1738,9 @@ public class JobHistoryEventHandler extends AbstractService
       boolean copied = FileUtil.copy(stagingDirFS, fromPath, doneDirFS, toPath,
           false, getConfig());
 
-      doneDirFS.setPermission(toPath, new FsPermission(
-          JobHistoryUtils.HISTORY_INTERMEDIATE_FILE_PERMISSIONS));
+      doneDirFS.setPermission(toPath, new FsPermission(JobHistoryUtils.
+          getConfiguredHistoryIntermediateUserDoneDirPermissions(
+          getConfig())));
       if (copied) {
         LOG.info("Copied from: " + fromPath.toString()
             + " to done location: " + toPath.toString());

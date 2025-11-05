@@ -31,9 +31,10 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.tools.fedbalance.procedure.BalanceJob;
 import org.apache.hadoop.tools.fedbalance.procedure.BalanceProcedure.RetryException;
 import org.apache.hadoop.tools.fedbalance.procedure.BalanceProcedureScheduler;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -45,21 +46,22 @@ import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.util.Random;
 
-import static junit.framework.TestCase.assertTrue;
 import static org.apache.hadoop.tools.fedbalance.FedBalanceConfigs.SCHEDULER_JOURNAL_URI;
 import static org.apache.hadoop.test.GenericTestUtils.getMethodName;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
 import static org.apache.hadoop.tools.fedbalance.FedBalanceConfigs.CURRENT_SNAPSHOT_NAME;
 import static org.apache.hadoop.tools.fedbalance.FedBalanceConfigs.LAST_SNAPSHOT_NAME;
 import static org.apache.hadoop.tools.fedbalance.FedBalanceConfigs.TrashOption;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 /**
  * Test DistCpProcedure.
  */
+@Timeout(180)
 public class TestDistCpProcedure {
   private static MiniDFSCluster cluster;
   private static Configuration conf;
@@ -74,7 +76,7 @@ public class TestDistCpProcedure {
           new FileEntry(SRCDAT + "/b/c", false)};
   private static String nnUri;
 
-  @BeforeClass
+  @BeforeAll
   public static void beforeClass() throws IOException {
     DistCpProcedure.enableForTest();
     conf = new Configuration();
@@ -90,7 +92,7 @@ public class TestDistCpProcedure {
     nnUri = FileSystem.getDefaultUri(conf).toString();
   }
 
-  @AfterClass
+  @AfterAll
   public static void afterClass() {
     DistCpProcedure.disableForTest();
     if (cluster != null) {
@@ -98,7 +100,7 @@ public class TestDistCpProcedure {
     }
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testSuccessfulDistCpProcedure() throws Exception {
     String testRoot = nnUri + "/user/foo/testdir." + getMethodName();
     DistributedFileSystem fs =
@@ -140,7 +142,7 @@ public class TestDistCpProcedure {
     cleanup(fs, new Path(testRoot));
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testInitDistCp() throws Exception {
     String testRoot = nnUri + "/user/foo/testdir." + getMethodName();
     DistributedFileSystem fs =
@@ -198,7 +200,7 @@ public class TestDistCpProcedure {
     cleanup(fs, new Path(testRoot));
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testDiffDistCp() throws Exception {
     String testRoot = nnUri + "/user/foo/testdir." + getMethodName();
     DistributedFileSystem fs =
@@ -235,7 +237,7 @@ public class TestDistCpProcedure {
     cleanup(fs, new Path(testRoot));
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testStageFinalDistCp() throws Exception {
     String testRoot = nnUri + "/user/foo/testdir." + getMethodName();
     DistributedFileSystem fs =
@@ -260,7 +262,7 @@ public class TestDistCpProcedure {
     cleanup(fs, new Path(testRoot));
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testStageFinish() throws Exception {
     String testRoot = nnUri + "/user/foo/testdir." + getMethodName();
     DistributedFileSystem fs =
@@ -293,7 +295,7 @@ public class TestDistCpProcedure {
     cleanup(fs, new Path(testRoot));
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testRecoveryByStage() throws Exception {
     String testRoot = nnUri + "/user/foo/testdir." + getMethodName();
     DistributedFileSystem fs =
@@ -334,7 +336,7 @@ public class TestDistCpProcedure {
     cleanup(fs, new Path(testRoot));
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testShutdown() throws Exception {
     String testRoot = nnUri + "/user/foo/testdir." + getMethodName();
     DistributedFileSystem fs =
@@ -359,7 +361,7 @@ public class TestDistCpProcedure {
     cleanup(fs, new Path(testRoot));
   }
 
-  @Test(timeout = 30000)
+  @Test
   public void testDisableWrite() throws Exception {
     String testRoot = nnUri + "/user/foo/testdir." + getMethodName();
     DistributedFileSystem fs =
@@ -389,7 +391,7 @@ public class TestDistCpProcedure {
         .setDiffThreshold(diffThreshold).build();
   }
 
-  interface Call {
+  protected interface Call {
     void execute() throws IOException, RetryException;
   }
 
@@ -400,8 +402,8 @@ public class TestDistCpProcedure {
    * @param target the target stage.
    * @param call the function executing the procedure.
    */
-  private static void executeProcedure(DistCpProcedure procedure, Stage target,
-      Call call) throws IOException {
+  protected static void executeProcedure(DistCpProcedure procedure,
+      Stage target, Call call) throws IOException {
     Stage stage = Stage.PRE_CHECK;
     procedure.updateStage(stage);
     while (stage != target) {

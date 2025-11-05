@@ -17,7 +17,10 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.snapshot;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import java.util.ArrayList;
+
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
@@ -28,17 +31,18 @@ import org.apache.hadoop.hdfs.server.namenode.INode;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.QuotaCounts;
 import org.apache.hadoop.test.Whitebox;
-import org.junit.Assert;
-import org.junit.Test;
-import org.mockito.Mockito;
+import org.apache.hadoop.util.Lists;
 
-import java.util.ArrayList;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import static org.apache.hadoop.fs.StorageType.DISK;
 import static org.apache.hadoop.fs.StorageType.SSD;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.anyByte;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 public class TestFileWithSnapshotFeature {
@@ -59,7 +63,8 @@ public class TestFileWithSnapshotFeature {
     BlockManager bm = mock(BlockManager.class);
 
     // No snapshot
-    INodeFile file = mock(INodeFile.class);
+    INodeFile inodeFileObj = createMockFile(REPL_1);
+    INodeFile file = spy(inodeFileObj);
     when(file.getFileWithSnapshotFeature()).thenReturn(sf);
     when(file.getBlocks()).thenReturn(blocks);
     when(file.getStoragePolicyID()).thenReturn((byte) 1);
@@ -74,8 +79,8 @@ public class TestFileWithSnapshotFeature {
         bsps, collectedBlocks, removedINodes, null);
     sf.updateQuotaAndCollectBlocks(ctx, file, diff);
     QuotaCounts counts = ctx.quotaDelta().getCountsCopy();
-    Assert.assertEquals(0, counts.getStorageSpace());
-    Assert.assertTrue(counts.getTypeSpaces().allLessOrEqual(0));
+    assertEquals(0, counts.getStorageSpace());
+    assertTrue(counts.getTypeSpaces().allLessOrEqual(0));
 
     // INode only exists in the snapshot
     INodeFile snapshotINode = mock(INodeFile.class);
@@ -90,10 +95,20 @@ public class TestFileWithSnapshotFeature {
     blocks[0].setReplication(REPL_3);
     sf.updateQuotaAndCollectBlocks(ctx, file, diff);
     counts = ctx.quotaDelta().getCountsCopy();
-    Assert.assertEquals((REPL_3 - REPL_1) * BLOCK_SIZE,
-                        counts.getStorageSpace());
-    Assert.assertEquals(BLOCK_SIZE, counts.getTypeSpaces().get(DISK));
-    Assert.assertEquals(-BLOCK_SIZE, counts.getTypeSpaces().get(SSD));
+    assertEquals((REPL_3 - REPL_1) * BLOCK_SIZE,
+        counts.getStorageSpace());
+    assertEquals(BLOCK_SIZE, counts.getTypeSpaces().get(DISK));
+    assertEquals(-BLOCK_SIZE, counts.getTypeSpaces().get(SSD));
+  }
+
+  private INodeFile createMockFile(short replication) {
+    BlockInfo[] blocks = new BlockInfo[] {};
+    PermissionStatus perm = new PermissionStatus("foo", "bar", FsPermission
+        .createImmutable((short) 0x1ff));
+    INodeFile iNodeFile =
+        new INodeFile(1, new byte[0], perm, 0, 0, blocks, replication,
+            BLOCK_SIZE);
+    return iNodeFile;
   }
 
   /**
@@ -106,7 +121,8 @@ public class TestFileWithSnapshotFeature {
     BlockInfo[] blocks = new BlockInfo[] {
         new BlockInfoContiguous(new Block(1, BLOCK_SIZE, 1), REPL_3) };
 
-    INodeFile file = mock(INodeFile.class);
+    INodeFile inodeFileObj = createMockFile(REPL_1);
+    INodeFile file = spy(inodeFileObj);
     when(file.getBlocks()).thenReturn(blocks);
     when(file.getStoragePolicyID()).thenReturn((byte) 1);
     when(file.getPreferredBlockReplication()).thenReturn((short) 3);

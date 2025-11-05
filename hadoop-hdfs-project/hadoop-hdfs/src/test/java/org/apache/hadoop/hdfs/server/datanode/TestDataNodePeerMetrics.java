@@ -29,20 +29,21 @@ import org.apache.hadoop.metrics2.lib.MutableRollingAverages;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.conf.Configuration;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PEER_METRICS_MIN_OUTLIER_DETECTION_SAMPLES_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PEER_STATS_ENABLED_KEY;
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * This class tests various cases of DataNode peer metrics.
  */
 public class TestDataNodePeerMetrics {
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testGetSendPacketDownstreamAvgInfo() throws Exception {
     final int windowSize = 5; // 5s roll over interval
     final int numWindows = 2; // 2 rolling windows
@@ -83,11 +84,12 @@ public class TestDataNodePeerMetrics {
        *  "[49.236.149.246:9801]RollingAvgTime":504.463,
        *  "[84.125.113.65:9801]RollingAvgTime":497.954}
        */
-      assertThat(json, containsString(peerAddr));
+      assertThat(json).contains(peerAddr);
     }
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testRemoveStaleRecord() throws Exception {
     final int numWindows = 5;
     final long scheduleInterval = 1000;
@@ -122,10 +124,16 @@ public class TestDataNodePeerMetrics {
     GenericTestUtils.waitFor(
         () -> rollingAverages.getStats(numSamples).size() > 0, 500, 5000);
     assertEquals(3, rollingAverages.getStats(numSamples).size());
+    String json = peerMetrics.dumpSendPacketDownstreamAvgInfoAsJson();
+    for (String peerAddr : peerAddrList) {
+      assertThat(json).contains(peerAddr);
+    }
     /* wait for stale report to be removed */
     GenericTestUtils.waitFor(
         () -> rollingAverages.getStats(numSamples).isEmpty(), 500, 10000);
     assertEquals(0, rollingAverages.getStats(numSamples).size());
+    json = peerMetrics.dumpSendPacketDownstreamAvgInfoAsJson();
+    assertEquals("{}", json);
 
     /* dn can report peer metrics normally when it added back to cluster */
     for (String peerAddr : peerAddrList) {
@@ -138,6 +146,10 @@ public class TestDataNodePeerMetrics {
     GenericTestUtils.waitFor(
         () -> rollingAverages.getStats(numSamples).size() > 0, 500, 10000);
     assertEquals(3, rollingAverages.getStats(numSamples).size());
+    json = peerMetrics.dumpSendPacketDownstreamAvgInfoAsJson();
+    for (String peerAddr : peerAddrList) {
+      assertThat(json).contains(peerAddr);
+    }
   }
 
   /**

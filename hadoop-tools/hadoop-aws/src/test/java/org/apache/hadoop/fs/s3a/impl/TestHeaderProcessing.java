@@ -26,15 +26,19 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.amazonaws.services.s3.model.ObjectMetadata;
-import org.assertj.core.api.Assertions;
+import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import org.assertj.core.util.Lists;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.s3a.MockS3AFileSystem;
 import org.apache.hadoop.fs.s3a.S3ATestUtils;
-import org.apache.hadoop.fs.s3a.test.OperationTrackingStore;
+import org.apache.hadoop.fs.s3a.api.RequestFactory;
+import org.apache.hadoop.fs.s3a.audit.AuditTestSupport;
+import org.apache.hadoop.fs.store.audit.AuditSpan;
 import org.apache.hadoop.test.HadoopTestBase;
 
 import static java.lang.System.currentTimeMillis;
@@ -46,12 +50,13 @@ import static org.apache.hadoop.fs.s3a.impl.HeaderProcessing.decodeBytes;
 import static org.apache.hadoop.fs.s3a.impl.HeaderProcessing.encodeBytes;
 import static org.apache.hadoop.fs.s3a.impl.HeaderProcessing.extractXAttrLongValue;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit tests of header processing logic in {@link HeaderProcessing}.
  * Builds up a context accessor where the path
- * defined in {@link #MAGIC_PATH} exists and returns object metadata.
- *
+ * defined in {@link #MAGIC_PATH} exists and returns object metadata
+ * through the HeaderProcessingCallbacks.
  */
 public class TestHeaderProcessing extends HadoopTestBase {
 
@@ -69,7 +74,7 @@ public class TestHeaderProcessing extends HadoopTestBase {
   private HeaderProcessing headerProcessing;
 
   private static final String MAGIC_KEY
-      = "dest/__magic/job1/ta1/__base/output.csv";
+      = "dest/__magic_job-1/job1/ta1/__base/output.csv";
   private static final String MAGIC_FILE
       = "s3a://bucket/" + MAGIC_KEY;
 
@@ -87,20 +92,20 @@ public class TestHeaderProcessing extends HadoopTestBase {
       XA_LAST_MODIFIED
   };
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     CONTEXT_ACCESSORS.len = FILE_LENGTH;
     CONTEXT_ACCESSORS.userHeaders.put(
         X_HEADER_MAGIC_MARKER,
         Long.toString(MAGIC_LEN));
     context = S3ATestUtils.createMockStoreContext(true,
-        new OperationTrackingStore(), CONTEXT_ACCESSORS);
-    headerProcessing = new HeaderProcessing(context);
+        CONTEXT_ACCESSORS);
+    headerProcessing = new HeaderProcessing(context, CONTEXT_ACCESSORS);
   }
 
   @Test
   public void testByteRoundTrip() throws Throwable {
-    Assertions.assertThat(decodeBytes(encodeBytes(VALUE)))
+    assertThat(decodeBytes(encodeBytes(VALUE)))
         .describedAs("encoding of " + VALUE)
         .isEqualTo(VALUE);
   }
@@ -120,9 +125,9 @@ public class TestHeaderProcessing extends HadoopTestBase {
    */
   @Test
   public void testGetDateXAttr() throws Throwable {
-    Assertions.assertThat(
+    assertThat(
         decodeBytes(headerProcessing.getXAttr(MAGIC_PATH,
-            XA_LAST_MODIFIED)))
+        XA_LAST_MODIFIED)))
         .describedAs("XAttribute " + XA_LAST_MODIFIED)
         .isEqualTo(CONTEXT_ACCESSORS.date.toString());
   }
@@ -143,7 +148,7 @@ public class TestHeaderProcessing extends HadoopTestBase {
   @Test
   public void testGetAllXAttrs() throws Throwable {
     Map<String, byte[]> xAttrs = headerProcessing.getXAttrs(MAGIC_PATH);
-    Assertions.assertThat(xAttrs.keySet())
+    assertThat(xAttrs.keySet())
         .describedAs("Attribute keys")
         .contains(RETRIEVED_XATTRS);
   }
@@ -155,7 +160,7 @@ public class TestHeaderProcessing extends HadoopTestBase {
   @Test
   public void testListXAttrKeys() throws Throwable {
     List<String> xAttrs = headerProcessing.listXAttrs(MAGIC_PATH);
-    Assertions.assertThat(xAttrs)
+    assertThat(xAttrs)
         .describedAs("Attribute keys")
         .contains(RETRIEVED_XATTRS);
   }
@@ -167,7 +172,7 @@ public class TestHeaderProcessing extends HadoopTestBase {
   public void testGetFilteredXAttrs() throws Throwable {
     Map<String, byte[]> xAttrs = headerProcessing.getXAttrs(MAGIC_PATH,
         Lists.list(XA_MAGIC_MARKER, XA_CONTENT_LENGTH, "unknown"));
-    Assertions.assertThat(xAttrs.keySet())
+    assertThat(xAttrs.keySet())
         .describedAs("Attribute keys")
         .containsExactlyInAnyOrder(XA_MAGIC_MARKER, XA_CONTENT_LENGTH);
     // and the values are good
@@ -188,7 +193,7 @@ public class TestHeaderProcessing extends HadoopTestBase {
   public void testFilterEmptyXAttrs() throws Throwable {
     Map<String, byte[]> xAttrs = headerProcessing.getXAttrs(MAGIC_PATH,
         Lists.list());
-    Assertions.assertThat(xAttrs.keySet())
+    assertThat(xAttrs.keySet())
         .describedAs("Attribute keys")
         .isEmpty();
   }
@@ -203,20 +208,20 @@ public class TestHeaderProcessing extends HadoopTestBase {
     final String owner = "x-header-owner";
     final String root = "root";
     CONTEXT_ACCESSORS.userHeaders.put(owner, root);
-    final ObjectMetadata source = context.getContextAccessors()
+    final HeadObjectResponse source = CONTEXT_ACCESSORS
         .getObjectMetadata(MAGIC_KEY);
-    final Map<String, String> sourceUserMD = source.getUserMetadata();
-    Assertions.assertThat(sourceUserMD.get(owner))
+    final Map<String, String> sourceUserMD = source.metadata();
+    assertThat(sourceUserMD.get(owner))
         .describedAs("owner header in copied MD")
         .isEqualTo(root);
 
-    ObjectMetadata dest = new ObjectMetadata();
-    headerProcessing.cloneObjectMetadata(source, dest);
+    Map<String, String> destUserMetadata = new HashMap<>();
+    headerProcessing.cloneObjectMetadata(source, destUserMetadata, CopyObjectRequest.builder());
 
-    Assertions.assertThat(dest.getUserMetadata().get(X_HEADER_MAGIC_MARKER))
+    assertThat(destUserMetadata.get(X_HEADER_MAGIC_MARKER))
         .describedAs("Magic marker header in copied MD")
         .isNull();
-    Assertions.assertThat(dest.getUserMetadata().get(owner))
+    assertThat(destUserMetadata.get(owner))
         .describedAs("owner header in copied MD")
         .isEqualTo(root);
   }
@@ -231,7 +236,7 @@ public class TestHeaderProcessing extends HadoopTestBase {
       final String key,
       final byte[] bytes,
       final long expected) {
-    Assertions.assertThat(extractXAttrLongValue(bytes))
+    assertThat(extractXAttrLongValue(bytes))
         .describedAs("XAttribute " + key)
         .isNotEmpty()
         .hasValue(expected);
@@ -254,9 +259,11 @@ public class TestHeaderProcessing extends HadoopTestBase {
   /**
    * Context accessor with XAttrs returned for the {@link #MAGIC_PATH}
    * path.
+   * It also implements the Header Processing Callbacks,
+   * so those calls are mapped to the same data.
    */
   private static final class XAttrContextAccessor
-      implements ContextAccessors {
+      implements ContextAccessors, HeaderProcessing.HeaderProcessingCallbacks {
 
     private final Map<String, String> userHeaders = new HashMap<>();
 
@@ -292,17 +299,32 @@ public class TestHeaderProcessing extends HadoopTestBase {
     }
 
     @Override
-    public ObjectMetadata getObjectMetadata(final String key)
+    public AuditSpan getActiveAuditSpan() {
+      return AuditTestSupport.NOOP_SPAN;
+    }
+
+    @Override
+    public RequestFactory getRequestFactory() {
+      return MockS3AFileSystem.REQUEST_FACTORY;
+    }
+
+    @Override
+    public HeadObjectResponse getObjectMetadata(final String key)
         throws IOException {
       if (MAGIC_KEY.equals(key)) {
-        ObjectMetadata omd = new ObjectMetadata();
-        omd.setUserMetadata(userHeaders);
-        omd.setContentLength(len);
-        omd.setLastModified(date);
-        return omd;
+        return HeadObjectResponse.builder()
+            .metadata(userHeaders)
+            .contentLength(len)
+            .lastModified(date.toInstant()).build();
       } else {
         throw new FileNotFoundException(key);
       }
+
+    }
+
+    @Override
+    public HeadBucketResponse getBucketMetadata() throws IOException {
+      return HeadBucketResponse.builder().build();
     }
 
     public void setHeader(String key, String val) {

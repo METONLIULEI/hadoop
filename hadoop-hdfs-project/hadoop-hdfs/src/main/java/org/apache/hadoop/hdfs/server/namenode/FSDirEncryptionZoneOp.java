@@ -50,12 +50,13 @@ import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ZoneEncryptionInfoProto;
 import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.ReencryptionUpdater.FileEdekInfo;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.security.SecurityUtil;
-
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
-import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.Time;
+
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.CRYPTO_XATTR_ENCRYPTION_ZONE;
 import static org.apache.hadoop.util.Time.monotonicNow;
@@ -75,7 +76,7 @@ final class FSDirEncryptionZoneOp {
    * Invoke KeyProvider APIs to generate an encrypted data encryption key for
    * an encryption zone. Should not be called with any locks held.
    *
-   * @param fsd fsdirectory
+   * @param fsd the namespace tree.
    * @param ezKeyName key name of an encryption zone
    * @return New EDEK, or null if ezKeyName is null
    * @throws IOException
@@ -83,8 +84,8 @@ final class FSDirEncryptionZoneOp {
   private static EncryptedKeyVersion generateEncryptedDataEncryptionKey(
       final FSDirectory fsd, final String ezKeyName) throws IOException {
     // must not be holding lock during this operation
-    assert !fsd.getFSNamesystem().hasReadLock();
-    assert !fsd.getFSNamesystem().hasWriteLock();
+    assert !fsd.getFSNamesystem().hasReadLock(RwLockMode.FS);
+    assert !fsd.getFSNamesystem().hasWriteLock(RwLockMode.FS);
     if (ezKeyName == null) {
       return null;
     }
@@ -142,11 +143,12 @@ final class FSDirEncryptionZoneOp {
   /**
    * Create an encryption zone on directory path using the specified key.
    *
-   * @param fsd fsdirectory
+   * @param fsd the namespace tree.
    * @param srcArg the path of a directory which will be the root of the
    *               encryption zone. The directory must be empty
    * @param pc permission checker to check fs permission
-   * @param cipher cipher
+   * @param cipher the name of the cipher suite, which will be used
+   *               when it is generated.
    * @param keyName name of a key which must be present in the configured
    *                KeyProvider
    * @param logRetryCache whether to record RPC ids in editlog for retry cache
@@ -180,7 +182,7 @@ final class FSDirEncryptionZoneOp {
   /**
    * Get the encryption zone for the specified path.
    *
-   * @param fsd fsdirectory
+   * @param fsd the namespace tree.
    * @param srcArg the path of a file or directory to get the EZ for
    * @param pc permission checker to check fs permission
    * @return the EZ with file status.
@@ -381,7 +383,7 @@ final class FSDirEncryptionZoneOp {
    */
   static void saveFileXAttrsForBatch(FSDirectory fsd,
       List<FileEdekInfo> batch) {
-    assert fsd.getFSNamesystem().hasWriteLock();
+    assert fsd.getFSNamesystem().hasWriteLock(RwLockMode.FS);
     if (batch != null && !batch.isEmpty()) {
       for (FileEdekInfo entry : batch) {
         final INode inode = fsd.getInode(entry.getInodeId());
@@ -400,7 +402,7 @@ final class FSDirEncryptionZoneOp {
   /**
    * Set the FileEncryptionInfo for an INode.
    *
-   * @param fsd fsdirectory
+   * @param fsd the namespace tree.
    * @param info file encryption information
    * @param flag action when setting xattr. Either CREATE or REPLACE.
    * @throws IOException
@@ -430,7 +432,7 @@ final class FSDirEncryptionZoneOp {
    * returns a consolidated FileEncryptionInfo instance. Null is returned
    * for non-encrypted or raw files.
    *
-   * @param fsd fsdirectory
+   * @param fsd the namespace tree.
    * @param iip inodes in the path containing the file, passed in to
    *            avoid obtaining the list of inodes again
    * @return consolidated file encryption info; null for non-encrypted files
@@ -487,7 +489,7 @@ final class FSDirEncryptionZoneOp {
    * else throw a retry exception.  The startFile method generates the EDEK
    * outside of the lock so the zone must be reverified.
    *
-   * @param dir fsdirectory
+   * @param dir the namespace tree.
    * @param iip inodes in the file path
    * @param ezInfo the encryption key
    * @return FileEncryptionInfo for the file
@@ -532,16 +534,16 @@ final class FSDirEncryptionZoneOp {
   }
 
   /**
-   * Proactively warm up the edek cache. We'll get all the edek key names,
-   * then launch up a separate thread to warm them up.
+   * Best-effort attempt to proactively warm up the edek cache. We'll get all the edek key names,
+   * then launch up a separate thread to warm them up. Retries happen if any of keys fail to warm up.
    */
   static void warmUpEdekCache(final ExecutorService executor,
-      final FSDirectory fsd, final int delay, final int interval) {
+      final FSDirectory fsd, final int delay, final int interval, final int maxRetries) {
     fsd.readLock();
     try {
       String[] edeks  = fsd.ezManager.getKeyNames();
       executor.execute(
-          new EDEKCacheLoader(edeks, fsd.getProvider(), delay, interval));
+          new EDEKCacheLoader(edeks, fsd.getProvider(), delay, interval, maxRetries));
     } finally {
       fsd.readUnlock();
     }
@@ -556,19 +558,22 @@ final class FSDirEncryptionZoneOp {
     private final KeyProviderCryptoExtension kp;
     private int initialDelay;
     private int retryInterval;
+    private int maxRetries;
 
     EDEKCacheLoader(final String[] names, final KeyProviderCryptoExtension kp,
-        final int delay, final int interval) {
+        final int delay, final int interval, final int maxRetries) {
       this.keyNames = names;
       this.kp = kp;
       this.initialDelay = delay;
       this.retryInterval = interval;
+      this.maxRetries = maxRetries;
     }
 
     @Override
     public void run() {
       NameNode.LOG.info("Warming up {} EDEKs... (initialDelay={}, "
-          + "retryInterval={})", keyNames.length, initialDelay, retryInterval);
+              + "retryInterval={}, maxRetries={})", keyNames.length, initialDelay, retryInterval,
+          maxRetries);
       try {
         Thread.sleep(initialDelay);
       } catch (InterruptedException ie) {
@@ -576,42 +581,39 @@ final class FSDirEncryptionZoneOp {
         return;
       }
 
-      final int logCoolDown = 10000; // periodically print error log (if any)
-      int sinceLastLog = logCoolDown; // always print the first failure
       boolean success = false;
+      int retryCount = 0;
       IOException lastSeenIOE = null;
       long warmUpEDEKStartTime = monotonicNow();
-      while (true) {
+
+      while (!success && retryCount < maxRetries) {
         try {
           kp.warmUpEncryptedKeys(keyNames);
-          NameNode.LOG
-              .info("Successfully warmed up {} EDEKs.", keyNames.length);
+          NameNode.LOG.info("Successfully warmed up {} EDEKs.", keyNames.length);
           success = true;
-          break;
         } catch (IOException ioe) {
           lastSeenIOE = ioe;
-          if (sinceLastLog >= logCoolDown) {
-            NameNode.LOG.info("Failed to warm up EDEKs.", ioe);
-            sinceLastLog = 0;
-          } else {
-            NameNode.LOG.debug("Failed to warm up EDEKs.", ioe);
-          }
+          NameNode.LOG.info("Failed to warm up EDEKs.", ioe);
         } catch (Exception e) {
           NameNode.LOG.error("Cannot warm up EDEKs.", e);
           throw e;
         }
-        try {
-          Thread.sleep(retryInterval);
-        } catch (InterruptedException ie) {
-          NameNode.LOG.info("EDEKCacheLoader interrupted during retry.");
-          break;
+
+        if (!success) {
+          try {
+            Thread.sleep(retryInterval);
+          } catch (InterruptedException ie) {
+            NameNode.LOG.info("EDEKCacheLoader interrupted during retry.");
+            break;
+          }
+          retryCount++;
         }
-        sinceLastLog += retryInterval;
       }
+
       long warmUpEDEKTime = monotonicNow() - warmUpEDEKStartTime;
       NameNode.getNameNodeMetrics().addWarmUpEDEKTime(warmUpEDEKTime);
       if (!success) {
-        NameNode.LOG.warn("Unable to warm up EDEKs.");
+        NameNode.LOG.warn("Max retry {} reached, unable to warm up EDEKs.", maxRetries);
         if (lastSeenIOE != null) {
           NameNode.LOG.warn("Last seen exception:", lastSeenIOE);
         }
@@ -655,13 +657,13 @@ final class FSDirEncryptionZoneOp {
     Preconditions.checkNotNull(ezKeyName);
 
     // Generate EDEK while not holding the fsn lock.
-    fsn.writeUnlock();
+    fsn.writeUnlock(RwLockMode.FS, "getEncryptionKeyInfo");
     try {
       EncryptionFaultInjector.getInstance().startFileBeforeGenerateKey();
       return new EncryptionKeyInfo(protocolVersion, suite, ezKeyName,
           generateEncryptedDataEncryptionKey(fsd, ezKeyName));
     } finally {
-      fsn.writeLock();
+      fsn.writeLock(RwLockMode.FS);
       EncryptionFaultInjector.getInstance().startFileAfterGenerateKey();
     }
   }
@@ -726,13 +728,13 @@ final class FSDirEncryptionZoneOp {
       final FSPermissionChecker pc, final String zone) throws IOException {
     assert dir.getProvider() != null;
     final INodesInPath iip;
-    dir.getFSNamesystem().readLock();
+    dir.getFSNamesystem().readLock(RwLockMode.FS);
     try {
       iip = dir.resolvePath(pc, zone, DirOp.READ);
       dir.ezManager.checkEncryptionZoneRoot(iip.getLastINode(), zone);
       return dir.ezManager.getKeyName(iip);
     } finally {
-      dir.getFSNamesystem().readUnlock();
+      dir.getFSNamesystem().readUnlock(RwLockMode.FS, "getKeyNameForZone");
     }
   }
 }

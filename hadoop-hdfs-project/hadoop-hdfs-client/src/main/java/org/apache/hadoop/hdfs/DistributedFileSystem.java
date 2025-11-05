@@ -18,12 +18,12 @@
 
 package org.apache.hadoop.hdfs;
 
-
+import org.apache.hadoop.fs.LeaseRecoverable;
+import org.apache.hadoop.fs.SafeMode;
+import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.security.AccessControlException;
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
-import org.apache.commons.collections.list.TreeList;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -63,6 +63,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.StorageStatistics;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.UnresolvedLinkException;
@@ -73,6 +74,7 @@ import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.WithErasureCoding;
 import org.apache.hadoop.hdfs.DFSOpsCountStatistics.OpType;
 import org.apache.hadoop.hdfs.client.DfsPathCapabilities;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
@@ -97,7 +99,6 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.ReencryptAction;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.RollingUpgradeAction;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.HdfsPathHandle;
 import org.apache.hadoop.hdfs.protocol.HdfsLocatedFileStatus;
@@ -107,8 +108,6 @@ import org.apache.hadoop.hdfs.protocol.ZoneReencryptionStatus;
 import org.apache.hadoop.hdfs.protocol.RollingUpgradeInfo;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing;
-import org.apache.hadoop.hdfs.protocol.SnapshotDiffReportListing.DiffReportListingEntry;
-import org.apache.hadoop.hdfs.client.impl.SnapshotDiffReportGenerator;
 import org.apache.hadoop.hdfs.protocol.SnapshottableDirectoryStatus;
 import org.apache.hadoop.hdfs.protocol.SnapshotStatus;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
@@ -116,7 +115,7 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.DelegationTokenIssuer;
-import org.apache.hadoop.util.ChunkedArrayList;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.Progressable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -148,7 +147,8 @@ import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapa
 @InterfaceAudience.LimitedPrivate({ "MapReduce", "HBase" })
 @InterfaceStability.Unstable
 public class DistributedFileSystem extends FileSystem
-    implements KeyProviderTokenIssuer, BatchListingOperations {
+    implements KeyProviderTokenIssuer, BatchListingOperations, LeaseRecoverable, SafeMode,
+    WithErasureCoding {
   private Path workingDir;
   private URI uri;
 
@@ -310,6 +310,7 @@ public class DistributedFileSystem extends FileSystem
    * @return true if the file is already closed
    * @throws IOException if an error occurs
    */
+  @Override
   public boolean recoverLease(final Path f) throws IOException {
     Path absF = fixRelativePart(f);
     return new FileSystemLinkResolver<Boolean>() {
@@ -377,6 +378,14 @@ public class DistributedFileSystem extends FileSystem
     return dfs.createWrappedInputStream(dfsis);
   }
 
+  @Override
+  public String getErasureCodingPolicyName(FileStatus fileStatus) {
+    if (!(fileStatus instanceof HdfsFileStatus)) {
+      return null;
+    }
+    return ((HdfsFileStatus) fileStatus).getErasureCodingPolicy().getName();
+  }
+
   /**
    * Create a handle to an HDFS file.
    * @param st HdfsFileStatus instance from NameNode
@@ -424,6 +433,16 @@ public class DistributedFileSystem extends FileSystem
   public FSDataOutputStream append(Path f, final int bufferSize,
       final Progressable progress) throws IOException {
     return append(f, EnumSet.of(CreateFlag.APPEND), bufferSize, progress);
+  }
+
+  @Override
+  public FSDataOutputStream append(Path f, final int bufferSize,
+      final Progressable progress, boolean appendToNewBlock) throws IOException {
+    EnumSet<CreateFlag> flag = EnumSet.of(CreateFlag.APPEND);
+    if (appendToNewBlock) {
+      flag.add(CreateFlag.NEW_BLOCK);
+    }
+    return append(f, flag, bufferSize, progress);
   }
 
   /**
@@ -572,7 +591,7 @@ public class DistributedFileSystem extends FileSystem
 
   /**
    * Same as
-   * {@link #create(Path, FsPermission, EnumSet<CreateFlag>, int, short, long,
+   * {@link #create(Path, FsPermission, EnumSet, int, short, long,
    * Progressable, ChecksumOpt)} with a few additions. First, addition of
    * favoredNodes that is a hint to where the namenode should place the file
    * blocks. The favored nodes hint is not persisted in HDFS. Hence it may be
@@ -641,12 +660,12 @@ public class DistributedFileSystem extends FileSystem
 
   /**
    * Similar to {@link #create(Path, FsPermission, EnumSet, int, short, long,
-   * Progressable, ChecksumOpt, InetSocketAddress[], String)}, it provides a
+   * Progressable, ChecksumOpt, InetSocketAddress[], String, String)}, it provides a
    * HDFS-specific version of {@link #createNonRecursive(Path, FsPermission,
    * EnumSet, int, short, long, Progressable)} with a few additions.
    *
    * @see #create(Path, FsPermission, EnumSet, int, short, long, Progressable,
-   * ChecksumOpt, InetSocketAddress[], String) for the descriptions of
+   * ChecksumOpt, InetSocketAddress[], String, String) for the descriptions of
    * additional parameters, i.e., favoredNodes, ecPolicyName and
    * storagePolicyName.
    */
@@ -1627,6 +1646,63 @@ public class DistributedFileSystem extends FileSystem
    * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#setSafeMode(
    *    HdfsConstants.SafeModeAction,boolean)
    */
+  @Override
+  public boolean setSafeMode(SafeModeAction action)
+      throws IOException {
+    return setSafeMode(action, false);
+  }
+
+  /**
+   * Enter, leave or get safe mode.
+   *
+   * @param action
+   *          One of SafeModeAction.ENTER, SafeModeAction.LEAVE and
+   *          SafeModeAction.GET.
+   * @param isChecked
+   *          If true check only for Active NNs status, else check first NN's
+   *          status.
+   */
+  @Override
+  @SuppressWarnings("deprecation")
+  public boolean setSafeMode(SafeModeAction action, boolean isChecked)
+      throws IOException {
+    return this.setSafeMode(convertToClientProtocolSafeModeAction(action), isChecked);
+  }
+
+  /**
+   * Translating the {@link SafeModeAction} into {@link HdfsConstants.SafeModeAction}
+   * that is used by {@link DFSClient#setSafeMode(HdfsConstants.SafeModeAction, boolean)}.
+   *
+   * @param action any supported action listed in {@link SafeModeAction}.
+   * @return the converted {@link HdfsConstants.SafeModeAction}.
+   * @throws UnsupportedOperationException if the provided {@link SafeModeAction} cannot be
+   *           translated.
+   */
+  private static HdfsConstants.SafeModeAction convertToClientProtocolSafeModeAction(
+      SafeModeAction action) {
+    switch (action) {
+    case ENTER:
+      return HdfsConstants.SafeModeAction.SAFEMODE_ENTER;
+    case LEAVE:
+      return HdfsConstants.SafeModeAction.SAFEMODE_LEAVE;
+    case FORCE_EXIT:
+      return HdfsConstants.SafeModeAction.SAFEMODE_FORCE_EXIT;
+    case GET:
+      return HdfsConstants.SafeModeAction.SAFEMODE_GET;
+    default:
+      throw new UnsupportedOperationException("Unsupported safe mode action " + action);
+    }
+  }
+
+  /**
+   * Enter, leave or get safe mode.
+   *
+   * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#setSafeMode(HdfsConstants.SafeModeAction,
+   * boolean)
+   *
+   * @deprecated please instead use {@link #setSafeMode(SafeModeAction)}.
+   */
+  @Deprecated
   public boolean setSafeMode(HdfsConstants.SafeModeAction action)
       throws IOException {
     return setSafeMode(action, false);
@@ -1637,12 +1713,18 @@ public class DistributedFileSystem extends FileSystem
    *
    * @param action
    *          One of SafeModeAction.ENTER, SafeModeAction.LEAVE and
-   *          SafeModeAction.GET
+   *          SafeModeAction.GET.
    * @param isChecked
    *          If true check only for Active NNs status, else check first NN's
-   *          status
-   * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#setSafeMode(SafeModeAction, boolean)
+   *          status.
+   *
+   * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#setSafeMode(HdfsConstants.SafeModeAction,
+   * boolean)
+   *
+   * @deprecated please instead use
+   *               {@link DistributedFileSystem#setSafeMode(SafeModeAction, boolean)}.
    */
+  @Deprecated
   public boolean setSafeMode(HdfsConstants.SafeModeAction action,
       boolean isChecked) throws IOException {
     return dfs.setSafeMode(action, isChecked);
@@ -1679,7 +1761,7 @@ public class DistributedFileSystem extends FileSystem
   }
 
   /**
-   * enable/disable/check restoreFaileStorage
+   * enable/disable/check restoreFaileStorage.
    *
    * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#restoreFailedStorage(String arg)
    */
@@ -2042,7 +2124,7 @@ public class DistributedFileSystem extends FileSystem
    *           when there is an issue communicating with the NameNode
    */
   public boolean isInSafeMode() throws IOException {
-    return setSafeMode(SafeModeAction.SAFEMODE_GET, true);
+    return setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_GET, true);
   }
 
   /**
@@ -2297,8 +2379,8 @@ public class DistributedFileSystem extends FileSystem
       @Override
       public RemoteIterator<SnapshotDiffReportListing> doCall(final Path p)
           throws IOException {
-        if (!isValidSnapshotName(fromSnapshot) || !isValidSnapshotName(
-            toSnapshot)) {
+        if (!DFSUtilClient.isValidSnapshotName(fromSnapshot) ||
+            !DFSUtilClient.isValidSnapshotName(toSnapshot)) {
           throw new UnsupportedOperationException("Remote Iterator is"
               + "supported for snapshotDiffReport between two snapshots");
         }
@@ -2363,44 +2445,11 @@ public class DistributedFileSystem extends FileSystem
     }
   }
 
-  private boolean isValidSnapshotName(String snapshotName) {
-    // If any of the snapshots specified in the getSnapshotDiffReport call
-    // is null or empty, it points to the current tree.
-    return (snapshotName != null && !snapshotName.isEmpty());
-  }
-
   private SnapshotDiffReport getSnapshotDiffReportInternal(
       final String snapshotDir, final String fromSnapshot,
       final String toSnapshot) throws IOException {
-    // In case the diff needs to be computed between a snapshot and the current
-    // tree, we should not do iterative diffReport computation as the iterative
-    // approach might fail if in between the rpc calls the current tree
-    // changes in absence of the global fsn lock.
-    if (!isValidSnapshotName(fromSnapshot) || !isValidSnapshotName(
-        toSnapshot)) {
-      return dfs.getSnapshotDiffReport(snapshotDir, fromSnapshot, toSnapshot);
-    }
-    byte[] startPath = DFSUtilClient.EMPTY_BYTES;
-    int index = -1;
-    SnapshotDiffReportGenerator snapshotDiffReport;
-    List<DiffReportListingEntry> modifiedList = new TreeList();
-    List<DiffReportListingEntry> createdList = new ChunkedArrayList<>();
-    List<DiffReportListingEntry> deletedList = new ChunkedArrayList<>();
-    SnapshotDiffReportListing report;
-    do {
-      report = dfs.getSnapshotDiffReportListing(snapshotDir, fromSnapshot,
-          toSnapshot, startPath, index);
-      startPath = report.getLastPath();
-      index = report.getLastIndex();
-      modifiedList.addAll(report.getModifyList());
-      createdList.addAll(report.getCreateList());
-      deletedList.addAll(report.getDeleteList());
-    } while (!(Arrays.equals(startPath, DFSUtilClient.EMPTY_BYTES)
-        && index == -1));
-    snapshotDiffReport =
-        new SnapshotDiffReportGenerator(snapshotDir, fromSnapshot, toSnapshot,
-            report.getIsFromEarlier(), modifiedList, createdList, deletedList);
-    return snapshotDiffReport.generateReport();
+    return  DFSUtilClient.getSnapshotDiffReport(snapshotDir, fromSnapshot, toSnapshot,
+        dfs::getSnapshotDiffReport, dfs::getSnapshotDiffReportListing);
   }
 
   /**
@@ -2439,6 +2488,51 @@ public class DistributedFileSystem extends FileSystem
   }
 
   /**
+   * Get the difference between two snapshots of a directory iteratively.
+   *
+   * @param snapshotDir full path of the directory where snapshots are taken.
+   * @param fromSnapshotName snapshot name of the from point. Null indicates the current tree.
+   * @param toSnapshotName snapshot name of the to point. Null indicates the current tree.
+   * @param snapshotDiffStartPath path relative to the snapshottable root directory from where
+   *     the snapshotdiff computation needs to start.
+   * @param snapshotDiffIndex index in the created or deleted list of the directory at which the
+   *     snapshotdiff computation stopped during the last rpc call. -1 indicates the diff
+   *     computation needs to start right from the start path.
+   * @return the difference report represented as a {@link SnapshotDiffReportListing}.
+   * @throws IOException if an I/O error occurred.
+   */
+  public SnapshotDiffReportListing getSnapshotDiffReportListing(Path snapshotDir,
+      String fromSnapshotName, String toSnapshotName, String snapshotDiffStartPath,
+      int snapshotDiffIndex) throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_SNAPSHOT_DIFF);
+    Path absF = fixRelativePart(snapshotDir);
+    return new FileSystemLinkResolver<SnapshotDiffReportListing>() {
+
+      @Override
+      public SnapshotDiffReportListing doCall(final Path p) throws IOException {
+        return dfs.getSnapshotDiffReportListing(getPathName(p), fromSnapshotName, toSnapshotName,
+            DFSUtilClient.string2Bytes(snapshotDiffStartPath), snapshotDiffIndex);
+      }
+
+      @Override
+      public SnapshotDiffReportListing next(final FileSystem fs, final Path p)
+          throws IOException {
+        if (fs instanceof DistributedFileSystem) {
+          DistributedFileSystem distributedFileSystem = (DistributedFileSystem)fs;
+          distributedFileSystem.getSnapshotDiffReportListing(p, fromSnapshotName, toSnapshotName,
+              snapshotDiffStartPath, snapshotDiffIndex);
+        } else {
+          throw new UnsupportedOperationException("Cannot perform snapshot"
+              + " operations on a symlink to a non-DistributedFileSystem: "
+              + snapshotDir + " -> " + p);
+        }
+        return null;
+      }
+    }.resolve(this, absF);
+  }
+
+  /**
    * Get the close status of a file
    * @param src The path to the file
    *
@@ -2446,6 +2540,7 @@ public class DistributedFileSystem extends FileSystem
    * @throws FileNotFoundException if the file does not exist.
    * @throws IOException If an I/O error occurred
    */
+  @Override
   public boolean isFileClosed(final Path src) throws IOException {
     Path absF = fixRelativePart(src);
     return new FileSystemLinkResolver<Boolean>() {
@@ -3527,6 +3622,8 @@ public class DistributedFileSystem extends FileSystem
    */
   @Override
   public Collection<FileStatus> getTrashRoots(boolean allUsers) {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_TRASH_ROOTS);
     Set<FileStatus> ret = new HashSet<>();
     // Get normal trash roots
     ret.addAll(super.getTrashRoots(allUsers));
@@ -3775,6 +3872,10 @@ public class DistributedFileSystem extends FileSystem
      */
     @Override
     public FSDataOutputStream build() throws IOException {
+      String ecPolicy = getOptions().get(Options.OpenFileOptions.FS_OPTION_OPENFILE_EC_POLICY, "");
+      if (!ecPolicy.isEmpty()) {
+        ecPolicyName(ecPolicy);
+      }
       if (getFlags().contains(CreateFlag.CREATE) ||
           getFlags().contains(CreateFlag.OVERWRITE)) {
         if (isRecursive()) {
@@ -3867,6 +3968,7 @@ public class DistributedFileSystem extends FileSystem
     // (yet/ever) in the WebHDFS API.
     switch (validatePathCapabilityArgs(path, capability)) {
     case CommonPathCapabilities.FS_EXPERIMENTAL_BATCH_LISTING:
+    case CommonPathCapabilities.LEASE_RECOVERABLE:
       return true;
     default:
       // fall through
@@ -3879,5 +3981,75 @@ public class DistributedFileSystem extends FileSystem
   public MultipartUploaderBuilder createMultipartUploader(final Path basePath)
       throws IOException {
     return new FileSystemMultipartUploaderBuilder(this, basePath);
+  }
+
+  /**
+   * Retrieve stats for slow running datanodes.
+   *
+   * @return An array of slow datanode info.
+   * @throws IOException If an I/O error occurs.
+   */
+  public DatanodeInfo[] getSlowDatanodeStats() throws IOException {
+    return dfs.slowDatanodeReport();
+  }
+
+  /**
+   * Returns LocatedBlocks of the corresponding HDFS file p from offset start
+   * for length len.
+   * This is similar to {@link #getFileBlockLocations(Path, long, long)} except
+   * that it returns LocatedBlocks rather than BlockLocation array.
+   * @param p path representing the file of interest.
+   * @param start offset
+   * @param len length
+   * @return a LocatedBlocks object
+   * @throws IOException
+   */
+  public LocatedBlocks getLocatedBlocks(Path p, long start, long len)
+      throws IOException {
+    final Path absF = fixRelativePart(p);
+    return new FileSystemLinkResolver<LocatedBlocks>() {
+      @Override
+      public LocatedBlocks doCall(final Path p) throws IOException {
+        return dfs.getLocatedBlocks(getPathName(p), start, len);
+      }
+      @Override
+      public LocatedBlocks next(final FileSystem fs, final Path p)
+          throws IOException {
+        if (fs instanceof DistributedFileSystem) {
+          DistributedFileSystem myDfs = (DistributedFileSystem)fs;
+          return myDfs.getLocatedBlocks(p, start, len);
+        }
+        throw new UnsupportedOperationException("Cannot getLocatedBlocks " +
+            "through a symlink to a non-DistributedFileSystem: " + fs + " -> "+
+            p);
+      }
+    }.resolve(this, absF);
+  }
+
+  /**
+   * Return path of the enclosing root for a given path
+   * The enclosing root path is a common ancestor that should be used for temp and staging dirs
+   * as well as within encryption zones and other restricted directories.
+   *
+   * @param path file path to find the enclosing root path for
+   * @return a path to the enclosing root
+   * @throws IOException early checks like failure to resolve path cause IO failures
+   */
+  public Path getEnclosingRoot(final Path path) throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_ENCLOSING_ROOT);
+    Preconditions.checkNotNull(path);
+    Path absF = fixRelativePart(path);
+    return new FileSystemLinkResolver<Path>() {
+      @Override
+      public Path doCall(final Path p) throws IOException {
+        return dfs.getEnclosingRoot(getPathName(p));
+      }
+
+      @Override
+      public Path next(final FileSystem fs, final Path p) throws IOException {
+        return fs.getEnclosingRoot(p);
+      }
+    }.resolve(this, absF);
   }
 }

@@ -19,8 +19,8 @@
 package org.apache.hadoop.yarn.server.resourcemanager.placement;
 
 import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 import org.apache.commons.compress.utils.Lists;
+import org.apache.hadoop.util.Sets;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractCSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerQueueManager;
@@ -36,7 +36,7 @@ import java.util.Set;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-class MockQueueHierarchyBuilder {
+public class MockQueueHierarchyBuilder {
   private static final String ROOT = "root";
   private static final String QUEUE_SEP = ".";
   private List<String> queuePaths = Lists.newArrayList();

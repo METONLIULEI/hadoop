@@ -20,14 +20,18 @@ package org.apache.hadoop.fs.azurebfs.services;
 
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.fs.azurebfs.contracts.services.ReadBufferStatus;
+import org.apache.hadoop.fs.azurebfs.utils.TracingContext;
 
 import static org.apache.hadoop.fs.azurebfs.contracts.services.ReadBufferStatus.READ_FAILED;
 
 class ReadBuffer {
 
   private AbfsInputStream stream;
+  private String eTag;
+  private String path;                   // path of the file this buffer is for
   private long offset;                   // offset within the file for the buffer
   private int length;                    // actual length, set after the buffer is filles
   private int requestedLength;           // requested length of the read
@@ -36,12 +40,14 @@ class ReadBuffer {
   private ReadBufferStatus status;             // status of the buffer
   private CountDownLatch latch = null;   // signaled when the buffer is done reading, so any client
   // waiting on this buffer gets unblocked
+  private TracingContext tracingContext;
 
   // fields to help with eviction logic
   private long timeStamp = 0;  // tick at which buffer became available to read
   private boolean isFirstByteConsumed = false;
   private boolean isLastByteConsumed = false;
   private boolean isAnyByteConsumed = false;
+  private AtomicInteger refCount = new AtomicInteger(0);
 
   private IOException errException = null;
 
@@ -49,8 +55,32 @@ class ReadBuffer {
     return stream;
   }
 
+  public String getETag() {
+    return eTag;
+  }
+
+  public String getPath() {
+    return path;
+  }
+
   public void setStream(AbfsInputStream stream) {
     this.stream = stream;
+  }
+
+  public void setETag(String eTag) {
+    this.eTag = eTag;
+  }
+
+  public void setPath(String path) {
+    this.path = path;
+  }
+
+  public void setTracingContext(TracingContext tracingContext) {
+    this.tracingContext = tracingContext;
+  }
+
+  public TracingContext getTracingContext() {
+    return tracingContext;
   }
 
   public long getOffset() {
@@ -112,6 +142,20 @@ class ReadBuffer {
     }
   }
 
+  public void startReading() {
+    refCount.getAndIncrement();
+  }
+
+  public void endReading() {
+    if (refCount.decrementAndGet() < 0) {
+      throw new IllegalStateException("ReadBuffer refCount cannot be negative");
+    }
+  }
+
+  public int getRefCount() {
+    return refCount.get();
+  }
+
   public CountDownLatch getLatch() {
     return latch;
   }
@@ -152,4 +196,7 @@ class ReadBuffer {
     this.isAnyByteConsumed = isAnyByteConsumed;
   }
 
+  public boolean isFullyConsumed() {
+    return isFirstByteConsumed() && isLastByteConsumed();
+  }
 }

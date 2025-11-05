@@ -75,8 +75,8 @@ import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.util.LimitInputStream;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.Lists;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.thirdparty.protobuf.CodedOutputStream;
 
@@ -87,6 +87,8 @@ import org.apache.hadoop.thirdparty.protobuf.CodedOutputStream;
 public final class FSImageFormatProtobuf {
   private static final Logger LOG = LoggerFactory
       .getLogger(FSImageFormatProtobuf.class);
+
+  private static volatile boolean enableParallelLoad = false;
 
   public static final class LoaderContext {
     private SerialNumberManager.StringTable stringTable;
@@ -269,14 +271,20 @@ public final class FSImageFormatProtobuf {
                                                 String compressionCodec)
         throws IOException {
       FileInputStream fin = new FileInputStream(filename);
-      FileChannel channel = fin.getChannel();
-      channel.position(section.getOffset());
-      InputStream in = new BufferedInputStream(new LimitInputStream(fin,
-          section.getLength()));
+      try {
 
-      in = FSImageUtil.wrapInputStreamForCompression(conf,
-          compressionCodec, in);
-      return in;
+          FileChannel channel = fin.getChannel();
+          channel.position(section.getOffset());
+          InputStream in = new BufferedInputStream(new LimitInputStream(fin,
+                  section.getLength()));
+
+          in = FSImageUtil.wrapInputStreamForCompression(conf,
+                  compressionCodec, in);
+          return in;
+      } catch (IOException e) {
+          fin.close();
+          throw e;
+      }
     }
 
     /**
@@ -536,10 +544,9 @@ public final class FSImageFormatProtobuf {
       Counter counter = prog.getCounter(Phase.LOADING_FSIMAGE, currentStep);
       for (int i = 0; i < numTokens; ++i) {
         tokens.add(SecretManagerSection.PersistToken.parseDelimitedFrom(in));
-        counter.increment();
       }
 
-      fsn.loadSecretManagerState(s, keys, tokens);
+      fsn.loadSecretManagerState(s, keys, tokens, counter);
     }
 
     private void loadCacheManagerSection(InputStream in, StartupProgress prog,
@@ -576,22 +583,22 @@ public final class FSImageFormatProtobuf {
   }
 
   private static boolean enableParallelSaveAndLoad(Configuration conf) {
-    boolean loadInParallel =
+    boolean loadInParallel = enableParallelLoad;
+    return loadInParallel;
+  }
+
+  public static void initParallelLoad(Configuration conf) {
+    enableParallelLoad =
         conf.getBoolean(DFSConfigKeys.DFS_IMAGE_PARALLEL_LOAD_KEY,
             DFSConfigKeys.DFS_IMAGE_PARALLEL_LOAD_DEFAULT);
-    boolean compressionEnabled = conf.getBoolean(
-        DFSConfigKeys.DFS_IMAGE_COMPRESS_KEY,
-        DFSConfigKeys.DFS_IMAGE_COMPRESS_DEFAULT);
+  }
 
-    if (loadInParallel) {
-      if (compressionEnabled) {
-        LOG.warn("Parallel Image loading and saving is not supported when {}" +
-                " is set to true. Parallel will be disabled.",
-            DFSConfigKeys.DFS_IMAGE_COMPRESS_KEY);
-        loadInParallel = false;
-      }
-    }
-    return loadInParallel;
+  public static void refreshParallelSaveAndLoad(boolean enable) {
+    enableParallelLoad = enable;
+  }
+
+  public static boolean getEnableParallelLoad() {
+    return enableParallelLoad;
   }
 
   public static final class Saver {
@@ -634,11 +641,11 @@ public final class FSImageFormatProtobuf {
       return inodesPerSubSection;
     }
 
-    public boolean shouldWriteSubSections() {
-      return writeSubSections;
+    public OutputStream getSectionOutputStream() {
+      return sectionOutputStream;
     }
 
-    /**
+      /**
      * Commit the length and offset of a fsimage section to the summary index,
      * including the sub section, which will be committed before the section is
      * committed.
@@ -649,14 +656,22 @@ public final class FSImageFormatProtobuf {
      */
     public void commitSectionAndSubSection(FileSummary.Builder summary,
         SectionName name, SectionName subSectionName) throws IOException {
-      commitSubSection(summary, subSectionName);
-      commitSection(summary, name);
+      commitSubSection(summary, subSectionName, true);
+      commitSection(summary, name, true);
     }
 
     public void commitSection(FileSummary.Builder summary, SectionName name)
-        throws IOException {
+            throws IOException {
+      commitSection(summary, name, false);
+    }
+
+    public void commitSection(FileSummary.Builder summary, SectionName name,
+        boolean afterSubSectionCommit) throws IOException {
       long oldOffset = currentOffset;
-      flushSectionOutputStream();
+      boolean subSectionCommitted = afterSubSectionCommit && writeSubSections;
+      if (!subSectionCommitted) {
+        flushSectionOutputStream();
+      }
 
       if (codec != null) {
         sectionOutputStream = codec.createOutputStream(underlyingOutputStream);
@@ -670,14 +685,20 @@ public final class FSImageFormatProtobuf {
       subSectionOffset = currentOffset;
     }
 
+    public void commitSubSection(FileSummary.Builder summary, SectionName name)
+            throws IOException {
+      this.commitSubSection(summary, name, false);
+    }
+
     /**
      * Commit the length and offset of a fsimage sub-section to the summary
      * index.
      * @param summary The image summary object
      * @param name The name of the sub-section to commit
+     * @param isLast True if sub-section is the last sub-section of each section
      * @throws IOException
      */
-    public void commitSubSection(FileSummary.Builder summary, SectionName name)
+    public void commitSubSection(FileSummary.Builder summary, SectionName name, boolean isLast)
         throws IOException {
       if (!writeSubSections) {
         return;
@@ -686,7 +707,15 @@ public final class FSImageFormatProtobuf {
       LOG.debug("Saving a subsection for {}", name.toString());
       // The output stream must be flushed before the length is obtained
       // as the flush can move the length forward.
-      sectionOutputStream.flush();
+      flushSectionOutputStream();
+
+      if (codec == null || isLast) {
+        // To avoid empty sub-section, Do not create CompressionOutputStream
+        // if sub-section is last sub-section of each section
+        sectionOutputStream = underlyingOutputStream;
+      } else {
+        sectionOutputStream = codec.createOutputStream(underlyingOutputStream);
+      }
       long length = fileChannel.position() - subSectionOffset;
       if (length == 0) {
         LOG.warn("The requested section for {} is empty. It will not be " +

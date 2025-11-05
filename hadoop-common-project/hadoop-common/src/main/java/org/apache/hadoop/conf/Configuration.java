@@ -24,7 +24,6 @@ import com.ctc.wstx.io.SystemId;
 import com.ctc.wstx.stax.WstxInputFactory;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import java.io.BufferedInputStream;
 import java.io.DataInput;
@@ -44,11 +43,13 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLConnection;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -83,10 +84,10 @@ import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
-import org.apache.commons.collections.map.UnmodifiableMap;
+import org.apache.commons.collections4.map.UnmodifiableMap;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -98,17 +99,19 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProvider.CredentialEntry;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
+import org.apache.hadoop.thirdparty.com.google.common.base.Strings;
+import org.apache.hadoop.util.ConfigurationHelper;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringInterner;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.XMLUtils;
+
 import org.codehaus.stax2.XMLStreamReader2;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hadoop.thirdparty.com.google.common.base.Strings;
 
 import static org.apache.commons.lang3.StringUtils.isBlank;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
@@ -116,7 +119,7 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
 /**
  * Provides access to configuration parameters.
  *
- * <h3 id="Resources">Resources</h3>
+ * <h2 id="Resources">Resources</h2>
  *
  * <p>Configurations are specified by resources. A resource contains a set of
  * name/value pairs as XML data. Each resource is named by either a 
@@ -127,16 +130,16 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
  *
  * <p>Unless explicitly turned off, Hadoop by default specifies two 
  * resources, loaded in-order from the classpath: <ol>
- * <li><tt>
+ * <li><code>
  * <a href="{@docRoot}/../hadoop-project-dist/hadoop-common/core-default.xml">
- * core-default.xml</a></tt>: Read-only defaults for hadoop.</li>
- * <li><tt>core-site.xml</tt>: Site-specific configuration for a given hadoop
+ * core-default.xml</a></code>: Read-only defaults for hadoop.</li>
+ * <li><code>core-site.xml</code>: Site-specific configuration for a given hadoop
  * installation.</li>
  * </ol>
  * Applications may add additional resources, which are loaded
  * subsequent to these resources in the order they are added.
  * 
- * <h4 id="FinalParams">Final Parameters</h4>
+ * <h3 id="FinalParams">Final Parameters</h3>
  *
  * <p>Configuration parameters may be declared <i>final</i>. 
  * Once a resource declares a value final, no subsequently-loaded 
@@ -150,9 +153,9 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
  *  &lt;/property&gt;</code></pre>
  *
  * Administrators typically define parameters as final in 
- * <tt>core-site.xml</tt> for values that user applications may not alter.
+ * <code>core-site.xml</code> for values that user applications may not alter.
  *
- * <h4 id="VariableExpansion">Variable Expansion</h4>
+ * <h3 id="VariableExpansion">Variable Expansion</h3>
  *
  * <p>Value strings are first processed for <i>variable expansion</i>. The
  * available properties are:<ol>
@@ -182,22 +185,22 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
  *  &lt;/property&gt;
  *  </code></pre>
  *
- * <p>When <tt>conf.get("tempdir")</tt> is called, then <tt>${<i>basedir</i>}</tt>
+ * <p>When <code>conf.get("tempdir")</code> is called, then <code>${<i>basedir</i>}</code>
  * will be resolved to another property in this Configuration, while
- * <tt>${<i>user.name</i>}</tt> would then ordinarily be resolved to the value
+ * <code>${<i>user.name</i>}</code> would then ordinarily be resolved to the value
  * of the System property with that name.
- * <p>When <tt>conf.get("otherdir")</tt> is called, then <tt>${<i>env.BASE_DIR</i>}</tt>
- * will be resolved to the value of the <tt>${<i>BASE_DIR</i>}</tt> environment variable.
- * It supports <tt>${<i>env.NAME:-default</i>}</tt> and <tt>${<i>env.NAME-default</i>}</tt> notations.
- * The former is resolved to "default" if <tt>${<i>NAME</i>}</tt> environment variable is undefined
+ * <p>When <code>conf.get("otherdir")</code> is called, then <code>${<i>env.BASE_DIR</i>}</code>
+ * will be resolved to the value of the <code>${<i>BASE_DIR</i>}</code> environment variable.
+ * It supports <code>${<i>env.NAME:-default</i>}</code> and <code>${<i>env.NAME-default</i>}</code> notations.
+ * The former is resolved to "default" if <code>${<i>NAME</i>}</code> environment variable is undefined
  * or its value is empty.
- * The latter behaves the same way only if <tt>${<i>NAME</i>}</tt> is undefined.
+ * The latter behaves the same way only if <code>${<i>NAME</i>}</code> is undefined.
  * <p>By default, warnings will be given to any deprecated configuration 
  * parameters and these are suppressible by configuring
- * <tt>log4j.logger.org.apache.hadoop.conf.Configuration.deprecation</tt> in
+ * <code>log4j.logger.org.apache.hadoop.conf.Configuration.deprecation</code> in
  * log4j.properties file.
  *
- * <h4 id="Tags">Tags</h4>
+ * <h3 id="Tags">Tags</h3>
  *
  * <p>Optionally we can tag related properties together by using tag
  * attributes. System tags are defined by hadoop.tags.system property. Users
@@ -217,9 +220,9 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
  *    &lt;tag&gt;HDFS,SECURITY&lt;/tag&gt;
  *  &lt;/property&gt;
  * </code></pre>
- * <p> Properties marked with tags can be retrieved with <tt>conf
- * .getAllPropertiesByTag("HDFS")</tt> or <tt>conf.getAllPropertiesByTags
- * (Arrays.asList("YARN","SECURITY"))</tt>.</p>
+ * <p> Properties marked with tags can be retrieved with <code>conf
+ * .getAllPropertiesByTag("HDFS")</code> or <code>conf.getAllPropertiesByTags
+ * (Arrays.asList("YARN","SECURITY"))</code>.</p>
  */
 @InterfaceAudience.Public
 @InterfaceStability.Stable
@@ -317,7 +320,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   private boolean loadDefaults = true;
 
   /**
-   * Configuration objects
+   * Configuration objects.
    */
   private static final WeakHashMap<Configuration,Object> REGISTRY = 
     new WeakHashMap<Configuration,Object>();
@@ -376,10 +379,6 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
       this.customMessage = customMessage;
     }
 
-    private final String getWarningMessage(String key) {
-      return getWarningMessage(key, null);
-    }
-
     /**
      * Method to provide the warning message. It gives the custom message if
      * non-null, and default message otherwise.
@@ -409,12 +408,9 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
       return warningMessage;
     }
 
-    boolean getAndSetAccessed() {
-      return accessed.getAndSet(true);
-    }
-
-    public void clearAccessed() {
-      accessed.set(false);
+    void logDeprecation(String name, String source) {
+      LOG_DEPRECATION.info(getWarningMessage(name, source));
+      this.accessed.set(true);
     }
   }
   
@@ -508,9 +504,9 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
         }
       }
       this.deprecatedKeyMap =
-        UnmodifiableMap.decorate(newDeprecatedKeyMap);
+        UnmodifiableMap.unmodifiableMap(newDeprecatedKeyMap);
       this.reverseDeprecatedKeyMap =
-        UnmodifiableMap.decorate(newReverseDeprecatedKeyMap);
+        UnmodifiableMap.unmodifiableMap(newReverseDeprecatedKeyMap);
     }
 
     Map<String, DeprecatedKeyInfo> getDeprecatedKeyMap() {
@@ -573,7 +569,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * It does not override any existing entries in the deprecation map.
    * This is to be used only by the developers in order to add deprecation of
    * keys, and attempts to call this method after loading resources once,
-   * would lead to <tt>UnsupportedOperationException</tt>
+   * would lead to <code>UnsupportedOperationException</code>
    * 
    * If a key is deprecated in favor of multiple keys, they are all treated as 
    * aliases of each other, and setting any one of them resets all the others 
@@ -601,7 +597,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * It does not override any existing entries in the deprecation map.
    * This is to be used only by the developers in order to add deprecation of
    * keys, and attempts to call this method after loading resources once,
-   * would lead to <tt>UnsupportedOperationException</tt>
+   * would lead to <code>UnsupportedOperationException</code>
    * 
    * If you have multiple deprecation entries to add, it is more efficient to
    * use #addDeprecations(DeprecationDelta[] deltas) instead.
@@ -621,7 +617,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * It does not override any existing entries in the deprecation map.
    * This is to be used only by the developers in order to add deprecation of
    * keys, and attempts to call this method after loading resources once,
-   * would lead to <tt>UnsupportedOperationException</tt>
+   * would lead to <code>UnsupportedOperationException</code>
    * 
    * If a key is deprecated in favor of multiple keys, they are all treated as 
    * aliases of each other, and setting any one of them resets all the others 
@@ -645,7 +641,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * It does not override any existing entries in the deprecation map.
    * This is to be used only by the developers in order to add deprecation of
    * keys, and attempts to call this method after loading resources once,
-   * would lead to <tt>UnsupportedOperationException</tt>
+   * would lead to <code>UnsupportedOperationException</code>
    * 
    * If you have multiple deprecation entries to add, it is more efficient to
    * use #addDeprecations(DeprecationDelta[] deltas) instead.
@@ -725,12 +721,10 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     }
     // Initialize the return value with requested name
     String[] names = new String[]{name};
-    // Deprecated keys are logged once and an updated names are returned
+    // Deprecated keys are logged and updated names are returned
     DeprecatedKeyInfo keyInfo = deprecations.getDeprecatedKeyMap().get(name);
     if (keyInfo != null) {
-      if (!keyInfo.getAndSetAccessed()) {
-        logDeprecation(keyInfo.getWarningMessage(name));
-      }
+      keyInfo.logDeprecation(name, null);
       // Override return value for deprecated keys
       names = keyInfo.newKeys;
     }
@@ -774,7 +768,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   private void handleDeprecation() {
     LOG.debug("Handling deprecation for all properties in config...");
     DeprecationContext deprecations = deprecationContext.get();
-    Set<Object> keys = new HashSet<Object>();
+    Set<Object> keys = new HashSet<>();
     keys.addAll(getProps().keySet());
     for (Object item: keys) {
       LOG.debug("Handling deprecation for " + (String)item);
@@ -1100,6 +1094,20 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   }
 
   /**
+   * Provides a public wrapper over substituteVars in order to avoid compatibility issues.
+   * See HADOOP-18021 for further details.
+   *
+   * @param expr the literal value of a config key
+   * @return null if expr is null, otherwise the value resulting from expanding
+   * expr using the algorithm above.
+   * @throws IllegalArgumentException when more than
+   * {@link Configuration#MAX_SUBST} replacements are required
+   */
+  public String substituteCommonVariables(String expr) {
+    return substituteVars(expr);
+  }
+
+  /**
    * Attempts to repeatedly expand the value {@code expr} by replacing the
    * left-most substring of the form "${var}" in the following precedence order
    * <ol>
@@ -1120,6 +1128,10 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * If a cycle is detected then the original expr is returned. Loops
    * involving multiple substitutions are not detected.
    *
+   * In order not to introduce breaking changes (as Oozie for example contains a method with the
+   * same name and same signature) do not make this method public, use substituteCommonVariables
+   * in this case.
+   *
    * @param expr the literal value of a config key
    * @return null if expr is null, otherwise the value resulting from expanding
    * expr using the algorithm above.
@@ -1139,36 +1151,37 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
       final String var = eval.substring(varBounds[SUB_START_IDX],
           varBounds[SUB_END_IDX]);
       String val = null;
-      if (!restrictSystemProps) {
-        try {
-          if (var.startsWith("env.") && 4 < var.length()) {
-            String v = var.substring(4);
-            int i = 0;
-            for (; i < v.length(); i++) {
-              char c = v.charAt(i);
-              if (c == ':' && i < v.length() - 1 && v.charAt(i + 1) == '-') {
-                val = getenv(v.substring(0, i));
-                if (val == null || val.length() == 0) {
-                  val = v.substring(i + 2);
-                }
-                break;
-              } else if (c == '-') {
-                val = getenv(v.substring(0, i));
-                if (val == null) {
-                  val = v.substring(i + 1);
-                }
-                break;
+      try {
+        // evaluate system properties or environment variables even when
+        // the configuration is restricted -the restrictions are enforced
+        // in the getenv/getProperty calls
+        if (var.startsWith("env.") && 4 < var.length()) {
+          String v = var.substring(4);
+          int i = 0;
+          for (; i < v.length(); i++) {
+            char c = v.charAt(i);
+            if (c == ':' && i < v.length() - 1 && v.charAt(i + 1) == '-') {
+              val = getenv(v.substring(0, i));
+              if (val == null || val.length() == 0) {
+                val = v.substring(i + 2);
               }
+              break;
+            } else if (c == '-') {
+              val = getenv(v.substring(0, i));
+              if (val == null) {
+                val = v.substring(i + 1);
+              }
+              break;
             }
-            if (i == v.length()) {
-              val = getenv(v);
-            }
-          } else {
-            val = getProperty(var);
           }
-        } catch (SecurityException se) {
-          LOG.warn("Unexpected SecurityException in Configuration", se);
+          if (i == v.length()) {
+            val = getenv(v);
+          }
+        } else {
+          val = getProperty(var);
         }
+      } catch (SecurityException se) {
+        LOG.warn("Unexpected SecurityException in Configuration", se);
       }
       if (val == null) {
         val = getRaw(var);
@@ -1194,13 +1207,33 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     throw new IllegalStateException("Variable substitution depth too large: " 
                                     + MAX_SUBST + " " + expr);
   }
-  
+
+  /**
+   * Get the environment variable value if
+   * {@link #restrictSystemProps} does not block this.
+   * @param name environment variable name.
+   * @return the value or null if either it is unset or access forbidden.
+   */
   String getenv(String name) {
-    return System.getenv(name);
+    if (!restrictSystemProps) {
+      return System.getenv(name);
+    } else {
+      return null;
+    }
   }
 
+  /**
+   * Get a system property value if
+   * {@link #restrictSystemProps} does not block this.
+   * @param key property key
+   * @return the value or null if either it is unset or access forbidden.
+   */
   String getProperty(String key) {
-    return System.getProperty(key);
+    if (!restrictSystemProps) {
+      return System.getProperty(key);
+    } else {
+      return null;
+    }
   }
 
   /**
@@ -1418,13 +1451,6 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   @VisibleForTesting
   void logDeprecation(String message) {
     LOG_DEPRECATION.info(message);
-  }
-
-  void logDeprecationOnce(String name, String source) {
-    DeprecatedKeyInfo keyInfo = getDeprecatedKeyInfo(name);
-    if (keyInfo != null && !keyInfo.getAndSetAccessed()) {
-      LOG_DEPRECATION.info(keyInfo.getWarningMessage(name, source));
-    }
   }
 
   /**
@@ -1746,6 +1772,26 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
       : Enum.valueOf(defaultValue.getDeclaringClass(), val);
   }
 
+  /**
+   * Build an enumset from a comma separated list of values.
+   * Case independent.
+   * Special handling of "*" meaning: all values.
+   * @param key key to look for
+   * @param enumClass class of enum
+   * @param ignoreUnknown should unknown values raise an exception?
+   * @return a mutable set of the identified enum values declared in the configuration
+   * @param <E> enumeration type
+   * @throws IllegalArgumentException if one of the entries was unknown and ignoreUnknown is false,
+   *           or there are two entries in the enum which differ only by case.
+   */
+  public <E extends Enum<E>> EnumSet<E> getEnumSet(
+      final String key,
+      final Class<E> enumClass,
+      final boolean ignoreUnknown) throws IllegalArgumentException {
+    final String value = get(key, "");
+    return ConfigurationHelper.parseEnumSet(key, value, enumClass, ignoreUnknown);
+  }
+
   enum ParsedTimeDuration {
     NS {
       TimeUnit unit() { return TimeUnit.NANOSECONDS; }
@@ -1869,6 +1915,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * @param name Property name
    * @param vStr The string value with time unit suffix to be converted.
    * @param unit Unit to convert the stored property, if it exists.
+   * @return time duration in given time unit.
    */
   public long getTimeDurationHelper(String name, String vStr, TimeUnit unit) {
     return getTimeDurationHelper(name, vStr, unit, unit);
@@ -1883,6 +1930,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * @param vStr The string value with time unit suffix to be converted.
    * @param defaultUnit Unit to convert the stored property, if it exists.
    * @param returnUnit Unit for the returned value.
+   * @return time duration in given time unit.
    */
   private long getTimeDurationHelper(String name, String vStr,
       TimeUnit defaultUnit, TimeUnit returnUnit) {
@@ -2167,7 +2215,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     }
 
     /**
-     * Is the given value in the set of ranges
+     * Is the given value in the set of ranges.
      * @param value the value to check
      * @return is the value in the ranges?
      */
@@ -2224,7 +2272,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   }
 
   /**
-   * Parse the given attribute as a set of integer ranges
+   * Parse the given attribute as a set of integer ranges.
    * @param name the attribute name
    * @param defaultValue the default value if it is not set
    * @return a new set of ranges from the configured value
@@ -2297,8 +2345,8 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     }
     return StringUtils.getTrimmedStringCollection(valueString);
   }
-  
-  /** 
+
+  /**
    * Get the comma delimited values of the <code>name</code> property as 
    * an array of <code>String</code>s, trimmed of the leading and trailing whitespace.
    * If no such property is specified then an empty array is returned.
@@ -2384,7 +2432,10 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     if (oldName != null) {
       entry = provider.getCredentialEntry(oldName);
       if (entry != null) {
-        logDeprecationOnce(oldName, provider.toString());
+        DeprecatedKeyInfo ki = getDeprecatedKeyInfo(oldName);
+        if (ki != null) {
+          ki.logDeprecation(oldName, provider.toString());
+        }
         return entry;
       }
     }
@@ -2395,7 +2446,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
       for (String newName : keyInfo.newKeys) {
         entry = provider.getCredentialEntry(newName);
         if (entry != null) {
-          logDeprecationOnce(name, null);
+          keyInfo.logDeprecation(name, null);
           return entry;
         }
       }
@@ -2443,7 +2494,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
 
   /**
    * Fallback to clear text passwords in configuration.
-   * @param name
+   * @param name the property name.
    * @return clear text password or null
    */
   protected char[] getPasswordFromConfig(String name) {
@@ -2508,6 +2559,8 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   /**
    * Set the socket address for the <code>name</code> property as
    * a <code>host:port</code>.
+   * @param name property name.
+   * @param addr inetSocketAddress addr.
    */
   public void setSocketAddr(String name, InetSocketAddress addr) {
     set(name, NetUtils.getHostPortString(addr));
@@ -2685,6 +2738,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * @param name the conf key name.
    * @param defaultValue default value.
    * @param xface the interface implemented by the named class.
+   * @param <U> Interface class type.
    * @return property value as a <code>Class</code>, 
    *         or <code>defaultValue</code>.
    */
@@ -2714,6 +2768,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * @param name the property name.
    * @param xface the interface implemented by the classes named by
    *        <code>name</code>.
+   * @param <U> Interface class type.
    * @return a <code>List</code> of objects implementing <code>xface</code>.
    */
   @SuppressWarnings("unchecked")
@@ -2746,15 +2801,16 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     set(name, theClass.getName());
   }
 
-  /** 
+  /**
    * Get a local file under a directory named by <i>dirsProp</i> with
    * the given <i>path</i>.  If <i>dirsProp</i> contains multiple directories,
    * then one is chosen based on <i>path</i>'s hash code.  If the selected
    * directory does not exist, an attempt is made to create it.
-   * 
+   *
    * @param dirsProp directory in which to locate the file.
    * @param path file-path.
    * @return local file under the directory with the given path.
+   * @throws IOException raised on errors performing I/O.
    */
   public Path getLocalPath(String dirsProp, String path)
     throws IOException {
@@ -2778,15 +2834,16 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     throw new IOException("No valid local directories in property: "+dirsProp);
   }
 
-  /** 
+  /**
    * Get a local file name under a directory named in <i>dirsProp</i> with
    * the given <i>path</i>.  If <i>dirsProp</i> contains multiple directories,
    * then one is chosen based on <i>path</i>'s hash code.  If the selected
    * directory does not exist, an attempt is made to create it.
-   * 
+   *
    * @param dirsProp directory in which to locate the file.
    * @param path file-path.
    * @return local file under the directory with the given path.
+   * @throws IOException raised on errors performing I/O.
    */
   public File getFile(String dirsProp, String path)
     throws IOException {
@@ -2855,7 +2912,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
         LOG.info("found resource " + name + " at " + url);
       }
 
-      return new InputStreamReader(url.openStream(), Charsets.UTF_8);
+      return new InputStreamReader(url.openStream(), StandardCharsets.UTF_8);
     } catch (Exception e) {
       return null;
     }
@@ -2939,11 +2996,13 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     // methods that allow non-strings to be put into configurations are removed,
     // we could replace properties with a Map<String,String> and get rid of this
     // code.
-    Map<String,String> result = new HashMap<String,String>();
-    for(Map.Entry<Object,Object> item: getProps().entrySet()) {
-      if (item.getKey() instanceof String &&
-          item.getValue() instanceof String) {
+    Properties props = getProps();
+    Map<String, String> result = new HashMap<>();
+    synchronized (props) {
+      for (Map.Entry<Object, Object> item : props.entrySet()) {
+        if (item.getKey() instanceof String && item.getValue() instanceof String) {
           result.put((String) item.getKey(), (String) item.getValue());
+        }
       }
     }
     return result.entrySet().iterator();
@@ -3361,7 +3420,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
           deprecations.getDeprecatedKeyMap().get(confName);
 
       if (keyInfo != null) {
-        keyInfo.clearAccessed();
+        keyInfo.logDeprecation(confName, wrapper.toString());
         for (String key : keyInfo.newKeys) {
           // update new keys with deprecated key's value
           results.add(new ParsedItem(
@@ -3396,7 +3455,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
 
   /**
    * Add tags defined in HADOOP_TAGS_SYSTEM, HADOOP_TAGS_CUSTOM.
-   * @param prop
+   * @param prop properties.
    */
   public void addTags(Properties prop) {
     // Get all system tags
@@ -3497,7 +3556,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
 
   /**
    * Print a warning if a property with a given name already exists with a
-   * different value
+   * different value.
    */
   private void checkForOverride(Properties properties, String name, String attr, String value) {
     String propertyValue = properties.getProperty(attr);
@@ -3507,14 +3566,15 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     }
   }
 
-  /** 
+  /**
    * Write out the non-default properties in this configuration to the given
    * {@link OutputStream} using UTF-8 encoding.
-   * 
+   *
    * @param out the output stream to write to.
+   * @throws IOException raised on errors performing I/O.
    */
   public void writeXml(OutputStream out) throws IOException {
-    writeXml(new OutputStreamWriter(out, "UTF-8"));
+    writeXml(new OutputStreamWriter(out, StandardCharsets.UTF_8));
   }
 
   public void writeXml(Writer out) throws IOException {
@@ -3541,16 +3601,20 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * the configuration, this method throws an {@link IllegalArgumentException}.
    * </li>
    * </ul>
+   * @param propertyName xml property name.
    * @param out the writer to write to.
+   * @param config configuration.
+   * @throws IOException raised on errors performing I/O.
    */
-  public void writeXml(@Nullable String propertyName, Writer out)
+  public void writeXml(@Nullable String propertyName, Writer out, Configuration config)
       throws IOException, IllegalArgumentException {
-    Document doc = asXmlDocument(propertyName);
+    ConfigRedactor redactor = config != null ? new ConfigRedactor(this) : null;
+    Document doc = asXmlDocument(propertyName, redactor);
 
     try {
       DOMSource source = new DOMSource(doc);
       StreamResult result = new StreamResult(out);
-      TransformerFactory transFactory = TransformerFactory.newInstance();
+      TransformerFactory transFactory = XMLUtils.newSecureTransformerFactory();
       Transformer transformer = transFactory.newTransformer();
 
       // Important to not hold Configuration log while writing result, since
@@ -3562,11 +3626,16 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     }
   }
 
+  public void writeXml(@Nullable String propertyName, Writer out)
+      throws IOException, IllegalArgumentException {
+    writeXml(propertyName, out, null);
+  }
+
   /**
    * Return the XML DOM corresponding to this Configuration.
    */
-  private synchronized Document asXmlDocument(@Nullable String propertyName)
-      throws IOException, IllegalArgumentException {
+  private synchronized Document asXmlDocument(@Nullable String propertyName,
+      ConfigRedactor redactor) throws IOException, IllegalArgumentException {
     Document doc;
     try {
       doc = DocumentBuilderFactory
@@ -3589,13 +3658,13 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
             propertyName + " not found");
       } else {
         // given property is found, write single property
-        appendXMLProperty(doc, conf, propertyName);
+        appendXMLProperty(doc, conf, propertyName, redactor);
         conf.appendChild(doc.createTextNode("\n"));
       }
     } else {
       // append all elements
       for (Enumeration<Object> e = properties.keys(); e.hasMoreElements();) {
-        appendXMLProperty(doc, conf, (String)e.nextElement());
+        appendXMLProperty(doc, conf, (String)e.nextElement(), redactor);
         conf.appendChild(doc.createTextNode("\n"));
       }
     }
@@ -3611,7 +3680,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * @param propertyName
    */
   private synchronized void appendXMLProperty(Document doc, Element conf,
-      String propertyName) {
+      String propertyName, ConfigRedactor redactor) {
     // skip writing if given property name is empty or null
     if (!Strings.isNullOrEmpty(propertyName)) {
       String value = properties.getProperty(propertyName);
@@ -3624,8 +3693,11 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
         propNode.appendChild(nameNode);
 
         Element valueNode = doc.createElement("value");
-        valueNode.appendChild(doc.createTextNode(
-            properties.getProperty(propertyName)));
+        String propertyValue = properties.getProperty(propertyName);
+        if (redactor != null) {
+          propertyValue = redactor.redactXml(propertyName, propertyValue);
+        }
+        valueNode.appendChild(doc.createTextNode(propertyValue));
         propNode.appendChild(valueNode);
 
         Element finalNode = doc.createElement("final");
@@ -3695,7 +3767,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * @param config the configuration
    * @param propertyName property name
    * @param out the Writer to write to
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    * @throws IllegalArgumentException when property name is not
    *   empty and the property is not found in configuration
    **/
@@ -3742,7 +3814,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    *
    * @param config the configuration
    * @param out the Writer to write to
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public static void dumpConfiguration(Configuration config,
       Writer out) throws IOException {
@@ -3771,7 +3843,7 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
    * @param jsonGen json writer
    * @param config configuration
    * @param name property name
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   private static void appendJSONProperty(JsonGenerator jsonGen,
       Configuration config, String name, ConfigRedactor redactor)
@@ -3853,7 +3925,10 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
     return this.quietmode;
   }
   
-  /** For debugging.  List non-default properties to the terminal and exit. */
+  /** For debugging.  List non-default properties to the terminal and exit.
+   * @param args the argument to be parsed.
+   * @throws Exception exception.
+   */
   public static void main(String[] args) throws Exception {
     new Configuration().writeXml(System.out);
   }
@@ -3887,8 +3962,8 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   }
   
   /**
-   * get keys matching the the regex 
-   * @param regex
+   * get keys matching the the regex.
+   * @param regex the regex to match against.
    * @return {@literal Map<String,String>} with matching keys
    */
   public Map<String,String> getValByRegex(String regex) {
@@ -3933,6 +4008,8 @@ public class Configuration implements Iterable<Map.Entry<String,String>>,
   /**
    * Returns whether or not a deprecated name has been warned. If the name is not
    * deprecated then always return false
+   * @param name proprties.
+   * @return true if name is a warned deprecation.
    */
   public static boolean hasWarnedDeprecation(String name) {
     DeprecationContext deprecations = deprecationContext.get();

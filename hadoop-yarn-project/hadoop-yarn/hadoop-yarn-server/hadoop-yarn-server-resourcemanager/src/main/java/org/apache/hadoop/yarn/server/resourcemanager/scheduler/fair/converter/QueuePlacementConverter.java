@@ -17,7 +17,9 @@ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.converter;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
+import org.apache.hadoop.util.Sets;
 import org.apache.hadoop.yarn.server.resourcemanager.placement.DefaultPlacementRule;
 import org.apache.hadoop.yarn.server.resourcemanager.placement.FSPlacementRule;
 import org.apache.hadoop.yarn.server.resourcemanager.placement.PlacementManager;
@@ -28,6 +30,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.placement.SecondaryGroupExi
 import org.apache.hadoop.yarn.server.resourcemanager.placement.SpecifiedPlacementRule;
 import org.apache.hadoop.yarn.server.resourcemanager.placement.UserPlacementRule;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.placement.schema.MappingRulesDescription;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.placement.schema.Rule;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.placement.schema.Rule.FallbackResult;
@@ -38,6 +41,12 @@ class QueuePlacementConverter {
   private static final FallbackResult SKIP_RESULT = FallbackResult.SKIP;
   private static final String DEFAULT_QUEUE = "root.default";
   private static final String MATCH_ALL_USER = "*";
+  private static final Set<Policy> NEED_ROOT_PARENT = Sets.newHashSet(
+      Policy.USER,
+      Policy.PRIMARY_GROUP,
+      Policy.PRIMARY_GROUP_USER,
+      Policy.SECONDARY_GROUP,
+      Policy.SECONDARY_GROUP_USER);
 
   MappingRulesDescription convertPlacementPolicy(
       PlacementManager placementManager,
@@ -113,7 +122,7 @@ class QueuePlacementConverter {
     PlacementRule parentRule = userRule.getParentRule();
     boolean parentCreate = ((FSPlacementRule) parentRule).getCreateFlag();
     Policy policy;
-    String queueName = null;
+    QueuePath queueName = null;
 
     if (parentRule instanceof PrimaryGroupPlacementRule) {
       policy = Policy.PRIMARY_GROUP_USER;
@@ -122,7 +131,7 @@ class QueuePlacementConverter {
     } else if (parentRule instanceof DefaultPlacementRule) {
       DefaultPlacementRule defaultRule = (DefaultPlacementRule) parentRule;
       policy = Policy.USER;
-      queueName = defaultRule.defaultQueueName;
+      queueName = new QueuePath(defaultRule.defaultQueueName);
     } else {
       throw new IllegalArgumentException(
           "Unsupported parent nested rule: "
@@ -162,6 +171,16 @@ class QueuePlacementConverter {
       }
     }
 
+    // Need to set the parent queue in weight mode.
+    //
+    // We *don't* set in pct mode, because auto-creation under "root"
+    // is not possible and probably it can cause the validation step to fail
+    // if create=true.
+    if (!usePercentages &&
+        NEED_ROOT_PARENT.contains(policy)) {
+      rule.setParentQueue("root");
+    }
+
     return rule;
   }
 
@@ -169,14 +188,16 @@ class QueuePlacementConverter {
       boolean create,
       FSConfigToCSConfigRuleHandler ruleHandler,
       boolean fsParentCreate,
-      String parentQueue,
+      QueuePath parentQueue,
       CapacitySchedulerConfiguration csConf,
       boolean usePercentages) {
 
     Rule rule = createRule(policy, create, ruleHandler, usePercentages);
 
+    // "parent" is already set to "root" at this point,
+    // so we override it if necessary
     if (parentQueue != null) {
-      rule.setParentQueue(parentQueue);
+      rule.setParentQueue(parentQueue.getFullPath());
     }
 
     if (usePercentages) {
@@ -187,13 +208,13 @@ class QueuePlacementConverter {
         } else if (policy == Policy.SECONDARY_GROUP_USER) {
           ruleHandler.handleFSParentCreateFlag("root.<secondaryGroup>");
         } else {
-          ruleHandler.handleFSParentCreateFlag(parentQueue);
+          ruleHandler.handleFSParentCreateFlag(parentQueue.getFullPath());
         }
       }
 
       // check if parent conflicts with existing static queues
       if (create && policy == Policy.USER) {
-        ruleHandler.handleRuleAutoCreateFlag(parentQueue);
+        ruleHandler.handleRuleAutoCreateFlag(parentQueue.getFullPath());
         checkStaticDynamicConflict(parentQueue, csConf, ruleHandler);
       }
     } else {
@@ -210,15 +231,15 @@ class QueuePlacementConverter {
     return rule;
   }
 
-  private void checkStaticDynamicConflict(String parentPath,
+  private void checkStaticDynamicConflict(QueuePath parentPath,
       CapacitySchedulerConfiguration csConf,
       FSConfigToCSConfigRuleHandler ruleHandler) {
-    String[] childQueues = csConf.getQueues(parentPath);
+    List<String> childQueues = csConf.getQueues(parentPath);
 
     // User must be warned: static + dynamic queues are under the
     // same parent
-    if (childQueues != null && childQueues.length > 0) {
-      ruleHandler.handleChildStaticDynamicConflict(parentPath);
+    if (childQueues != null && childQueues.size() > 0) {
+      ruleHandler.handleChildStaticDynamicConflict(parentPath.getFullPath());
     }
   }
 }

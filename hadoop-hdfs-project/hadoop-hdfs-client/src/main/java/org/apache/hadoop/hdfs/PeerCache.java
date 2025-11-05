@@ -23,8 +23,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.thirdparty.com.google.common.collect.LinkedListMultimap;
 
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -155,10 +155,6 @@ public class PeerCache {
 
   private synchronized Peer getInternal(DatanodeID dnId, boolean isDomain) {
     List<Value> sockStreamList = multimap.get(new Key(dnId, isDomain));
-    if (sockStreamList == null) {
-      return null;
-    }
-
     Iterator<Value> iter = sockStreamList.iterator();
     while (iter.hasNext()) {
       Value candidate = iter.next();

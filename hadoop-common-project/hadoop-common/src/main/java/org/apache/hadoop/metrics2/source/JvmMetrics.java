@@ -27,13 +27,11 @@ import java.lang.management.GarbageCollectorMXBean;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
-
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
-import org.apache.hadoop.log.metrics.EventCounter;
 import org.apache.hadoop.metrics2.MetricsCollector;
 import org.apache.hadoop.metrics2.MetricsInfo;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
@@ -154,7 +152,6 @@ public class JvmMetrics implements MetricsSource {
     } else {
       getThreadUsageFromGroup(rb);
     }
-    getEventCounters(rb);
   }
 
   private void getMemoryUsage(MetricsRecordBuilder rb) {
@@ -184,6 +181,13 @@ public class JvmMetrics implements MetricsSource {
     long count = 0;
     long timeMillis = 0;
     for (GarbageCollectorMXBean gcBean : gcBeans) {
+      if (gcBean.getName() != null) {
+        String name = gcBean.getName();
+        // JDK-8265136 Skip concurrent phase
+        if (name.startsWith("ZGC") && name.endsWith("Cycles")) {
+          continue;
+        }
+      }
       long c = gcBean.getCollectionCount();
       long t = gcBean.getCollectionTime();
       MetricsInfo[] gcInfo = getGcInfo(gcBean.getName());
@@ -284,10 +288,4 @@ public class JvmMetrics implements MetricsSource {
         .addGauge(ThreadsTerminated, threadsTerminated);
   }
 
-  private void getEventCounters(MetricsRecordBuilder rb) {
-    rb.addCounter(LogFatal, EventCounter.getFatal())
-      .addCounter(LogError, EventCounter.getError())
-      .addCounter(LogWarn, EventCounter.getWarn())
-      .addCounter(LogInfo, EventCounter.getInfo());
-  }
 }

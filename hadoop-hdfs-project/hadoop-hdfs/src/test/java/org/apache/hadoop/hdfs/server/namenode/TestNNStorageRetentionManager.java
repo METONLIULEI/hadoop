@@ -20,12 +20,14 @@ package org.apache.hadoop.hdfs.server.namenode;
 import static org.apache.hadoop.hdfs.server.namenode.NNStorage.getFinalizedEditsFileName;
 import static org.apache.hadoop.hdfs.server.namenode.NNStorage.getImageFileName;
 import static org.apache.hadoop.hdfs.server.namenode.NNStorage.getInProgressEditsFileName;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -42,18 +44,15 @@ import org.apache.hadoop.hdfs.server.namenode.FileJournalManager.EditLogFile;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeFile;
 import org.apache.hadoop.hdfs.server.namenode.NNStorageRetentionManager.StoragePurger;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.util.Lists;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
 
 import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 
 public class TestNNStorageRetentionManager {
@@ -63,7 +62,7 @@ public class TestNNStorageRetentionManager {
    * For the purpose of this test, purge as many edits as we can 
    * with no extra "safety cushion"
    */
-  @Before
+  @BeforeEach
   public void setNoExtraEditRetention() {
     conf.setLong(DFSConfigKeys.DFS_NAMENODE_NUM_EXTRA_EDITS_RETAINED_KEY, 0);
   }
@@ -306,39 +305,36 @@ public class TestNNStorageRetentionManager {
     Mockito.verify(mockPurger, Mockito.atLeast(0))
       .markStale(staleLogsCaptor.capture());
 
-    Set<String> capturedPaths = Sets.newLinkedHashSet();
+    Set<String> capturedPaths = new LinkedHashSet<>();
     // Check images
     for (FSImageFile captured : imagesPurgedCaptor.getAllValues()) {
       capturedPaths.add(fileToPath(captured.getFile()));
     }
-    Assert.assertEquals("Image file check.",
-      Joiner.on(",").join(filesToPaths(tc.expectedPurgedImages)),
-      Joiner.on(",").join(capturedPaths));
+    assertEquals(Joiner.on(",").join(filesToPaths(tc.expectedPurgedImages)),
+        Joiner.on(",").join(capturedPaths), "Image file check.");
 
     capturedPaths.clear();
     // Check edit logs, and also in progress edits older than minTxIdToKeep
     for (EditLogFile captured : logsPurgedCaptor.getAllValues()) {
       capturedPaths.add(fileToPath(captured.getFile()));
     }
-    Assert.assertEquals("Check old edits are removed.",
-      Joiner.on(",").join(filesToPaths(tc.expectedPurgedLogs)),
-      Joiner.on(",").join(capturedPaths));
+    assertEquals(Joiner.on(",").join(filesToPaths(tc.expectedPurgedLogs)),
+        Joiner.on(",").join(capturedPaths), "Check old edits are removed.");
 
     capturedPaths.clear();
     // Check in progress edits to keep are marked as stale
     for (EditLogFile captured : staleLogsCaptor.getAllValues()) {
       capturedPaths.add(fileToPath(captured.getFile()));
     }
-    Assert.assertEquals("Check unnecessary but kept edits are marked stale",
-      Joiner.on(",").join(filesToPaths(tc.expectedStaleLogs)),
-      Joiner.on(",").join(capturedPaths));
+    assertEquals(Joiner.on(",").join(filesToPaths(tc.expectedStaleLogs)),
+        Joiner.on(",").join(capturedPaths), "Check unnecessary but kept edits are marked stale");
   }
 
   private class TestCaseDescription {
     private final Map<File, FakeRoot> dirRoots = Maps.newLinkedHashMap();
-    private final Set<File> expectedPurgedLogs = Sets.newLinkedHashSet();
-    private final Set<File> expectedPurgedImages = Sets.newLinkedHashSet();
-    private final Set<File> expectedStaleLogs = Sets.newLinkedHashSet();
+    private final Set<File> expectedPurgedLogs = new LinkedHashSet<>();
+    private final Set<File> expectedPurgedImages = new LinkedHashSet<>();
+    private final Set<File> expectedStaleLogs = new LinkedHashSet<>();
 
     private class FakeRoot {
       final NameNodeDirType type;

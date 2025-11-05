@@ -21,7 +21,7 @@ package org.apache.hadoop.fs.aliyun.oss;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileContext;
-import org.junit.internal.AssumptionViolatedException;
+import org.opentest4j.TestAbortedException;
 
 import java.io.IOException;
 import java.net.URI;
@@ -68,7 +68,7 @@ public final class AliyunOSSTestUtils {
     }
 
     if (!liveTest) {
-      throw new AssumptionViolatedException("No test filesystem in "
+      throw new TestAbortedException("No test filesystem in "
           + TestAliyunOSSFileSystemContract.TEST_FS_OSS_NAME);
     }
     return testURI;
@@ -82,5 +82,15 @@ public final class AliyunOSSTestUtils {
     String testUniqueForkId = System.getProperty("test.unique.fork.id");
     return testUniqueForkId == null ? "/test" :
         "/" + testUniqueForkId + "/test";
+  }
+
+  /**
+   * Turn off FS Caching: use if a filesystem with different options from
+   * the default is required.
+   * @param conf configuration to patch
+   */
+  public static void disableFilesystemCaching(Configuration conf) {
+    conf.setBoolean(TestAliyunOSSFileSystemContract.FS_OSS_IMPL_DISABLE_CACHE,
+        true);
   }
 }

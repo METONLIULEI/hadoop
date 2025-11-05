@@ -39,7 +39,7 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
 
   @Override
   public void initializeMemberVariables() {
-    xmlFilename = new String("hdfs-default.xml");
+    xmlFilename = "hdfs-default.xml";
     configurationClasses = new Class[] { HdfsClientConfigKeys.class,
         HdfsClientConfigKeys.Failover.class,
         HdfsClientConfigKeys.StripedRead.class, DFSConfigKeys.class,
@@ -47,7 +47,8 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
         HdfsClientConfigKeys.Read.class, HdfsClientConfigKeys.HedgedRead.class,
         HdfsClientConfigKeys.ShortCircuit.class,
         HdfsClientConfigKeys.Retry.class, HdfsClientConfigKeys.Mmap.class,
-        HdfsClientConfigKeys.BlockWrite.ReplaceDatanodeOnFailure.class };
+        HdfsClientConfigKeys.BlockWrite.ReplaceDatanodeOnFailure.class,
+        HdfsClientConfigKeys.Write.ECRedundancy.class};
 
     // Set error modes
     errorIfMissingConfigProps = true;
@@ -83,8 +84,6 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
         .add("dfs.datanode.non.local.lazy.persist");
     configurationPropsToSkipCompare
         .add("dfs.namenode.tolerate.heartbeat.multiplier");
-    configurationPropsToSkipCompare
-        .add("dfs.namenode.stripe.min");
     configurationPropsToSkipCompare
         .add("dfs.namenode.replqueue.threshold-pct");
 

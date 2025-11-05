@@ -20,10 +20,10 @@ package org.apache.hadoop.crypto.key.kms;
 import static org.apache.hadoop.crypto.key.KeyProviderCryptoExtension.EncryptedKeyVersion;
 import static org.apache.hadoop.crypto.key.kms.KMSDelegationToken.TOKEN_KIND;
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
@@ -31,6 +31,7 @@ import static org.mockito.Mockito.verify;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.NoRouteToHostException;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -38,8 +39,11 @@ import java.security.GeneralSecurityException;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 
+import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLHandshakeException;
 
 import org.apache.hadoop.conf.Configuration;
@@ -56,20 +60,15 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.security.token.Token;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
-
+@Timeout(30)
 public class TestLoadBalancingKMSClientProvider {
 
-  @Rule
-  public Timeout testTimeout = new Timeout(30 * 1000);
-
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws IOException {
     SecurityUtil.setTokenServiceUseIp(false);
   }
@@ -83,8 +82,8 @@ public class TestLoadBalancingKMSClientProvider {
     KMSClientProvider[] providers =
         ((LoadBalancingKMSClientProvider) kp).getProviders();
     assertEquals(1, providers.length);
-    assertEquals(Sets.newHashSet("http://host1:9600/kms/foo/v1/"),
-        Sets.newHashSet(providers[0].getKMSUrl()));
+    assertEquals(new HashSet<>(Collections.singleton("http://host1:9600/kms/foo/v1/")),
+        new HashSet<>(Collections.singleton(providers[0].getKMSUrl())));
 
     kp = new KMSClientProvider.Factory().createProvider(new URI(
         "kms://http@host1;host2;host3:9600/kms/foo"), conf);
@@ -92,12 +91,12 @@ public class TestLoadBalancingKMSClientProvider {
     providers =
         ((LoadBalancingKMSClientProvider) kp).getProviders();
     assertEquals(3, providers.length);
-    assertEquals(Sets.newHashSet("http://host1:9600/kms/foo/v1/",
+    assertEquals(new HashSet<>(Arrays.asList("http://host1:9600/kms/foo/v1/",
         "http://host2:9600/kms/foo/v1/",
-        "http://host3:9600/kms/foo/v1/"),
-        Sets.newHashSet(providers[0].getKMSUrl(),
+        "http://host3:9600/kms/foo/v1/")),
+        new HashSet<>(Arrays.asList(providers[0].getKMSUrl(),
             providers[1].getKMSUrl(),
-            providers[2].getKMSUrl()));
+            providers[2].getKMSUrl())));
 
     kp = new KMSClientProvider.Factory().createProvider(new URI(
         "kms://http@host1;host2;host3:9600/kms/foo"), conf);
@@ -105,12 +104,12 @@ public class TestLoadBalancingKMSClientProvider {
     providers =
         ((LoadBalancingKMSClientProvider) kp).getProviders();
     assertEquals(3, providers.length);
-    assertEquals(Sets.newHashSet("http://host1:9600/kms/foo/v1/",
+    assertEquals(new HashSet<>(Arrays.asList("http://host1:9600/kms/foo/v1/",
         "http://host2:9600/kms/foo/v1/",
-        "http://host3:9600/kms/foo/v1/"),
-        Sets.newHashSet(providers[0].getKMSUrl(),
+        "http://host3:9600/kms/foo/v1/")),
+        new HashSet<>(Arrays.asList(providers[0].getKMSUrl(),
             providers[1].getKMSUrl(),
-            providers[2].getKMSUrl()));
+            providers[2].getKMSUrl())));
   }
 
   @Test
@@ -706,16 +705,18 @@ public class TestLoadBalancingKMSClientProvider {
       throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(
-        CommonConfigurationKeysPublic.KMS_CLIENT_FAILOVER_MAX_RETRIES_KEY, 3);
+        CommonConfigurationKeysPublic.KMS_CLIENT_FAILOVER_MAX_RETRIES_KEY, 5);
     final String keyName = "test";
     KMSClientProvider p1 = mock(KMSClientProvider.class);
     when(p1.createKey(Mockito.anyString(), Mockito.any(Options.class)))
         .thenThrow(new SSLHandshakeException("p1"))
+        .thenThrow(new SSLException("p1"))
         .thenReturn(new KMSClientProvider.KMSKeyVersion(keyName, "v1",
             new byte[0]));
     KMSClientProvider p2 = mock(KMSClientProvider.class);
     when(p2.createKey(Mockito.anyString(), Mockito.any(Options.class)))
-        .thenThrow(new ConnectException("p2"));
+        .thenThrow(new ConnectException("p2"))
+        .thenThrow(new SocketException("p1"));
 
     when(p1.getKMSUrl()).thenReturn("p1");
     when(p2.getKMSUrl()).thenReturn("p2");
@@ -724,9 +725,9 @@ public class TestLoadBalancingKMSClientProvider {
         new KMSClientProvider[] {p1, p2}, 0, conf);
 
     kp.createKey(keyName, new Options(conf));
-    verify(p1, Mockito.times(2)).createKey(Mockito.eq(keyName),
+    verify(p1, Mockito.times(3)).createKey(Mockito.eq(keyName),
         Mockito.any(Options.class));
-    verify(p2, Mockito.times(1)).createKey(Mockito.eq(keyName),
+    verify(p2, Mockito.times(2)).createKey(Mockito.eq(keyName),
         Mockito.any(Options.class));
   }
 
@@ -950,9 +951,9 @@ public class TestLoadBalancingKMSClientProvider {
           }
         });
     // make sure getActualUgi() returns the current user, not login user.
-    assertEquals(
+    assertEquals(ugi, actualUgi,
         "testTokenSelectionWithConf() should return the" +
-            " current user, not login user", ugi, actualUgi);
+        " current user, not login user");
   }
 
   @Test

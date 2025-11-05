@@ -31,17 +31,16 @@ import org.apache.hadoop.hdfs.server.balancer.NameNodeConnector;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.federation.MiniRouterDFSCluster;
 import org.apache.hadoop.hdfs.server.federation.RouterConfigBuilder;
-import org.apache.hadoop.hdfs.server.federation.metrics.NamenodeBeanMetrics;
 import org.apache.hadoop.hdfs.server.namenode.sps.Context;
 import org.apache.hadoop.hdfs.server.namenode.sps.StoragePolicySatisfier;
 import org.apache.hadoop.hdfs.server.sps.ExternalSPSContext;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Test StoragePolicySatisfy through router rpc calls.
@@ -59,7 +58,7 @@ public class TestRouterRpcStoragePolicySatisfier {
   /** Filesystem interface to the Namenode. */
   private static FileSystem nnFS;
 
-  @BeforeClass
+  @BeforeAll
   public static void globalSetUp() throws Exception {
     cluster = new MiniRouterDFSCluster(false, 1);
     // Set storage types for the cluster
@@ -115,7 +114,7 @@ public class TestRouterRpcStoragePolicySatisfier {
     externalSps.start(HdfsConstants.StoragePolicySatisfierMode.EXTERNAL);
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     cluster.shutdown();
   }

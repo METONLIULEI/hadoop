@@ -18,38 +18,31 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.converter.weightconversion;
 
-import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration.PREFIX;
-
 import java.util.List;
 
-import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSParentQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSQueue;
 
 public class WeightToWeightConverter
     implements CapacityConverter {
+  private static final String ROOT_QUEUE = "root";
 
   @Override
   public void convertWeightsForChildQueues(FSQueue queue,
-      Configuration csConfig) {
+      CapacitySchedulerConfiguration csConfig) {
     List<FSQueue> children = queue.getChildQueues();
 
     if (queue instanceof FSParentQueue || !children.isEmpty()) {
-      children.forEach(fsQueue -> csConfig.set(
-          getProperty(fsQueue), getWeightString(fsQueue)));
-      csConfig.setBoolean(getAutoCreateV2EnabledProperty(queue), true);
+      QueuePath queuePath = new QueuePath(queue.getName());
+      if (queue.getName().equals(ROOT_QUEUE)) {
+        csConfig.setNonLabeledQueueWeight(queuePath, queue.getWeight());
+      }
+
+      children.forEach(fsQueue -> csConfig.setNonLabeledQueueWeight(
+          new QueuePath(fsQueue.getName()), fsQueue.getWeight()));
+      csConfig.setAutoQueueCreationV2Enabled(queuePath, true);
     }
-  }
-
-  private String getProperty(FSQueue queue) {
-    return PREFIX + queue.getName() + ".capacity";
-  }
-
-  private String getAutoCreateV2EnabledProperty(FSQueue queue) {
-    return PREFIX + queue.getName() + ".auto-queue-creation-v2.enabled";
-  }
-
-  private String getWeightString(FSQueue queue) {
-    return Float.toString(queue.getWeight()) + "w";
   }
 }

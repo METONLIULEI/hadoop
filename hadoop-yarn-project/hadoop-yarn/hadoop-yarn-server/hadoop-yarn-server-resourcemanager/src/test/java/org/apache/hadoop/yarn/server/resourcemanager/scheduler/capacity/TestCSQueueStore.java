@@ -24,13 +24,18 @@ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class TestCSQueueStore {
 
@@ -39,8 +44,9 @@ public class TestCSQueueStore {
 
   private CSQueue root;
   private CapacitySchedulerContext csContext;
+  private CapacitySchedulerQueueContext queueContext;
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     CapacitySchedulerConfiguration csConf =
             new CapacitySchedulerConfiguration();
@@ -62,22 +68,26 @@ public class TestCSQueueStore {
     when(csContext.getResourceCalculator()).
             thenReturn(resourceCalculator);
     when(csContext.getRMContext()).thenReturn(rmContext);
+    when(csContext.getCapacitySchedulerQueueManager()).thenReturn(
+        new CapacitySchedulerQueueManager(csConf, null, null));
+
+    queueContext = new CapacitySchedulerQueueContext(csContext);
 
     CSQueueStore queues = new CSQueueStore();
     root = CapacitySchedulerQueueManager
-            .parseQueue(csContext, csConf, null, "root",
+            .parseQueue(queueContext, csConf, null, "root",
                     queues, queues,
                     TestUtils.spyHook);
   }
 
   public CSQueue createLeafQueue(String name, CSQueue parent)
           throws IOException {
-    return new LeafQueue(csContext, name, parent, null);
+    return new LeafQueue(queueContext, name, parent, null);
   }
 
   public CSQueue createParentQueue(String name, CSQueue parent)
           throws IOException {
-    return new ParentQueue(csContext, name, parent, null);
+    return new ParentQueue(queueContext, name, parent, null);
   }
 
   /**

@@ -29,10 +29,9 @@ import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.test.PathUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -40,7 +39,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Tests AvailableSpaceRackFaultTolerant block placement policy.
@@ -60,11 +61,11 @@ public class TestAvailableSpaceRackFaultTolerantBPP {
   private static BlockPlacementPolicy placementPolicy;
   private static NetworkTopology cluster;
 
-  @BeforeClass
+  @BeforeAll
   public static void setupCluster() throws Exception {
     conf = new HdfsConfiguration();
     conf.setFloat(
-        DFSConfigKeys.DFS_NAMENODE_AVAILABLE_SPACE_BLOCK_PLACEMENT_POLICY_BALANCED_SPACE_PREFERENCE_FRACTION_KEY,
+        DFSConfigKeys.DFS_NAMENODE_AVAILABLE_SPACE_RACK_FAULT_TOLERANT_BLOCK_PLACEMENT_POLICY_BALANCED_SPACE_PREFERENCE_FRACTION_KEY,
         0.6f);
     String[] racks = new String[NUM_RACKS];
     for (int i = 0; i < NUM_RACKS; i++) {
@@ -139,7 +140,7 @@ public class TestAvailableSpaceRackFaultTolerantBPP {
    */
   @Test
   public void testPolicyReplacement() {
-    Assert.assertTrue(
+    assertTrue(
         (placementPolicy instanceof
             AvailableSpaceRackFaultTolerantBlockPlacementPolicy));
   }
@@ -159,7 +160,7 @@ public class TestAvailableSpaceRackFaultTolerantBPP {
                   new ArrayList<DatanodeStorageInfo>(), false, null, BLOCK_SIZE,
                   TestBlockStoragePolicy.DEFAULT_STORAGE_POLICY, null);
 
-      Assert.assertTrue(targets.length == REPLICA);
+      assertTrue(targets.length == REPLICA);
       for (int j = 0; j < REPLICA; j++) {
         total++;
         if (targets[j].getDatanodeDescriptor().getRemainingPercent() > 60) {
@@ -167,10 +168,10 @@ public class TestAvailableSpaceRackFaultTolerantBPP {
         }
       }
     }
-    Assert.assertTrue(total == REPLICA * CHOOSE_TIMES);
+    assertTrue(total == REPLICA * CHOOSE_TIMES);
     double possibility = 1.0 * moreRemainingNode / total;
-    Assert.assertTrue(possibility > 0.52);
-    Assert.assertTrue(possibility < 0.55);
+    assertTrue(possibility > 0.52);
+    assertTrue(possibility < 0.55);
   }
 
   @Test
@@ -184,7 +185,7 @@ public class TestAvailableSpaceRackFaultTolerantBPP {
             .chooseDataNode("~", allNodes);
       }
     } catch (NullPointerException npe) {
-      Assert.fail("NPE should not be thrown");
+      fail("NPE should not be thrown");
     }
   }
 
@@ -206,7 +207,53 @@ public class TestAvailableSpaceRackFaultTolerantBPP {
     assertEquals(REPLICA, racks.size());
   }
 
-  @AfterClass
+  @Test
+  public void testChooseSimilarDataNode() {
+    DatanodeDescriptor[] tolerateDataNodes;
+    DatanodeStorageInfo[] tolerateStorages;
+    int capacity  = 3;
+    Collection<Node> allTolerateNodes = new ArrayList<>(capacity);
+    String[] ownerRackOfTolerateNodes = new String[capacity];
+    for (int i = 0; i < capacity; i++) {
+      ownerRackOfTolerateNodes[i] = "rack"+i;
+    }
+    tolerateStorages = DFSTestUtil.createDatanodeStorageInfos(ownerRackOfTolerateNodes);
+    tolerateDataNodes = DFSTestUtil.toDatanodeDescriptor(tolerateStorages);
+
+    Collections.addAll(allTolerateNodes, tolerateDataNodes);
+    final BlockManager bm = namenode.getNamesystem().getBlockManager();
+    AvailableSpaceRackFaultTolerantBlockPlacementPolicy toleratePlacementPolicy =
+            (AvailableSpaceRackFaultTolerantBlockPlacementPolicy)bm.getBlockPlacementPolicy();
+
+    updateHeartbeatWithUsage(tolerateDataNodes[0],
+            20 * HdfsServerConstants.MIN_BLOCKS_FOR_WRITE * BLOCK_SIZE,
+            1 * HdfsServerConstants.MIN_BLOCKS_FOR_WRITE * BLOCK_SIZE,
+            HdfsServerConstants.MIN_BLOCKS_FOR_WRITE
+                    * BLOCK_SIZE, 0L, 0L, 0L, 0, 0);
+
+    updateHeartbeatWithUsage(tolerateDataNodes[1],
+            11 * HdfsServerConstants.MIN_BLOCKS_FOR_WRITE * BLOCK_SIZE,
+            1 * HdfsServerConstants.MIN_BLOCKS_FOR_WRITE * BLOCK_SIZE,
+            HdfsServerConstants.MIN_BLOCKS_FOR_WRITE
+                    * BLOCK_SIZE, 0L, 0L, 0L, 0, 0);
+
+    updateHeartbeatWithUsage(tolerateDataNodes[2],
+            10 * HdfsServerConstants.MIN_BLOCKS_FOR_WRITE * BLOCK_SIZE,
+            1 * HdfsServerConstants.MIN_BLOCKS_FOR_WRITE * BLOCK_SIZE,
+            HdfsServerConstants.MIN_BLOCKS_FOR_WRITE
+                    * BLOCK_SIZE, 0L, 0L, 0L, 0, 0);
+
+    assertTrue(toleratePlacementPolicy.compareDataNode(tolerateDataNodes[0],
+            tolerateDataNodes[1]) == 0);
+    assertTrue(toleratePlacementPolicy.compareDataNode(tolerateDataNodes[1],
+            tolerateDataNodes[0]) == 0);
+    assertTrue(toleratePlacementPolicy.compareDataNode(tolerateDataNodes[0],
+            tolerateDataNodes[2]) == -1);
+    assertTrue(toleratePlacementPolicy.compareDataNode(tolerateDataNodes[2],
+            tolerateDataNodes[0]) == 1);
+  }
+
+  @AfterAll
   public static void teardownCluster() {
     if (namenode != null) {
       namenode.stop();

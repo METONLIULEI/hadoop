@@ -125,10 +125,10 @@ public class CSMaxRunningAppsEnforcer {
     String user = app.getUser();
     AbstractCSQueue queue = (AbstractCSQueue) app.getQueue();
     // Increment running counts for all parent queues
-    ParentQueue parent = (ParentQueue) queue.getParent();
+    AbstractParentQueue parent = (AbstractParentQueue) queue.getParent();
     while (parent != null) {
       parent.incrementRunnableApps();
-      parent = (ParentQueue) parent.getParent();
+      parent = (AbstractParentQueue) parent.getParent();
     }
 
     Integer userNumRunnable = usersNumRunnableApps.get(user);
@@ -172,6 +172,8 @@ public class CSMaxRunningAppsEnforcer {
    *
    * Runs in O(n log(n)) where n is the number of queues that are under the
    * highest queue that went from having no slack to having slack.
+   *
+   * @param app FiCaSchedulerApp.
    */
   public void updateRunnabilityOnAppRemoval(FiCaSchedulerApp app) {
     // childqueueX might have no pending apps itself, but if a queue higher up
@@ -182,17 +184,17 @@ public class CSMaxRunningAppsEnforcer {
     // the queue was already at its max before the removal.
     // Thus we find the ancestor queue highest in the tree for which the app
     // that was at its maxRunningApps before the removal.
-    LeafQueue queue = app.getCSLeafQueue();
+    AbstractLeafQueue queue = app.getCSLeafQueue();
     AbstractCSQueue highestQueueWithAppsNowRunnable =
         (queue.getNumRunnableApps() == queue.getMaxParallelApps() - 1)
         ? queue : null;
 
-    ParentQueue parent = (ParentQueue) queue.getParent();
+    AbstractParentQueue parent = (AbstractParentQueue) queue.getParent();
     while (parent != null) {
       if (parent.getNumRunnableApps() == parent.getMaxParallelApps() - 1) {
         highestQueueWithAppsNowRunnable = parent;
       }
-      parent = (ParentQueue) parent.getParent();
+      parent = (AbstractParentQueue) parent.getParent();
     }
 
     List<List<FiCaSchedulerApp>> appsNowMaybeRunnable =
@@ -243,7 +245,7 @@ public class CSMaxRunningAppsEnforcer {
       }
 
       if (checkRunnabilityWithUpdate(next)) {
-        LeafQueue nextQueue = next.getCSLeafQueue();
+        AbstractLeafQueue nextQueue = next.getCSLeafQueue();
         LOG.info("{} is now runnable in {}",
             next.getApplicationAttemptId(), nextQueue);
         trackRunnableApp(next);
@@ -301,10 +303,10 @@ public class CSMaxRunningAppsEnforcer {
 
     // Update runnable app bookkeeping for queues
     AbstractCSQueue queue = (AbstractCSQueue) app.getQueue();
-    ParentQueue parent = (ParentQueue) queue.getParent();
+    AbstractParentQueue parent = (AbstractParentQueue) queue.getParent();
     while (parent != null) {
       parent.decrementRunnableApps();
-      parent = (ParentQueue) parent.getParent();
+      parent = (AbstractParentQueue) parent.getParent();
     }
   }
 
@@ -322,9 +324,9 @@ public class CSMaxRunningAppsEnforcer {
   private void gatherPossiblyRunnableAppLists(AbstractCSQueue queue,
       List<List<FiCaSchedulerApp>> appLists) {
     if (queue.getNumRunnableApps() < queue.getMaxParallelApps()) {
-      if (queue instanceof LeafQueue) {
+      if (queue instanceof AbstractLeafQueue) {
         appLists.add(
-            ((LeafQueue)queue).getCopyOfNonRunnableAppSchedulables());
+            ((AbstractLeafQueue)queue).getCopyOfNonRunnableAppSchedulables());
       } else {
         for (CSQueue child : queue.getChildQueues()) {
           gatherPossiblyRunnableAppLists((AbstractCSQueue) child, appLists);

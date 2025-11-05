@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.DFSUtilClient;
@@ -480,8 +480,9 @@ final class BlockChecksumHelper {
         // Before populating the blockChecksum at this index, record the byte
         // offset where it will begin.
         blockChecksumPositions[idx] = blockChecksumBuf.getLength();
+        ExtendedBlock block = null;
         try {
-          ExtendedBlock block = getInternalBlock(numDataUnits, idx);
+          block = getInternalBlock(numDataUnits, idx);
 
           LiveBlockInfo liveBlkInfo = liveDns.get((byte) idx);
           if (liveBlkInfo == null) {
@@ -492,7 +493,9 @@ final class BlockChecksumHelper {
               checksumBlock(block, idx, liveBlkInfo.getToken(),
                   liveBlkInfo.getDn());
             } catch (IOException ioe) {
-              LOG.warn("Exception while reading checksum", ioe);
+              String msg = String.format("Exception while reading checksum for block %s at index " +
+                  "%d in blockGroup %s", block, idx, blockGroup);
+              LOG.warn(msg, ioe);
               // reconstruct block and calculate checksum for the failed node
               recalculateChecksum(idx, block.getNumBytes());
             }
@@ -502,7 +505,9 @@ final class BlockChecksumHelper {
             break; // done with the computation, simply return.
           }
         } catch (IOException e) {
-          LOG.warn("Failed to get the checksum", e);
+          LOG.warn("Failed to get the checksum for block {} at index {} "
+              + "in blockGroup {}", block, idx, blockGroup, e);
+          throw e;
         }
       }
 
@@ -594,7 +599,7 @@ final class BlockChecksumHelper {
     private void checksumBlock(ExtendedBlock block, int blockIdx,
                                Token<BlockTokenIdentifier> blockToken,
                                DatanodeInfo targetDatanode) throws IOException {
-      int timeout = 3000;
+      int timeout = getDatanode().getDnConf().getEcChecksumSocketTimeout();
       try (IOStreamPair pair = getDatanode().connectToDN(targetDatanode,
           timeout, block, blockToken)) {
 

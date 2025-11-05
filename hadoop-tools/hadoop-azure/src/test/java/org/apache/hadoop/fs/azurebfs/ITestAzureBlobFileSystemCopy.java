@@ -24,7 +24,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -53,7 +53,7 @@ public class ITestAzureBlobFileSystemCopy extends AbstractAbfsIntegrationTest {
     localFs.delete(localFilePath, true);
     try {
       writeString(localFs, localFilePath, "Testing");
-      Path dstPath = new Path("copiedFromLocal");
+      Path dstPath = path("copiedFromLocal");
       assertTrue(FileUtil.copy(localFs, localFilePath, fs, dstPath, false,
           fs.getConf()));
       assertIsFile(fs, dstPath);

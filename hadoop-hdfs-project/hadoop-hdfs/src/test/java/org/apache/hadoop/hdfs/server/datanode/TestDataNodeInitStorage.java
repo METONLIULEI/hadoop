@@ -27,11 +27,8 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
-import org.junit.Test;
-
-import static org.hamcrest.core.IsNot.not;
-import static org.junit.Assert.*;
-
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Test to verify that the DataNode Uuid is correctly initialized before
@@ -72,7 +69,8 @@ public class TestDataNodeInitStorage {
   }
 
 
-  @Test (timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testDataNodeInitStorage() throws Throwable {
     // Create configuration to use SimulatedFsDatasetVerifier#Factory.
     Configuration conf = new HdfsConfiguration();

@@ -28,6 +28,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.TimeZone;
 
+import javax.inject.Singleton;
 import javax.servlet.ServletContext;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -36,6 +37,7 @@ import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
+import javax.ws.rs.Consumes;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
@@ -60,8 +62,7 @@ import org.apache.hadoop.yarn.webapp.BadRequestException;
 import org.apache.hadoop.yarn.webapp.ForbiddenException;
 import org.apache.hadoop.yarn.webapp.NotFoundException;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import com.google.inject.Singleton;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -74,7 +75,8 @@ public class TimelineReaderWebServices {
   private static final Logger LOG =
       LoggerFactory.getLogger(TimelineReaderWebServices.class);
 
-  @Context private ServletContext ctxt;
+  @Context
+  private ServletContext ctxt;
 
   private static final String QUERY_STRING_SEP = "?";
   private static final String RANGE_DELIMITER = "-";
@@ -179,8 +181,8 @@ public class TimelineReaderWebServices {
       String invalidNumMsg) throws BadRequestException,
       WebApplicationException {
     long endTime = Time.monotonicNow();
-    LOG.info("Processed URL " + url + " but encountered exception (Took " +
-        (endTime - startTime) + " ms.)");
+    LOG.info("Processed URL {} but encountered exception (Took " +
+        "{} ms.)", url, (endTime - startTime));
     if (e instanceof NumberFormatException) {
       throw new BadRequestException(invalidNumMsg + " is not a numeric value.");
     } else if (e instanceof IllegalArgumentException) {
@@ -356,8 +358,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -371,6 +373,7 @@ public class TimelineReaderWebServices {
       }
       context.setEntityType(
           TimelineReaderWebServicesUtils.parseStr(entityType));
+      context.setGenericEntity(true);
       entities = timelineReaderManager.getEntities(context,
           TimelineReaderWebServicesUtils.createTimelineEntityFilters(
           limit, createdTimeStart, createdTimeEnd, relatesTo, isRelatedTo,
@@ -388,8 +391,8 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {}" +
+          " (Took {} ms.)", url, latency);
     }
     if (entities == null) {
       entities = Collections.emptySet();
@@ -488,6 +491,7 @@ public class TimelineReaderWebServices {
   @GET
   @Path("/apps/{appid}/entities/{entitytype}")
   @Produces(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
+  @Consumes(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
   public Set<TimelineEntity> getEntities(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -516,7 +520,7 @@ public class TimelineReaderWebServices {
         flowRunId, limit, createdTimeStart, createdTimeEnd, relatesTo,
         isRelatedTo, infofilters, conffilters, metricfilters, eventfilters,
         confsToRetrieve, metricsToRetrieve, fields, metricsLimit,
-        metricsTimeStart, metricsTimeEnd, fromId);
+        metricsTimeStart, metricsTimeEnd, fromId, true);
   }
 
   /**
@@ -611,6 +615,7 @@ public class TimelineReaderWebServices {
   @GET
   @Path("/clusters/{clusterid}/apps/{appid}/entities/{entitytype}")
   @Produces(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
+  @Consumes(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
   public Set<TimelineEntity> getEntities(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -636,13 +641,30 @@ public class TimelineReaderWebServices {
       @QueryParam("metricstimestart") String metricsTimeStart,
       @QueryParam("metricstimeend") String metricsTimeEnd,
       @QueryParam("fromid") String fromId) {
+    return getEntities(req, res, null, appId, entityType, userId, flowName,
+        flowRunId, limit, createdTimeStart, createdTimeEnd, relatesTo,
+        isRelatedTo, infofilters, conffilters, metricfilters, eventfilters,
+        confsToRetrieve, metricsToRetrieve, fields, metricsLimit,
+        metricsTimeStart, metricsTimeEnd, fromId, true);
+  }
+
+  public Set<TimelineEntity> getEntities(HttpServletRequest req,
+      HttpServletResponse res, String clusterId, String appId,
+      String entityType, String userId, String flowName,
+      String flowRunId, String limit, String createdTimeStart,
+      String createdTimeEnd, String relatesTo, String isRelatedTo,
+      String infofilters, String conffilters, String metricfilters,
+      String eventfilters, String confsToRetrieve, String metricsToRetrieve,
+      String fields, String metricsLimit, String metricsTimeStart,
+      String metricsTimeEnd, String fromId,
+      boolean genericEntity) {
     String url = req.getRequestURI() +
         (req.getQueryString() == null ? "" :
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -652,6 +674,7 @@ public class TimelineReaderWebServices {
       TimelineReaderContext context = TimelineReaderWebServicesUtils
           .createTimelineReaderContext(clusterId, userId, flowName, flowRunId,
               appId, entityType, null, null);
+      context.setGenericEntity(genericEntity);
       entities = timelineReaderManager.getEntities(context,
           TimelineReaderWebServicesUtils
               .createTimelineEntityFilters(limit, createdTimeStart,
@@ -670,8 +693,7 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entities == null) {
       entities = Collections.emptySet();
@@ -725,6 +747,7 @@ public class TimelineReaderWebServices {
   @GET
   @Path("/entity-uid/{uid}/")
   @Produces(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
+  @Consumes(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
   public TimelineEntity getEntity(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -740,8 +763,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -765,14 +788,60 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entity == null) {
-      LOG.info("Processed URL " + url + " but entity not found" + " (Took " +
-          (Time.monotonicNow() - startTime) + " ms.)");
+      LOG.info("Processed URL {} but entity not found" + " (Took {} ms.)",
+          url, (Time.monotonicNow() - startTime));
       throw new NotFoundException("Timeline entity with uid: " + uId +
           "is not found");
+    }
+    return entity;
+  }
+
+  public TimelineEntity getEntity(HttpServletRequest req,
+      HttpServletResponse res, String clusterId, String appId,
+      String entityType, String entityId, String userId, String flowName,
+      String flowRunId, String confsToRetrieve, String metricsToRetrieve,
+      String fields, String metricsLimit, String metricsTimeStart,
+      String metricsTimeEnd, String entityIdPrefix,
+      boolean genericEntity) {
+    String url = req.getRequestURI() +
+        (req.getQueryString() == null ? "" :
+            QUERY_STRING_SEP + req.getQueryString());
+    UserGroupInformation callerUGI =
+        TimelineReaderWebServicesUtils.getUser(req);
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    long startTime = Time.monotonicNow();
+    boolean succeeded = false;
+    init(res);
+    TimelineReaderManager timelineReaderManager = getTimelineReaderManager();
+    TimelineEntity entity = null;
+    TimelineReaderContext context = TimelineReaderWebServicesUtils.
+        createTimelineReaderContext(clusterId, userId, flowName, flowRunId,
+        appId, entityType, entityIdPrefix, entityId);
+    context.setGenericEntity(genericEntity);
+    try {
+      entity = timelineReaderManager.getEntity(context,
+          TimelineReaderWebServicesUtils.createTimelineDataToRetrieve(
+          confsToRetrieve, metricsToRetrieve, fields, metricsLimit,
+          metricsTimeStart, metricsTimeEnd));
+      checkAccessForGenericEntity(entity, callerUGI);
+      succeeded = true;
+    } catch (Exception e) {
+      handleException(e, url, startTime, "Either flowrunid or metricslimit or"
+              + " metricstime start/end");
+    } finally {
+      long latency = Time.monotonicNow() - startTime;
+      METRICS.addGetEntitiesLatency(latency, succeeded);
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
+    }
+    if (entity == null) {
+      LOG.info("Processed URL {} but entity not found" + " (Took " +
+          "{} ms.)", url, (Time.monotonicNow() - startTime));
+      throw new NotFoundException("Timeline entity {id: " + entityId +
+          ", type: " + entityType + " } is not found");
     }
     return entity;
   }
@@ -835,6 +904,7 @@ public class TimelineReaderWebServices {
   @GET
   @Path("/apps/{appid}/entities/{entitytype}/{entityid}/")
   @Produces(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
+  @Consumes(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
   public TimelineEntity getEntity(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -853,7 +923,7 @@ public class TimelineReaderWebServices {
       @QueryParam("entityidprefix") String entityIdPrefix) {
     return getEntity(req, res, null, appId, entityType, entityId, userId,
         flowName, flowRunId, confsToRetrieve, metricsToRetrieve, fields,
-        metricsLimit, metricsTimeStart, metricsTimeEnd, entityIdPrefix);
+        metricsLimit, metricsTimeStart, metricsTimeEnd, entityIdPrefix, true);
   }
 
   /**
@@ -915,6 +985,7 @@ public class TimelineReaderWebServices {
   @GET
   @Path("/clusters/{clusterid}/apps/{appid}/entities/{entitytype}/{entityid}/")
   @Produces(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
+  @Consumes(MediaType.APPLICATION_JSON + "; " + JettyUtils.UTF_8)
   public TimelineEntity getEntity(
       @Context HttpServletRequest req,
       @Context HttpServletResponse res,
@@ -932,44 +1003,9 @@ public class TimelineReaderWebServices {
       @QueryParam("metricstimestart") String metricsTimeStart,
       @QueryParam("metricstimeend") String metricsTimeEnd,
       @QueryParam("entityidprefix") String entityIdPrefix) {
-    String url = req.getRequestURI() +
-        (req.getQueryString() == null ? "" :
-            QUERY_STRING_SEP + req.getQueryString());
-    UserGroupInformation callerUGI =
-        TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
-    long startTime = Time.monotonicNow();
-    boolean succeeded = false;
-    init(res);
-    TimelineReaderManager timelineReaderManager = getTimelineReaderManager();
-    TimelineEntity entity = null;
-    try {
-      entity = timelineReaderManager.getEntity(
-          TimelineReaderWebServicesUtils.createTimelineReaderContext(
-              clusterId, userId, flowName, flowRunId, appId, entityType,
-              entityIdPrefix, entityId),
-          TimelineReaderWebServicesUtils.createTimelineDataToRetrieve(
-          confsToRetrieve, metricsToRetrieve, fields, metricsLimit,
-          metricsTimeStart, metricsTimeEnd));
-      checkAccessForGenericEntity(entity, callerUGI);
-      succeeded = true;
-    } catch (Exception e) {
-      handleException(e, url, startTime, "Either flowrunid or metricslimit or"
-          + " metricstime start/end");
-    } finally {
-      long latency = Time.monotonicNow() - startTime;
-      METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
-    }
-    if (entity == null) {
-      LOG.info("Processed URL " + url + " but entity not found" + " (Took " +
-          (Time.monotonicNow() - startTime) + " ms.)");
-      throw new NotFoundException("Timeline entity {id: " + entityId +
-          ", type: " + entityType + " } is not found");
-    }
-    return entity;
+    return getEntity(req, res, clusterId, appId, entityType, entityId,
+        userId, flowName, flowRunId, confsToRetrieve, metricsToRetrieve, fields,
+        metricsLimit, metricsTimeStart, metricsTimeEnd, entityIdPrefix, true);
   }
 
   /**
@@ -1008,8 +1044,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -1033,12 +1069,11 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entity == null) {
-      LOG.info("Processed URL " + url + " but flowrun not found (Took " +
-          (Time.monotonicNow() - startTime) + " ms.)");
+      LOG.info("Processed URL {} but flowrun not found (Took {} ms.)",
+          url, (Time.monotonicNow() - startTime));
       throw new NotFoundException("Flowrun with uid: " + uId + "is not found");
     }
     return entity;
@@ -1126,8 +1161,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -1150,12 +1185,11 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entity == null) {
-      LOG.info("Processed URL " + url + " but flowrun not found (Took " +
-          (Time.monotonicNow() - startTime) + " ms.)");
+      LOG.info("Processed URL {} but flowrun not found (Took {} ms.)",
+          url, (Time.monotonicNow() - startTime));
       throw new NotFoundException("Flow run {flow name: " +
           TimelineReaderWebServicesUtils.parseStr(flowName) + ", run id: " +
           TimelineReaderWebServicesUtils.parseLongStr(flowRunId) +
@@ -1222,8 +1256,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -1251,8 +1285,7 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entities == null) {
       entities = Collections.emptySet();
@@ -1381,8 +1414,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -1411,8 +1444,7 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entities == null) {
       entities = Collections.emptySet();
@@ -1524,8 +1556,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -1549,8 +1581,7 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entities == null) {
       entities = Collections.emptySet();
@@ -1622,8 +1653,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -1648,12 +1679,11 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entity == null) {
-      LOG.info("Processed URL " + url + " but app not found" + " (Took " +
-          (Time.monotonicNow() - startTime) + " ms.)");
+      LOG.info("Processed URL {} but app not found" + " (Took " +
+          "{} ms.)", url, (Time.monotonicNow() - startTime));
       throw new NotFoundException("App with uid " + uId + " not found");
     }
     return entity;
@@ -1801,8 +1831,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -1824,12 +1854,11 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entity == null) {
-      LOG.info("Processed URL " + url + " but app not found" + " (Took " +
-          (Time.monotonicNow() - startTime) + " ms.)");
+      LOG.info("Processed URL {} but app not found" + " (Took " +
+          "{} ms.)", url, (Time.monotonicNow() - startTime));
       throw new NotFoundException("App " + appId + " not found");
     }
     return entity;
@@ -1939,8 +1968,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -1971,8 +2000,7 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entities == null) {
       entities = Collections.emptySet();
@@ -2088,7 +2116,7 @@ public class TimelineReaderWebServices {
         flowRunId, limit, createdTimeStart, createdTimeEnd, relatesTo,
         isRelatedTo, infofilters, conffilters, metricfilters, eventfilters,
         confsToRetrieve, metricsToRetrieve, fields, metricsLimit,
-        metricsTimeStart, metricsTimeEnd, fromId);
+        metricsTimeStart, metricsTimeEnd, fromId, false);
   }
 
   /**
@@ -2202,7 +2230,7 @@ public class TimelineReaderWebServices {
         flowRunId, limit, createdTimeStart, createdTimeEnd, relatesTo,
         isRelatedTo, infofilters, conffilters, metricfilters, eventfilters,
         confsToRetrieve, metricsToRetrieve, fields, metricsLimit,
-        metricsTimeStart, metricsTimeEnd, fromId);
+        metricsTimeStart, metricsTimeEnd, fromId, false);
   }
 
   /**
@@ -2310,7 +2338,7 @@ public class TimelineReaderWebServices {
         null, limit, createdTimeStart, createdTimeEnd, relatesTo, isRelatedTo,
         infofilters, conffilters, metricfilters, eventfilters,
         confsToRetrieve, metricsToRetrieve, fields, metricsLimit,
-        metricsTimeStart, metricsTimeEnd, fromId);
+        metricsTimeStart, metricsTimeEnd, fromId, false);
   }
 
   /**
@@ -2420,7 +2448,7 @@ public class TimelineReaderWebServices {
         null, limit, createdTimeStart, createdTimeEnd, relatesTo, isRelatedTo,
         infofilters, conffilters, metricfilters, eventfilters,
         confsToRetrieve, metricsToRetrieve, fields, metricsLimit,
-        metricsTimeStart, metricsTimeEnd, fromId);
+        metricsTimeStart, metricsTimeEnd, fromId, false);
   }
 
   /**
@@ -3350,8 +3378,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -3369,8 +3397,7 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntityTypesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     return results;
   }
@@ -3436,8 +3463,8 @@ public class TimelineReaderWebServices {
             QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user " +
-        TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -3464,8 +3491,7 @@ public class TimelineReaderWebServices {
     } finally {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
-      LOG.info("Processed URL " + url +
-          " (Took " + latency + " ms.)");
+      LOG.info("Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entities == null) {
       entities = Collections.emptySet();
@@ -3512,8 +3538,8 @@ public class TimelineReaderWebServices {
         : QUERY_STRING_SEP + req.getQueryString());
     UserGroupInformation callerUGI =
         TimelineReaderWebServicesUtils.getUser(req);
-    LOG.info("Received URL " + url + " from user "
-        + TimelineReaderWebServicesUtils.getUserName(callerUGI));
+    LOG.info("Received URL {} from user {}",
+        url, TimelineReaderWebServicesUtils.getUserName(callerUGI));
     long startTime = Time.monotonicNow();
     boolean succeeded = false;
     init(res);
@@ -3537,7 +3563,7 @@ public class TimelineReaderWebServices {
       long latency = Time.monotonicNow() - startTime;
       METRICS.addGetEntitiesLatency(latency, succeeded);
       LOG.info(
-          "Processed URL " + url + " (Took " + latency + " ms.)");
+          "Processed URL {} (Took {} ms.)", url, latency);
     }
     if (entities == null) {
       entities = Collections.emptySet();

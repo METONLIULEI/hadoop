@@ -25,10 +25,11 @@ import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
@@ -53,6 +54,7 @@ import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
@@ -70,16 +72,15 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
 import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.thirdparty.com.google.common.base.Strings;
 import java.util.function.Supplier;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.hdfs.tools.DFSck;
+import org.apache.hadoop.util.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -190,12 +191,10 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.VersionInfo;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Assume;
 import org.apache.hadoop.util.ToolRunner;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.slf4j.event.Level;
 
 /** Utilities for HDFS tests */
 public class DFSTestUtil {
@@ -340,7 +339,7 @@ public class DFSTestUtil {
         for (int idx = 0; idx < nLevels; idx++) {
           levels[idx] = gen.nextInt(10);
         }
-        StringBuffer sb = new StringBuffer();
+        StringBuilder sb = new StringBuilder();
         for (int idx = 0; idx < nLevels; idx++) {
           sb.append(dirNames[levels[idx]]);
           sb.append("/");
@@ -794,41 +793,48 @@ public class DFSTestUtil {
 
   /**
    * Wait for the given file to reach the given replication factor.
-   * @throws TimeoutException if we fail to sufficiently replicate the file
+   *
+   * @param fs the defined filesystem.
+   * @param fileName being written.
+   * @param replFactor desired replication
+   * @throws IOException getting block locations
+   * @throws InterruptedException during sleep
+   * @throws TimeoutException if 40 seconds passed before reaching the desired
+   *                          replication.
    */
-  public static void waitReplication(FileSystem fs, Path fileName, short replFactor)
+  public static void waitReplication(FileSystem fs, Path fileName,
+      short replFactor)
       throws IOException, InterruptedException, TimeoutException {
     boolean correctReplFactor;
-    final int ATTEMPTS = 40;
-    int count = 0;
-
+    int attempt = 0;
     do {
       correctReplFactor = true;
+      if (attempt++ > 0) {
+        Thread.sleep(1000);
+      }
       BlockLocation locs[] = fs.getFileBlockLocations(
-        fs.getFileStatus(fileName), 0, Long.MAX_VALUE);
-      count++;
-      for (int j = 0; j < locs.length; j++) {
-        String[] hostnames = locs[j].getNames();
+          fs.getFileStatus(fileName), 0, Long.MAX_VALUE);
+      for (int currLoc = 0; currLoc < locs.length; currLoc++) {
+        String[] hostnames = locs[currLoc].getNames();
         if (hostnames.length != replFactor) {
+          LOG.info(
+              "Block {} of file {} has replication factor {} "
+                  + "(desired {}); locations: {}",
+              currLoc, fileName, hostnames.length, replFactor,
+              Joiner.on(' ').join(hostnames));
           correctReplFactor = false;
-          System.out.println("Block " + j + " of file " + fileName
-              + " has replication factor " + hostnames.length
-              + " (desired " + replFactor + "); locations "
-              + Joiner.on(' ').join(hostnames));
-          Thread.sleep(1000);
           break;
         }
       }
-      if (correctReplFactor) {
-        System.out.println("All blocks of file " + fileName
-            + " verified to have replication factor " + replFactor);
-      }
-    } while (!correctReplFactor && count < ATTEMPTS);
+    } while (!correctReplFactor && attempt < 40);
 
-    if (count == ATTEMPTS) {
-      throw new TimeoutException("Timed out waiting for " + fileName +
-          " to reach " + replFactor + " replicas");
+    if (!correctReplFactor) {
+      throw new TimeoutException("Timed out waiting for file ["
+          + fileName + "] to reach [" + replFactor + "] replicas");
     }
+
+    LOG.info("All blocks of file {} verified to have replication factor {}",
+        fileName, replFactor);
   }
   
   /** delete directory and everything underneath it.*/
@@ -978,7 +984,7 @@ public class DFSTestUtil {
    * @return url content as string (UTF-8 encoding assumed)
    */
   public static String urlGet(URL url) throws IOException {
-    return new String(urlGetBytes(url), Charsets.UTF_8);
+    return new String(urlGetBytes(url), StandardCharsets.UTF_8);
   }
   
   /**
@@ -1117,7 +1123,7 @@ public class DFSTestUtil {
       return BlockOpResponseProto.parseDelimitedFrom(in);
     }
   }
-  
+
   public static void setFederatedConfiguration(MiniDFSCluster cluster,
       Configuration conf) {
     Set<String> nameservices = new HashSet<String>();
@@ -1431,7 +1437,7 @@ public class DFSTestUtil {
     Short permission = 0777;
     filesystem.setPermission(pathFileCreate, new FsPermission(permission));
     // OP_SET_OWNER 8
-    filesystem.setOwner(pathFileCreate, new String("newOwner"), null);
+    filesystem.setOwner(pathFileCreate, "newOwner", null);
     // OP_CLOSE 9 see above
     // OP_SET_GENSTAMP 10 see above
     // OP_SET_NS_QUOTA 11 obsolete
@@ -1665,15 +1671,14 @@ public class DFSTestUtil {
   }
 
   public static void checkComponentsEquals(byte[][] expected, byte[][] actual) {
-    assertEquals("expected: " + DFSUtil.byteArray2PathString(expected)
-        + ", actual: " + DFSUtil.byteArray2PathString(actual), expected.length,
-        actual.length);
+    assertEquals(expected.length, actual.length,
+        "expected: " + DFSUtil.byteArray2PathString(expected) + ", actual: "
+            + DFSUtil.byteArray2PathString(actual));
     int i = 0;
     for (byte[] e : expected) {
       byte[] actualComponent = actual[i++];
-      assertTrue("expected: " + DFSUtil.bytes2String(e) + ", actual: "
-          + DFSUtil.bytes2String(actualComponent),
-          Arrays.equals(e, actualComponent));
+      assertTrue(Arrays.equals(e, actualComponent), "expected: " + DFSUtil.bytes2String(e)
+          + ", actual: " + DFSUtil.bytes2String(actualComponent));
     }
   }
 
@@ -1692,7 +1697,7 @@ public class DFSTestUtil {
       this.sockDir = new TemporarySocketDirectory();
       DomainSocket.disableBindPathValidation();
       formerTcpReadsDisabled = DFSInputStream.tcpReadsDisabledForTesting;
-      Assume.assumeTrue(DomainSocket.getLoadingFailureReason() == null);
+      assumeTrue(DomainSocket.getLoadingFailureReason() == null);
     }
     
     public Configuration newConfiguration() {
@@ -1730,7 +1735,7 @@ public class DFSTestUtil {
     try (FSDataInputStream in1 = fs.open(p1);
          FSDataInputStream in2 = fs.open(p2)) {
       for (int i = 0; i < len; i++) {
-        assertEquals("Mismatch at byte " + i, in1.read(), in2.read());
+        assertEquals(in1.read(), in2.read(), "Mismatch at byte " + i);
       }
     }
   }
@@ -1806,32 +1811,31 @@ public class DFSTestUtil {
         client.getReplicatedBlockStats();
     ECBlockGroupStats ecBlockGroupStats = client.getECBlockGroupStats();
 
-    assertEquals("Under replicated stats not matching!",
-        aggregatedStats[ClientProtocol.GET_STATS_LOW_REDUNDANCY_IDX],
-        aggregatedStats[ClientProtocol.GET_STATS_UNDER_REPLICATED_IDX]);
-    assertEquals("Low redundancy stats not matching!",
-        aggregatedStats[ClientProtocol.GET_STATS_LOW_REDUNDANCY_IDX],
+    assertEquals(aggregatedStats[ClientProtocol.GET_STATS_LOW_REDUNDANCY_IDX],
+        aggregatedStats[ClientProtocol.GET_STATS_UNDER_REPLICATED_IDX],
+        "Under replicated stats not matching!");
+    assertEquals(aggregatedStats[ClientProtocol.GET_STATS_LOW_REDUNDANCY_IDX],
         replicatedBlockStats.getLowRedundancyBlocks() +
-            ecBlockGroupStats.getLowRedundancyBlockGroups());
-    assertEquals("Corrupt blocks stats not matching!",
-        aggregatedStats[ClientProtocol.GET_STATS_CORRUPT_BLOCKS_IDX],
-        replicatedBlockStats.getCorruptBlocks() +
-            ecBlockGroupStats.getCorruptBlockGroups());
-    assertEquals("Missing blocks stats not matching!",
-        aggregatedStats[ClientProtocol.GET_STATS_MISSING_BLOCKS_IDX],
+            ecBlockGroupStats.getLowRedundancyBlockGroups(),
+        "Low redundancy stats not matching!");
+    assertEquals(aggregatedStats[ClientProtocol.GET_STATS_CORRUPT_BLOCKS_IDX],
+        replicatedBlockStats.getCorruptBlocks() + ecBlockGroupStats.getCorruptBlockGroups(),
+        "Corrupt blocks stats not matching!");
+    assertEquals(aggregatedStats[ClientProtocol.GET_STATS_MISSING_BLOCKS_IDX],
         replicatedBlockStats.getMissingReplicaBlocks() +
-            ecBlockGroupStats.getMissingBlockGroups());
-    assertEquals("Missing blocks with replication factor one not matching!",
-        aggregatedStats[ClientProtocol.GET_STATS_MISSING_REPL_ONE_BLOCKS_IDX],
-        replicatedBlockStats.getMissingReplicationOneBlocks());
-    assertEquals("Bytes in future blocks stats not matching!",
-        aggregatedStats[ClientProtocol.GET_STATS_BYTES_IN_FUTURE_BLOCKS_IDX],
+            ecBlockGroupStats.getMissingBlockGroups(),
+        "Missing blocks stats not matching!");
+    assertEquals(aggregatedStats[ClientProtocol.GET_STATS_MISSING_REPL_ONE_BLOCKS_IDX],
+        replicatedBlockStats.getMissingReplicationOneBlocks(),
+        "Missing blocks with replication factor one not matching!");
+    assertEquals(aggregatedStats[ClientProtocol.GET_STATS_BYTES_IN_FUTURE_BLOCKS_IDX],
         replicatedBlockStats.getBytesInFutureBlocks() +
-            ecBlockGroupStats.getBytesInFutureBlockGroups());
-    assertEquals("Pending deletion blocks stats not matching!",
-        aggregatedStats[ClientProtocol.GET_STATS_PENDING_DELETION_BLOCKS_IDX],
+            ecBlockGroupStats.getBytesInFutureBlockGroups(),
+        "Bytes in future blocks stats not matching!");
+    assertEquals(aggregatedStats[ClientProtocol.GET_STATS_PENDING_DELETION_BLOCKS_IDX],
         replicatedBlockStats.getPendingDeletionBlocks() +
-            ecBlockGroupStats.getPendingDeletionBlocks());
+            ecBlockGroupStats.getPendingDeletionBlocks(),
+        "Pending deletion blocks stats not matching!");
   }
 
   /**
@@ -1869,6 +1873,33 @@ public class DFSTestUtil {
   }
 
   /**
+   * Helper function to delete a key in the Key Provider. Defaults
+   * to the first indexed NameNode's Key Provider.
+   *
+   * @param keyName The name of the key to create
+   * @param cluster The cluster to create it in
+   */
+  public static void deleteKey(String keyName, MiniDFSCluster cluster)
+      throws NoSuchAlgorithmException, IOException {
+    deleteKey(keyName, cluster, 0);
+  }
+
+  /**
+   * Helper function to delete a key in the Key Provider.
+   *
+   * @param keyName The name of the key to create
+   * @param cluster The cluster to create it in
+   * @param idx The NameNode index
+   */
+  public static void deleteKey(String keyName, MiniDFSCluster cluster, int idx)
+      throws NoSuchAlgorithmException, IOException {
+    NameNode nn = cluster.getNameNode(idx);
+    KeyProvider provider = nn.getNamesystem().getProvider();
+    provider.deleteKey(keyName);
+    provider.flush();
+  }
+
+  /**
    * @return the node which is expected to run the recovery of the
    * given block, which is known to be under construction inside the
    * given NameNOde.
@@ -1877,8 +1908,8 @@ public class DFSTestUtil {
       ExtendedBlock blk) {
     BlockManager bm0 = nn.getNamesystem().getBlockManager();
     BlockInfo storedBlock = bm0.getStoredBlock(blk.getLocalBlock());
-    assertTrue("Block " + blk + " should be under construction, " +
-        "got: " + storedBlock, !storedBlock.isComplete());
+    assertTrue(!storedBlock.isComplete(),
+        "Block " + blk + " should be under construction, " + "got: " + storedBlock);
     // We expect that the replica with the most recent heart beat will be
     // the one to be in charge of the synchronization / recovery protocol.
     final DatanodeStorageInfo[] storages = storedBlock
@@ -1926,8 +1957,8 @@ public class DFSTestUtil {
     }
     assertEquals(retcode, ret);
     if (contain != null) {
-      assertTrue("The real output is: " + output + ".\n It should contain: "
-          + contain, output.contains(contain));
+      assertTrue(output.contains(contain),
+          "The real output is: " + output + ".\n It should contain: " + contain);
     }
   }
 
@@ -1984,15 +2015,6 @@ public class DFSTestUtil {
   }
 
   public static void setNameNodeLogLevel(Level level) {
-    GenericTestUtils.setLogLevel(FSNamesystem.LOG, level);
-    GenericTestUtils.setLogLevel(BlockManager.LOG, level);
-    GenericTestUtils.setLogLevel(LeaseManager.LOG, level);
-    GenericTestUtils.setLogLevel(NameNode.LOG, level);
-    GenericTestUtils.setLogLevel(NameNode.stateChangeLog, level);
-    GenericTestUtils.setLogLevel(NameNode.blockStateChangeLog, level);
-  }
-
-  public static void setNameNodeLogLevel(org.slf4j.event.Level level) {
     GenericTestUtils.setLogLevel(FSNamesystem.LOG, level);
     GenericTestUtils.setLogLevel(BlockManager.LOG, level);
     GenericTestUtils.setLogLevel(LeaseManager.LOG, level);
@@ -2340,23 +2362,23 @@ public class DFSTestUtil {
 
   public static void verifyDelete(FsShell shell, FileSystem fs, Path path,
       Path trashPath, boolean shouldExistInTrash) throws Exception {
-    assertTrue(path + " file does not exist", fs.exists(path));
+    assertTrue(fs.exists(path), path + " file does not exist");
 
     // Verify that trashPath has a path component named ".Trash"
     Path checkTrash = trashPath;
     while (!checkTrash.isRoot() && !checkTrash.getName().equals(".Trash")) {
       checkTrash = checkTrash.getParent();
     }
-    assertEquals("No .Trash component found in trash path " + trashPath,
-        ".Trash", checkTrash.getName());
+    assertEquals(".Trash", checkTrash.getName(),
+        "No .Trash component found in trash path " + trashPath);
 
     String[] argv = new String[]{"-rm", "-r", path.toString()};
     int res = ToolRunner.run(shell, argv);
-    assertEquals("rm failed", 0, res);
+    assertEquals(0, res, "rm failed");
     if (shouldExistInTrash) {
-      assertTrue("File not in trash : " + trashPath, fs.exists(trashPath));
+      assertTrue(fs.exists(trashPath), "File not in trash : " + trashPath);
     } else {
-      assertFalse("File in trash : " + trashPath, fs.exists(trashPath));
+      assertFalse(fs.exists(trashPath), "File in trash : " + trashPath);
     }
   }
 
@@ -2565,7 +2587,7 @@ public class DFSTestUtil {
       Path filePath, int namenodeCount, boolean createMoverPath)
           throws IOException {
     final Collection<URI> namenodes = DFSUtil.getInternalNsRpcUris(conf);
-    Assert.assertEquals(namenodeCount, namenodes.size());
+    assertEquals(namenodeCount, namenodes.size());
     NameNodeConnector.checkOtherInstanceRunning(createMoverPath);
     while (true) {
       try {

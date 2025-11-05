@@ -18,13 +18,15 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity;
 
+import java.io.IOException;
+
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity.TestProportionalCapacityPreemptionPolicy.IsPreemptionRequestFor;
 import org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity.mockframework.ProportionalCapacityPreemptionPolicyMockFramework;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
-import org.junit.Before;
-import org.junit.Test;
-
-import java.io.IOException;
 
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.never;
@@ -37,7 +39,7 @@ import static org.mockito.Mockito.verify;
 public class TestProportionalCapacityPreemptionPolicyIntraQueue
     extends
     ProportionalCapacityPreemptionPolicyMockFramework {
-  @Before
+  @BeforeEach
   public void setup() {
     super.setup();
     conf.setBoolean(
@@ -119,10 +121,15 @@ public class TestProportionalCapacityPreemptionPolicyIntraQueue
      * purpose is to test that disabling preemption on a specific queue will
      * avoid intra-queue preemption.
      */
-    conf.setPreemptionDisabled("root.a", true);
-    conf.setPreemptionDisabled("root.b", true);
-    conf.setPreemptionDisabled("root.c", true);
-    conf.setPreemptionDisabled("root.d", true);
+    QueuePath a = new QueuePath("root.a");
+    QueuePath b = new QueuePath("root.b");
+    QueuePath c = new QueuePath("root.c");
+    QueuePath d = new QueuePath("root.d");
+
+    conf.setPreemptionDisabled(a, true);
+    conf.setPreemptionDisabled(b, true);
+    conf.setPreemptionDisabled(c, true);
+    conf.setPreemptionDisabled(d, true);
 
     String labelsConfig = "=100,true;";
     String nodesConfig = // n1 has no label
@@ -845,7 +852,7 @@ public class TestProportionalCapacityPreemptionPolicyIntraQueue
             "-b(=[40 100 40 120 0])"; // b
 
     String appsConfig =
-    // queueName\t(priority,resource,host,expression,#repeat,reserved,pending)
+    // queueName\t(priority,resource,host,expression,#repeat,reserved,pending,user(optional))
         "a\t" // app1 in a
             + "(1,1,n1,,5,false,25);" + // app1 a
             "a\t" // app2 in a

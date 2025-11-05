@@ -16,10 +16,10 @@
 package org.apache.hadoop.io.compress.zstd;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.DataOutputBuffer;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.compress.CompressionInputStream;
 import org.apache.hadoop.io.compress.CompressionOutputStream;
 import org.apache.hadoop.io.compress.Compressor;
@@ -28,9 +28,9 @@ import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.io.compress.DecompressorStream;
 import org.apache.hadoop.io.compress.ZStandardCodec;
 import org.apache.hadoop.test.MultithreadedTestUtil;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -46,11 +46,12 @@ import java.util.Random;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_DEFAULT;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_KEY;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assume.assumeTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class TestZStandardCompressorDecompressor {
   private final static char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
@@ -59,7 +60,7 @@ public class TestZStandardCompressorDecompressor {
   private static File compressedFile;
   private static File uncompressedFile;
 
-  @BeforeClass
+  @BeforeAll
   public static void beforeClass() throws Exception {
     CONFIGURATION.setInt(IO_FILE_BUFFER_SIZE_KEY, 1024 * 64);
     uncompressedFile = new File(TestZStandardCompressorDecompressor.class
@@ -68,7 +69,7 @@ public class TestZStandardCompressorDecompressor {
         .getResource("/zstd/test_file.txt.zst").toURI());
   }
 
-  @Before
+  @BeforeEach
   public void before() throws Exception {
     assumeTrue(ZStandardCodec.isNativeCodeLoaded());
   }
@@ -112,71 +113,87 @@ public class TestZStandardCompressorDecompressor {
     assertArrayEquals(bytes, byteArrayOutputStream.toByteArray());
   }
 
-  @Test(expected = NullPointerException.class)
+  @Test
   public void testCompressorSetInputNullPointerException() {
-    ZStandardCompressor compressor = new ZStandardCompressor();
-    compressor.setInput(null, 0, 10);
+    assertThrows(NullPointerException.class, () -> {
+      ZStandardCompressor compressor = new ZStandardCompressor();
+      compressor.setInput(null, 0, 10);
+    });
   }
 
   //test on NullPointerException in {@code decompressor.setInput()}
-  @Test(expected = NullPointerException.class)
+  @Test
   public void testDecompressorSetInputNullPointerException() {
-    ZStandardDecompressor decompressor =
-        new ZStandardDecompressor(IO_FILE_BUFFER_SIZE_DEFAULT);
-    decompressor.setInput(null, 0, 10);
+    assertThrows(NullPointerException.class, () -> {
+      ZStandardDecompressor decompressor =
+          new ZStandardDecompressor(IO_FILE_BUFFER_SIZE_DEFAULT);
+      decompressor.setInput(null, 0, 10);
+    });
   }
 
   //test on ArrayIndexOutOfBoundsException in {@code compressor.setInput()}
-  @Test(expected = ArrayIndexOutOfBoundsException.class)
+  @Test
   public void testCompressorSetInputAIOBException() {
-    ZStandardCompressor compressor = new ZStandardCompressor();
-    compressor.setInput(new byte[] {}, -5, 10);
+    assertThrows(ArrayIndexOutOfBoundsException.class, () -> {
+      ZStandardCompressor compressor = new ZStandardCompressor();
+      compressor.setInput(new byte[] {}, -5, 10);
+    });
   }
 
   //test on ArrayIndexOutOfBoundsException in {@code decompressor.setInput()}
-  @Test(expected = ArrayIndexOutOfBoundsException.class)
+  @Test
   public void testDecompressorSetInputAIOUBException() {
-    ZStandardDecompressor decompressor =
-        new ZStandardDecompressor(IO_FILE_BUFFER_SIZE_DEFAULT);
-    decompressor.setInput(new byte[] {}, -5, 10);
+    assertThrows(ArrayIndexOutOfBoundsException.class, () -> {
+      ZStandardDecompressor decompressor =
+          new ZStandardDecompressor(IO_FILE_BUFFER_SIZE_DEFAULT);
+      decompressor.setInput(new byte[] {}, -5, 10);
+    });
   }
 
   //test on NullPointerException in {@code compressor.compress()}
-  @Test(expected = NullPointerException.class)
+  @Test
   public void testCompressorCompressNullPointerException() throws Exception {
-    ZStandardCompressor compressor = new ZStandardCompressor();
-    byte[] bytes = generate(1024 * 6);
-    compressor.setInput(bytes, 0, bytes.length);
-    compressor.compress(null, 0, 0);
+    assertThrows(NullPointerException.class, () -> {
+      ZStandardCompressor compressor = new ZStandardCompressor();
+      byte[] bytes = generate(1024 * 6);
+      compressor.setInput(bytes, 0, bytes.length);
+      compressor.compress(null, 0, 0);
+    });
   }
 
   //test on NullPointerException in {@code decompressor.decompress()}
-  @Test(expected = NullPointerException.class)
+  @Test
   public void testDecompressorCompressNullPointerException() throws Exception {
-    ZStandardDecompressor decompressor =
-        new ZStandardDecompressor(IO_FILE_BUFFER_SIZE_DEFAULT);
-    byte[] bytes = generate(1024 * 6);
-    decompressor.setInput(bytes, 0, bytes.length);
-    decompressor.decompress(null, 0, 0);
+    assertThrows(NullPointerException.class, () -> {
+      ZStandardDecompressor decompressor =
+          new ZStandardDecompressor(IO_FILE_BUFFER_SIZE_DEFAULT);
+      byte[] bytes = generate(1024 * 6);
+      decompressor.setInput(bytes, 0, bytes.length);
+      decompressor.decompress(null, 0, 0);
+    });
   }
 
   //test on ArrayIndexOutOfBoundsException in {@code compressor.compress()}
-  @Test(expected = ArrayIndexOutOfBoundsException.class)
+  @Test
   public void testCompressorCompressAIOBException() throws Exception {
-    ZStandardCompressor compressor = new ZStandardCompressor();
-    byte[] bytes = generate(1024 * 6);
-    compressor.setInput(bytes, 0, bytes.length);
-    compressor.compress(new byte[] {}, 0, -1);
+    assertThrows(ArrayIndexOutOfBoundsException.class, () -> {
+      ZStandardCompressor compressor = new ZStandardCompressor();
+      byte[] bytes = generate(1024 * 6);
+      compressor.setInput(bytes, 0, bytes.length);
+      compressor.compress(new byte[] {}, 0, -1);
+    });
   }
 
   //test on ArrayIndexOutOfBoundsException in decompressor.decompress()
-  @Test(expected = ArrayIndexOutOfBoundsException.class)
+  @Test
   public void testDecompressorCompressAIOBException() throws Exception {
-    ZStandardDecompressor decompressor =
-        new ZStandardDecompressor(IO_FILE_BUFFER_SIZE_DEFAULT);
-    byte[] bytes = generate(1024 * 6);
-    decompressor.setInput(bytes, 0, bytes.length);
-    decompressor.decompress(new byte[] {}, 0, -1);
+    assertThrows(ArrayIndexOutOfBoundsException.class, () -> {
+      ZStandardDecompressor decompressor =
+          new ZStandardDecompressor(IO_FILE_BUFFER_SIZE_DEFAULT);
+      byte[] bytes = generate(1024 * 6);
+      decompressor.setInput(bytes, 0, bytes.length);
+      decompressor.decompress(new byte[] {}, 0, -1);
+    });
   }
 
   // test ZStandardCompressor compressor.compress()
@@ -186,7 +203,7 @@ public class TestZStandardCompressorDecompressor {
     int bytesSize = 1024 * 2056 + 1;
     ZStandardCompressor compressor = new ZStandardCompressor();
     byte[] bytes = generate(bytesSize);
-    assertTrue("needsInput error !!!", compressor.needsInput());
+    assertTrue(compressor.needsInput(), "needsInput error !!!");
     compressor.setInput(bytes, 0, bytes.length);
     byte[] emptyBytes = new byte[bytesSize];
     int cSize = compressor.compress(emptyBytes, 0, bytes.length);
@@ -198,18 +215,16 @@ public class TestZStandardCompressorDecompressor {
   @Test
   public void testCompressorDecompressorLogicWithCompressionStreams()
       throws Exception {
-    DataOutputStream deflateOut = null;
     DataInputStream inflateIn = null;
     int byteSize = 1024 * 100;
     byte[] bytes = generate(byteSize);
     int bufferSize = IO_FILE_BUFFER_SIZE_DEFAULT;
-    try {
-      DataOutputBuffer compressedDataBuffer = new DataOutputBuffer();
-      CompressionOutputStream deflateFilter =
-          new CompressorStream(compressedDataBuffer, new ZStandardCompressor(),
-              bufferSize);
-      deflateOut =
-          new DataOutputStream(new BufferedOutputStream(deflateFilter));
+    DataOutputBuffer compressedDataBuffer = new DataOutputBuffer();
+    CompressionOutputStream deflateFilter =
+        new CompressorStream(compressedDataBuffer, new ZStandardCompressor(),
+            bufferSize);
+    try (DataOutputStream deflateOut =
+             new DataOutputStream(new BufferedOutputStream(deflateFilter))) {
       deflateOut.write(bytes, 0, bytes.length);
       deflateOut.flush();
       deflateFilter.finish();
@@ -226,11 +241,68 @@ public class TestZStandardCompressorDecompressor {
 
       byte[] result = new byte[byteSize];
       inflateIn.read(result);
-      assertArrayEquals("original array not equals compress/decompressed array",
-          result, bytes);
+      assertArrayEquals(result, bytes,
+          "original array not equals compress/decompressed array");
     } finally {
-      IOUtils.closeQuietly(deflateOut);
-      IOUtils.closeQuietly(inflateIn);
+      IOUtils.closeStream(inflateIn);
+    }
+  }
+
+  /**
+   * Verify decompressor logic with some finish operation in compress.
+   */
+  @Test
+  public void testCompressorDecompressorWithFinish() throws Exception {
+    DataOutputStream deflateOut = null;
+    DataInputStream inflateIn = null;
+    int byteSize = 1024 * 100;
+    byte[] bytes = generate(byteSize);
+    int firstLength = 1024 * 30;
+
+    int bufferSize = IO_FILE_BUFFER_SIZE_DEFAULT;
+    try {
+      DataOutputBuffer compressedDataBuffer = new DataOutputBuffer();
+      CompressionOutputStream deflateFilter =
+              new CompressorStream(compressedDataBuffer, new ZStandardCompressor(),
+                      bufferSize);
+
+      deflateOut =
+              new DataOutputStream(new BufferedOutputStream(deflateFilter));
+
+      // Write some data and finish.
+      deflateOut.write(bytes, 0, firstLength);
+      deflateFilter.finish();
+      deflateOut.flush();
+
+      // ResetState then write some data and finish.
+      deflateFilter.resetState();
+      deflateOut.write(bytes, firstLength, firstLength);
+      deflateFilter.finish();
+      deflateOut.flush();
+
+      // ResetState then write some data and finish.
+      deflateFilter.resetState();
+      deflateOut.write(bytes, firstLength * 2, byteSize - firstLength * 2);
+      deflateFilter.finish();
+      deflateOut.flush();
+
+      DataInputBuffer deCompressedDataBuffer = new DataInputBuffer();
+      deCompressedDataBuffer.reset(compressedDataBuffer.getData(), 0,
+              compressedDataBuffer.getLength());
+
+      CompressionInputStream inflateFilter =
+              new DecompressorStream(deCompressedDataBuffer,
+                      new ZStandardDecompressor(bufferSize), bufferSize);
+
+      inflateIn = new DataInputStream(new BufferedInputStream(inflateFilter));
+
+      byte[] result = new byte[byteSize];
+      inflateIn.read(result);
+      assertArrayEquals(bytes, result,
+          "original array not equals compress/decompressed array");
+    } finally {
+      IOUtils.closeStream(deflateOut);
+      IOUtils.closeStream(inflateIn);
     }
   }
 
@@ -327,16 +399,16 @@ public class TestZStandardCompressorDecompressor {
     ZStandardCompressor compressor = new ZStandardCompressor();
     ZStandardDecompressor decompressor = new ZStandardDecompressor(rawDataSize);
     assertTrue(compressor.needsInput());
-    assertFalse("testZStandardCompressDecompress finished error",
-        compressor.finished());
+    assertFalse(compressor.finished(),
+        "testZStandardCompressDecompress finished error");
     compressor.setInput(rawData, 0, rawData.length);
     compressor.finish();
 
     byte[] compressedResult = new byte[rawDataSize];
     int cSize = compressor.compress(compressedResult, 0, rawDataSize);
     assertEquals(rawDataSize, compressor.getBytesRead());
-    assertTrue("compressed size no less then original size",
-        cSize < rawDataSize);
+    assertTrue(cSize < rawDataSize,
+        "compressed size no less then original size");
     decompressor.setInput(compressedResult, 0, cSize);
     byte[] decompressedBytes = new byte[rawDataSize];
     decompressor.decompress(decompressedBytes, 0, decompressedBytes.length);
@@ -358,18 +430,15 @@ public class TestZStandardCompressorDecompressor {
             codec.createDecompressor());
 
     byte[] toDecompress = new byte[100];
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
     byte[] decompressedResult;
     int totalFileSize = 0;
-    int result = toDecompress.length;
-    try {
+    try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+      int result = toDecompress.length;
       while ((result = inputStream.read(toDecompress, 0, result)) != -1) {
         baos.write(toDecompress, 0, result);
         totalFileSize += result;
       }
       decompressedResult = baos.toByteArray();
-    } finally {
-      IOUtils.closeQuietly(baos);
     }
 
     assertEquals(decompressedResult.length, totalFileSize);
@@ -435,20 +504,16 @@ public class TestZStandardCompressorDecompressor {
     ZStandardCodec codec = new ZStandardCodec();
     codec.setConf(CONFIGURATION);
     Decompressor decompressor = codec.createDecompressor();
-    CompressionInputStream cis =
-        codec.createInputStream(inputStream, decompressor);
-    ByteArrayOutputStream baos = new ByteArrayOutputStream();
     byte[] resultOfDecompression;
-    try {
+    try (CompressionInputStream cis =
+             codec.createInputStream(inputStream, decompressor);
+         ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
       byte[] buffer = new byte[100];
       int n;
       while ((n = cis.read(buffer, 0, buffer.length)) != -1) {
         baos.write(buffer, 0, n);
       }
       resultOfDecompression = baos.toByteArray();
-    } finally {
-      IOUtils.closeQuietly(baos);
-      IOUtils.closeQuietly(cis);
     }
 
     byte[] expected = FileUtils.readFileToByteArray(uncompressedFile);

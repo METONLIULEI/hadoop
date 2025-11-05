@@ -19,12 +19,19 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY;
 import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
+import static org.apache.hadoop.test.MetricsAsserts.assertCounterGt;
+import static org.apache.hadoop.test.MetricsAsserts.assertInverseQuantileGauges;
 import static org.apache.hadoop.test.MetricsAsserts.assertQuantileGauges;
 import static org.apache.hadoop.test.MetricsAsserts.getLongCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.Closeable;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,13 +40,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
-
 import java.util.function.Supplier;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 import net.jcip.annotations.NotThreadSafe;
+
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+import org.apache.hadoop.net.unix.DomainSocket;
+import org.apache.hadoop.net.unix.TemporarySocketDirectory;
+import org.apache.hadoop.util.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -62,7 +72,8 @@ import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.MetricsAsserts;
 import org.apache.hadoop.util.Time;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
@@ -90,8 +101,8 @@ public class TestDataNodeMetrics {
       DataNode datanode = datanodes.get(0);
       MetricsRecordBuilder rb = getMetrics(datanode.getMetrics().name());
       assertCounter("BytesWritten", LONG_FILE_LEN, rb);
-      assertTrue("Expected non-zero number of incremental block reports",
-          getLongCounter("IncrementalBlockReportsNumOps", rb) > 0);
+      assertTrue(getLongCounter("IncrementalBlockReportsNumOps", rb) > 0,
+          "Expected non-zero number of incremental block reports");
     } finally {
       if (cluster != null) {cluster.shutdown();}
     }
@@ -170,6 +181,7 @@ public class TestDataNodeMetrics {
     conf.setInt(DFSConfigKeys.DFS_METRICS_PERCENTILES_INTERVALS_KEY, interval);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
         .numDataNodes(3).build();
+    DataNodeFaultInjector oldInjector = DataNodeFaultInjector.get();
     try {
       cluster.waitActive();
       DistributedFileSystem fs = cluster.getFileSystem();
@@ -191,22 +203,28 @@ public class TestDataNodeMetrics {
       DataNodeFaultInjector.set(injector);
       Path testFile = new Path("/testFlushNanosMetric.txt");
       FSDataOutputStream fout = fs.create(testFile);
+      DFSOutputStream dout = (DFSOutputStream) fout.getWrappedStream();
       fout.write(new byte[1]);
       fout.hsync();
+      DatanodeInfo[] pipeline = dout.getPipeline();
       fout.close();
+      dout.close();
+      DatanodeInfo headDatanodeInfo = pipeline[0];
       List<DataNode> datanodes = cluster.getDataNodes();
-      DataNode datanode = datanodes.get(0);
-      MetricsRecordBuilder dnMetrics = getMetrics(datanode.getMetrics().name());
-      assertTrue("More than 1 packet received",
-          getLongCounter("TotalPacketsReceived", dnMetrics) > 1L);
-      assertTrue("More than 1 slow packet to mirror",
-          getLongCounter("TotalPacketsSlowWriteToMirror", dnMetrics) > 1L);
-      assertCounter("TotalPacketsSlowWriteToDisk", 1L, dnMetrics);
-      assertCounter("TotalPacketsSlowWriteToOsCache", 0L, dnMetrics);
+      DataNode headNode = datanodes.stream().filter(d -> d.getDatanodeId().equals(headDatanodeInfo))
+          .findFirst().orElseGet(null);
+      assertNotNull(headNode, "Could not find the head of the datanode write pipeline");
+      MetricsRecordBuilder dnMetrics = getMetrics(headNode.getMetrics().name());
+      assertTrue(getLongCounter("PacketsReceived", dnMetrics) > 1L, "More than 1 packet received");
+      assertTrue(getLongCounter("PacketsSlowWriteToMirror", dnMetrics) > 1L,
+          "More than 1 slow packet to mirror");
+      assertCounter("PacketsSlowWriteToDisk", 1L, dnMetrics);
+      assertCounter("PacketsSlowWriteToOsCache", 0L, dnMetrics);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
       }
+      DataNodeFaultInjector.set(oldInjector);
     }
   }
 
@@ -294,15 +312,14 @@ public class TestDataNodeMetrics {
           break;
         }
       }
-      assertNotNull("Could not find the head of the datanode write pipeline", 
-          headNode);
+      assertNotNull(headNode, "Could not find the head of the datanode write pipeline");
       // Close the file and wait for the metrics to rollover
       Thread.sleep((interval + 1) * 1000);
       // Check the ack was received
       MetricsRecordBuilder dnMetrics = getMetrics(headNode.getMetrics()
           .name());
-      assertTrue("Expected non-zero number of acks", 
-          getLongCounter("PacketAckRoundTripTimeNanosNumOps", dnMetrics) > 0);
+      assertTrue(getLongCounter("PacketAckRoundTripTimeNanosNumOps", dnMetrics) > 0,
+          "Expected non-zero number of acks");
       assertQuantileGauges("PacketAckRoundTripTimeNanos" + interval
           + "s", dnMetrics);
     } finally {
@@ -312,7 +329,8 @@ public class TestDataNodeMetrics {
     }
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testTimeoutMetric() throws Exception {
     final Configuration conf = new HdfsConfiguration();
     final Path path = new Path("/test");
@@ -347,10 +365,8 @@ public class TestDataNodeMetrics {
       final Object dnc =
           mbs.getAttribute(mxbeanName, "DatanodeNetworkCounts");
       final String allDnc = dnc.toString();
-      assertTrue("expected to see loopback address",
-          allDnc.indexOf("127.0.0.1") >= 0);
-      assertTrue("expected to see networkErrors",
-          allDnc.indexOf("networkErrors") >= 0);
+      assertTrue(allDnc.indexOf("127.0.0.1") >= 0, "expected to see loopback address");
+      assertTrue(allDnc.indexOf("networkErrors") >= 0, "expected to see networkErrors");
     } finally {
       IOUtils.cleanupWithLogger(LOG, streams.toArray(new Closeable[0]));
       if (cluster != null) {
@@ -365,9 +381,11 @@ public class TestDataNodeMetrics {
    * and reading causes totalReadTime to move.
    * @throws Exception
    */
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testDataNodeTimeSpend() throws Exception {
     Configuration conf = new HdfsConfiguration();
+    conf.set(DFSConfigKeys.DFS_METRICS_PERCENTILES_INTERVALS_KEY, "" + 60);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
     try {
       final FileSystem fs = cluster.getFileSystem();
@@ -379,6 +397,7 @@ public class TestDataNodeMetrics {
 
       final long startWriteValue = getLongCounter("TotalWriteTime", rb);
       final long startReadValue = getLongCounter("TotalReadTime", rb);
+      assertCounter("ReadTransferRateNumOps", 0L, rb);
       final AtomicInteger x = new AtomicInteger(0);
 
       // Lets Metric system update latest metrics
@@ -398,6 +417,8 @@ public class TestDataNodeMetrics {
           MetricsRecordBuilder rbNew = getMetrics(datanode.getMetrics().name());
           final long endWriteValue = getLongCounter("TotalWriteTime", rbNew);
           final long endReadValue = getLongCounter("TotalReadTime", rbNew);
+          assertCounter("ReadTransferRateNumOps", 1L, rbNew);
+          assertInverseQuantileGauges("ReadTransferRate60s", rbNew, "Rate");
           return endWriteValue > startWriteValue
               && endReadValue > startReadValue;
         }
@@ -421,7 +442,7 @@ public class TestDataNodeMetrics {
 
       MetricsRecordBuilder rb = getMetrics(datanode.getMetrics().name());
       long blocksReplicated = getLongCounter("BlocksReplicated", rb);
-      assertEquals("No blocks replicated yet", 0, blocksReplicated);
+      assertEquals(0, blocksReplicated, "No blocks replicated yet");
 
       Path path = new Path("/counter.txt");
       DFSTestUtil.createFile(fs, path, 1024, (short) 2, Time.monotonicNow());
@@ -431,7 +452,7 @@ public class TestDataNodeMetrics {
 
       MetricsRecordBuilder rbNew = getMetrics(datanode.getMetrics().name());
       blocksReplicated = getLongCounter("BlocksReplicated", rbNew);
-      assertEquals("blocks replicated counter incremented", 1, blocksReplicated);
+      assertEquals(1, blocksReplicated, "blocks replicated counter incremented");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -536,7 +557,7 @@ public class TestDataNodeMetrics {
       cluster.waitActive();
       DistributedFileSystem fs = cluster.getFileSystem();
       Path p = new Path("/testShouldThrowTMP");
-      DFSTestUtil.writeFile(fs, p, new String("testdata"));
+      DFSTestUtil.writeFile(fs, p, "testdata");
       //Before DN throws too many open files
       verifyBlockLocations(fs, p, 1);
       Mockito.doThrow(new FileNotFoundException("Too many open files")).
@@ -551,8 +572,8 @@ public class TestDataNodeMetrics {
                 CachingStrategy.newDefaultStrategy());
         fail("Must throw FileNotFoundException");
       } catch (FileNotFoundException fe) {
-        assertTrue("Should throw too many open files",
-                fe.getMessage().contains("Too many open files"));
+        assertTrue(fe.getMessage().contains("Too many open files"),
+            "Should throw too many open files");
       }
       cluster.triggerHeartbeats(); // IBR delete ack
       //After DN throws too many open files
@@ -590,6 +611,62 @@ public class TestDataNodeMetrics {
     DataNode dn = cluster.getDataNodes().get(0);
     MetricsRecordBuilder rb = getMetrics(dn.getMetrics().name());
     assertCounter("HeartbeatsNumOps", 1L, rb);
+  }
+
+  @Test
+  @Timeout(value = 60)
+  public void testSlowMetrics() throws Exception {
+    DataNodeFaultInjector dnFaultInjector = new DataNodeFaultInjector() {
+      @Override public void delay() {
+        try {
+          Thread.sleep(310);
+        } catch (InterruptedException e) {
+        }
+      }
+    };
+    DataNodeFaultInjector oldDnInjector = DataNodeFaultInjector.get();
+    DataNodeFaultInjector.set(dnFaultInjector);
+
+    Configuration conf = new HdfsConfiguration();
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+      final FileSystem fs = cluster.getFileSystem();
+      List<DataNode> datanodes = cluster.getDataNodes();
+      assertEquals(datanodes.size(), 3);
+      final DataNode datanode = datanodes.get(0);
+      MetricsRecordBuilder rb = getMetrics(datanode.getMetrics().name());
+      final long longFileLen = 10;
+      final long startFlushOrSyncValue =
+          getLongCounter("SlowFlushOrSyncCount", rb);
+      final long startAckToUpstreamValue =
+          getLongCounter("SlowAckToUpstreamCount", rb);
+      final AtomicInteger x = new AtomicInteger(0);
+
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override public Boolean get() {
+          x.getAndIncrement();
+          try {
+            DFSTestUtil
+                .createFile(fs, new Path("/time.txt." + x.get()), longFileLen,
+                    (short) 3, Time.monotonicNow());
+          } catch (IOException ioe) {
+            LOG.error("Caught IOException while ingesting DN metrics", ioe);
+            return false;
+          }
+          MetricsRecordBuilder rbNew = getMetrics(datanode.getMetrics().name());
+          final long endFlushOrSyncValue = getLongCounter("SlowFlushOrSyncCount", rbNew);
+          final long endAckToUpstreamValue = getLongCounter("SlowAckToUpstreamCount", rbNew);
+          return endFlushOrSyncValue > startFlushOrSyncValue
+              && endAckToUpstreamValue > startAckToUpstreamValue;
+        }
+      }, 30, 30000);
+    } finally {
+      DataNodeFaultInjector.set(oldDnInjector);
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
   }
 
   @Test
@@ -645,5 +722,121 @@ public class TestDataNodeMetrics {
     assertCounter("HeartbeatsForns1-nn0NumOps", 1L, rb);
     assertCounter("HeartbeatsForns1-nn1NumOps", 1L, rb);
     assertCounter("HeartbeatsNumOps", 4L, rb);
+  }
+
+  @Test
+  public void testNodeLocalMetrics() throws Exception {
+    assumeTrue(null == DomainSocket.getLoadingFailureReason());
+    Configuration conf = new HdfsConfiguration();
+    conf.setBoolean(HdfsClientConfigKeys.Read.ShortCircuit.KEY, true);
+    TemporarySocketDirectory sockDir = new TemporarySocketDirectory();
+    DomainSocket.disableBindPathValidation();
+    conf.set(DFSConfigKeys.DFS_DOMAIN_SOCKET_PATH_KEY,
+        new File(sockDir.getDir(),
+            "testNodeLocalMetrics._PORT.sock").getAbsolutePath());
+    MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
+    try {
+      cluster.waitActive();
+      FileSystem fs = cluster.getFileSystem();
+      Path testFile = new Path("/testNodeLocalMetrics.txt");
+      DFSTestUtil.createFile(fs, testFile, 10L, (short)1, 1L);
+      DFSTestUtil.readFile(fs, testFile);
+      List<DataNode> datanodes = cluster.getDataNodes();
+      assertEquals(1, datanodes.size());
+
+      DataNode datanode = datanodes.get(0);
+      MetricsRecordBuilder rb = getMetrics(datanode.getMetrics().name());
+
+      // Write related metrics
+      assertCounter("WritesFromLocalClient", 1L, rb);
+      // Read related metrics
+      assertCounter("ReadsFromLocalClient", 1L, rb);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  @Test
+  public void testDataNodeReadWriteXceiversCount() throws Exception {
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(new HdfsConfiguration()).build()) {
+      cluster.waitActive();
+      FileSystem fs = cluster.getFileSystem();
+      List<DataNode> datanodes = cluster.getDataNodes();
+      assertEquals(1, datanodes.size());
+      DataNode datanode = datanodes.get(0);
+
+      // Test DataNodeWriteActiveXceiversCount Metric
+      long writeXceiversCount = MetricsAsserts.getIntGauge("DataNodeWriteActiveXceiversCount",
+          getMetrics(datanode.getMetrics().name()));
+      assertEquals(0, writeXceiversCount);
+
+      Path path = new Path("/testDataNodeReadWriteXceiversCount.txt");
+      try (FSDataOutputStream output = fs.create(path)) {
+        output.write(new byte[1024]);
+        output.hsync();
+        GenericTestUtils.waitFor(new Supplier<Boolean>() {
+          @Override
+          public Boolean get() {
+            int writeXceiversCount = MetricsAsserts.getIntGauge("DataNodeWriteActiveXceiversCount",
+                getMetrics(datanode.getMetrics().name()));
+            return writeXceiversCount == 1;
+          }
+        }, 100, 10000);
+      }
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          int writeXceiversCount = MetricsAsserts.getIntGauge("DataNodeWriteActiveXceiversCount",
+              getMetrics(datanode.getMetrics().name()));
+          return writeXceiversCount == 0;
+        }
+      }, 100, 10000);
+
+      // Test DataNodeReadActiveXceiversCount Metric
+      long readXceiversCount = MetricsAsserts.getIntGauge("DataNodeReadActiveXceiversCount",
+          getMetrics(datanode.getMetrics().name()));
+      assertEquals(0, readXceiversCount);
+      try (FSDataInputStream input = fs.open(path)) {
+        byte[] byteArray = new byte[1024];
+        input.read(byteArray);
+        GenericTestUtils.waitFor(new Supplier<Boolean>() {
+          @Override
+          public Boolean get() {
+            int readXceiversCount = MetricsAsserts.getIntGauge("DataNodeReadActiveXceiversCount",
+                getMetrics(datanode.getMetrics().name()));
+            return readXceiversCount == 1;
+          }
+        }, 100, 10000);
+      }
+      GenericTestUtils.waitFor(new Supplier<Boolean>() {
+        @Override
+        public Boolean get() {
+          int readXceiversCount = MetricsAsserts.getIntGauge("DataNodeReadActiveXceiversCount",
+              getMetrics(datanode.getMetrics().name()));
+          return readXceiversCount == 0;
+        }
+      }, 100, 10000);
+    }
+  }
+
+  @Test
+  public void testDataNodeDatasetLockMetrics() throws IOException {
+    Configuration conf = new HdfsConfiguration();
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build()) {
+      FileSystem fs = cluster.getFileSystem();
+      // Create and read a 1 byte file
+      Path tmpfile = new Path("/tmp.txt");
+      DFSTestUtil.createFile(fs, tmpfile,
+              (long)1, (short)1, 1L);
+      DFSTestUtil.readFile(fs, tmpfile);
+      List<DataNode> datanodes = cluster.getDataNodes();
+      assertEquals(datanodes.size(), 1);
+      DataNode datanode = datanodes.get(0);
+      MetricsRecordBuilder rb = getMetrics(datanode.getMetrics().name());
+      assertCounterGt("AcquireDatasetWriteLockNumOps", (long)1, rb);
+      assertCounterGt("AcquireDatasetReadLockNumOps", (long)1, rb);
+    }
   }
 }

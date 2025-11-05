@@ -20,8 +20,9 @@ package org.apache.hadoop.hdfs.qjournal.client;
 import static org.apache.hadoop.hdfs.qjournal.QJMTestUtil.FAKE_NSINFO;
 import static org.apache.hadoop.hdfs.qjournal.QJMTestUtil.JID;
 import static org.apache.hadoop.hdfs.qjournal.QJMTestUtil.writeSegment;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -34,11 +35,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.hdfs.qjournal.MiniJournalCluster;
@@ -53,17 +53,16 @@ import org.apache.hadoop.hdfs.util.Holder;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 
 public class TestQJMWithFaults {
@@ -82,7 +81,7 @@ public class TestQJMWithFaults {
   static {
     // Don't retry connections - it just slows down the tests.
     conf.setInt(CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 0);
-    
+
     // Make tests run faster by avoiding fsync()
     EditLogFileOutputStream.setShouldSkipFsyncForTesting(true);
   }
@@ -108,7 +107,7 @@ public class TestQJMWithFaults {
       qjm.format(FAKE_NSINFO, false);
       doWorkload(cluster, qjm);
       
-      SortedSet<Integer> ipcCounts = Sets.newTreeSet();
+      SortedSet<Integer> ipcCounts = new TreeSet<>();
       for (AsyncLogger l : qjm.getLoggerSetForTests().getLoggersForTests()) {
         InvocationCountingChannel ch = (InvocationCountingChannel)l;
         ch.waitForAllPendingCalls();
@@ -127,9 +126,6 @@ public class TestQJMWithFaults {
     }
     return ret;
   }
-
-  @Rule
-  public ExpectedException expectedException = ExpectedException.none();
 
   /**
    * Sets up two of the nodes to each drop a single RPC, at all
@@ -196,9 +192,10 @@ public class TestQJMWithFaults {
    */
   @Test
   public void testUnresolvableHostName() throws Exception {
-    expectedException.expect(UnknownHostException.class);
-    new QuorumJournalManager(conf,
-        new URI("qjournal://" + "bogus:12345" + "/" + JID), FAKE_NSINFO);
+    assertThrows(UnknownHostException.class, () -> {
+      new QuorumJournalManager(conf,
+          new URI("qjournal://" + "bogus.invalid:12345" + "/" + JID), FAKE_NSINFO);
+    });
   }
 
   /**
@@ -225,7 +222,7 @@ public class TestQJMWithFaults {
       // If the user specifies a seed, then we should gather all the
       // IPC trace information so that debugging is easier. This makes
       // the test run about 25% slower otherwise.
-      GenericTestUtils.setLogLevel(ProtobufRpcEngine2.LOG, Level.ALL);
+      GenericTestUtils.setLogLevel(ProtobufRpcEngine2.LOG, Level.TRACE);
     } else {
       seed = new Random().nextLong();
     }
@@ -260,9 +257,8 @@ public class TestQJMWithFaults {
             checkException(t);
             continue;
           }
-          assertTrue("Recovered only up to txnid " + recovered +
-              " but had gotten an ack for " + lastAcked,
-              recovered >= lastAcked);
+          assertTrue(recovered >= lastAcked, "Recovered only up to txnid " + recovered
+              + " but had gotten an ack for " + lastAcked);
           
           txid = recovered + 1;
           

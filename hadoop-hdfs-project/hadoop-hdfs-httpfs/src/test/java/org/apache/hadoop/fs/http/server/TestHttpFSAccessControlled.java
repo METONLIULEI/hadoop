@@ -21,16 +21,15 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.test.HTestCase;
 import org.apache.hadoop.test.HadoopUsersConfTestHelper;
 import org.apache.hadoop.test.TestDir;
 import org.apache.hadoop.test.TestDirHelper;
 import org.apache.hadoop.test.TestJetty;
 import org.apache.hadoop.test.TestJettyHelper;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.webapp.WebAppContext;
 
@@ -43,6 +42,9 @@ import java.io.Writer;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.text.MessageFormat;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * This test class ensures that everything works as expected when
@@ -93,9 +95,9 @@ public class TestHttpFSAccessControlled extends HTestCase {
    */
   private void createHttpFSServer() throws Exception {
     File homeDir = TestDirHelper.getTestDir();
-    Assert.assertTrue(new File(homeDir, "conf").mkdir());
-    Assert.assertTrue(new File(homeDir, "log").mkdir());
-    Assert.assertTrue(new File(homeDir, "temp").mkdir());
+    assertTrue(new File(homeDir, "conf").mkdir());
+    assertTrue(new File(homeDir, "log").mkdir());
+    assertTrue(new File(homeDir, "temp").mkdir());
     HttpFSServerWebApp.setHomeDirForCurrentThread(homeDir.getAbsolutePath());
 
     File secretFile = new File(new File(homeDir, "conf"), "secret");
@@ -128,8 +130,9 @@ public class TestHttpFSAccessControlled extends HTestCase {
     conf.set("httpfs.proxyuser." +
                     HadoopUsersConfTestHelper.getHadoopProxyUser() + ".hosts",
             HadoopUsersConfTestHelper.getHadoopProxyUserHosts());
-    conf.set("httpfs.authentication.signature.secret.file",
-            secretFile.getAbsolutePath());
+    conf.set(HttpFSAuthenticationFilter.HADOOP_HTTP_CONF_PREFIX +
+            AuthenticationFilter.SIGNATURE_SECRET_FILE,
+        secretFile.getAbsolutePath());
 
     File httpfsSite = new File(new File(homeDir, "conf"), "httpfs-site.xml");
     os = new FileOutputStream(httpfsSite);
@@ -174,9 +177,9 @@ public class TestHttpFSAccessControlled extends HTestCase {
     conn.connect();
     int resp = conn.getResponseCode();
     if ( expectOK ) {
-      Assert.assertEquals( outMsg, HttpURLConnection.HTTP_OK, resp);
+      assertEquals(HttpURLConnection.HTTP_OK, resp, outMsg);
     } else {
-      Assert.assertEquals(outMsg, HttpURLConnection.HTTP_FORBIDDEN, resp);
+      assertEquals(HttpURLConnection.HTTP_FORBIDDEN, resp, outMsg);
     }
   }
 
@@ -206,9 +209,9 @@ public class TestHttpFSAccessControlled extends HTestCase {
     conn.connect();
     int resp = conn.getResponseCode();
     if ( expectOK ) {
-      Assert.assertEquals(outMsg, HttpURLConnection.HTTP_OK, resp);
+      assertEquals(HttpURLConnection.HTTP_OK, resp, outMsg);
     } else {
-      Assert.assertEquals(outMsg, HttpURLConnection.HTTP_FORBIDDEN, resp);
+      assertEquals(HttpURLConnection.HTTP_FORBIDDEN, resp, outMsg);
     }
   }
 
@@ -238,9 +241,9 @@ public class TestHttpFSAccessControlled extends HTestCase {
     conn.connect();
     int resp = conn.getResponseCode();
     if ( expectOK ) {
-      Assert.assertEquals(outMsg, HttpURLConnection.HTTP_OK, resp);
+      assertEquals(HttpURLConnection.HTTP_OK, resp, outMsg);
     } else {
-      Assert.assertEquals(outMsg, HttpURLConnection.HTTP_FORBIDDEN, resp);
+      assertEquals(HttpURLConnection.HTTP_FORBIDDEN, resp, outMsg);
     }
   }
 
@@ -270,9 +273,9 @@ public class TestHttpFSAccessControlled extends HTestCase {
     conn.connect();
     int resp = conn.getResponseCode();
     if ( expectOK ) {
-      Assert.assertEquals(outMsg, HttpURLConnection.HTTP_OK, resp);
+      assertEquals(HttpURLConnection.HTTP_OK, resp, outMsg);
     } else {
-      Assert.assertEquals(outMsg, HttpURLConnection.HTTP_FORBIDDEN, resp);
+      assertEquals(HttpURLConnection.HTTP_FORBIDDEN, resp, outMsg);
     }
   }
 

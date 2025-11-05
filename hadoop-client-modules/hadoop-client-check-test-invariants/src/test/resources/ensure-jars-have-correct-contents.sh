@@ -58,13 +58,12 @@ allowed_expr+="|^org.apache.hadoop.application-classloader.properties$"
 allowed_expr+="|^java.policy$"
 #   * Used by javax.annotation
 allowed_expr+="|^jndi.properties$"
-# * allowing native libraries from rocksdb. Leaving native libraries as it is.
-allowed_expr+="|^librocksdbjni-linux32.so"
-allowed_expr+="|^librocksdbjni-linux64.so"
-allowed_expr+="|^librocksdbjni-osx.jnilib"
-allowed_expr+="|^librocksdbjni-win64.dll"
-allowed_expr+="|^librocksdbjni-linux-ppc64le.so"
-
+#   * Used by ehcache
+allowed_expr+="|^ehcache-107-ext.xsd$"
+allowed_expr+="|^ehcache-multi.xsd$"
+allowed_expr+="|^.gitkeep$"
+allowed_expr+="|^OSGI-INF.*$"
+allowed_expr+="|^javax.*$"
 
 allowed_expr+=")"
 declare -i bad_artifacts=0

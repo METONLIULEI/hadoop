@@ -21,7 +21,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.federation.store.CachedRecordStore;
 import org.apache.hadoop.hdfs.server.federation.store.MembershipStore;
@@ -63,12 +63,7 @@ public class RouterHeartbeatService extends PeriodicService {
    * Trigger the update of the Router state asynchronously.
    */
   protected void updateStateAsync() {
-    Thread thread = new Thread(new Runnable() {
-      @Override
-      public void run() {
-        updateStateStore();
-      }
-    }, "Router Heartbeat Async");
+    Thread thread = new Thread(this::updateStateStore, "Router Heartbeat Async");
     thread.setDaemon(true);
     thread.start();
   }
@@ -93,9 +88,12 @@ public class RouterHeartbeatService extends PeriodicService {
             getStateStoreVersion(MountTableStore.class));
         record.setStateStoreVersion(stateStoreVersion);
         // if admin server not started then hostPort will be empty
-        String hostPort =
-            StateStoreUtils.getHostPortString(router.getAdminServerAddress());
-        record.setAdminAddress(hostPort);
+        if (router.getConfig().getBoolean(RBFConfigKeys.DFS_ROUTER_HEARTBEAT_WITH_IP_ENABLE,
+            RBFConfigKeys.DFS_ROUTER_HEARTBEAT_WITH_IP_ENABLE_DEFAULT)) {
+          record.setAdminAddress(StateStoreUtils.getIpPortString(router.getAdminServerAddress()));
+        } else {
+          record.setAdminAddress(StateStoreUtils.getHostPortString(router.getAdminServerAddress()));
+        }
         RouterHeartbeatRequest request =
             RouterHeartbeatRequest.newInstance(record);
         RouterHeartbeatResponse response = routerStore.routerHeartbeat(request);

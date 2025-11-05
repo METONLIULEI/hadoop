@@ -18,6 +18,10 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
+import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerTestUtilities.GB;
+import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerTestUtilities.checkPendingResource;
+import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerTestUtilities.toSet;
+
 import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 import org.apache.hadoop.conf.Configuration;
@@ -38,15 +42,14 @@ import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptState;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptRemovedSchedulerEvent;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 
 /**
  * Test class for verifying Scheduling requests in CS.
  */
-public class TestCapacitySchedulerSchedulingRequestUpdate
-    extends CapacitySchedulerTestBase {
+public class TestCapacitySchedulerSchedulingRequestUpdate {
   @Test
   public void testBasicPendingResourceUpdate() throws Exception {
     Configuration conf = TestUtils.getConfigurationWithQueueLabels(
@@ -179,6 +182,7 @@ public class TestCapacitySchedulerSchedulingRequestUpdate
     checkPendingResource(rm, "b", 0 * GB, null);
     checkPendingResource(rm, "root", 0 * GB, null);
     checkPendingResource(rm, "root", 0 * GB, "x");
+    rm.stop();
   }
 
   @Test
@@ -296,5 +300,6 @@ public class TestCapacitySchedulerSchedulingRequestUpdate
     checkPendingResource(rm, "b", 0 * GB, null);
     checkPendingResource(rm, "root", 0 * GB, null);
     checkPendingResource(rm, "root", 0 * GB, "x");
+    rm.stop();
   }
 }

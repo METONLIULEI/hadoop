@@ -21,7 +21,6 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.reflect.Constructor;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -46,10 +45,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import javax.net.SocketFactory;
 
-import org.apache.hadoop.security.AccessControlException;
-import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
-import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
-
 import org.apache.commons.net.util.SubnetUtils;
 import org.apache.commons.net.util.SubnetUtils.SubnetInfo;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -58,10 +53,14 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.ipc.VersionedProtocol;
+import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.thirdparty.com.google.common.cache.Cache;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.util.dynamic.DynConstructors;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,9 +82,9 @@ public class NetUtils {
   /**
    * Get the socket factory for the given class according to its
    * configuration parameter
-   * <tt>hadoop.rpc.socket.factory.class.&lt;ClassName&gt;</tt>. When no
+   * <code>hadoop.rpc.socket.factory.class.&lt;ClassName&gt;</code>. When no
    * such parameter exists then fall back on the default socket factory as
-   * configured by <tt>hadoop.rpc.socket.factory.class.default</tt>. If
+   * configured by <code>hadoop.rpc.socket.factory.class.default</code>. If
    * this default socket factory is not configured, then fall back on the JVM
    * default socket factory.
    * 
@@ -111,7 +110,7 @@ public class NetUtils {
 
   /**
    * Get the default socket factory as specified by the configuration
-   * parameter <tt>hadoop.rpc.socket.factory.default</tt>
+   * parameter <code>hadoop.rpc.socket.factory.default</code>
    * 
    * @param conf the configuration
    * @return the default socket factory as specified in the configuration or
@@ -133,7 +132,8 @@ public class NetUtils {
    * Get the socket factory corresponding to the given proxy URI. If the
    * given proxy URI corresponds to an absence of configuration parameter,
    * returns null. If the URI is malformed raises an exception.
-   * 
+   *
+   * @param conf configuration.
    * @param propValue the property which is the class name of the
    *        SocketFactory to instantiate; assumed non null and non empty.
    * @return a socket factory as defined in the property value.
@@ -151,19 +151,30 @@ public class NetUtils {
   }
 
   /**
-   * Util method to build socket addr from either:
+   * Util method to build socket addr from either.
    *   {@literal <host>:<port>}
    *   {@literal <fs>://<host>:<port>/<path>}
+   *
+   * @param target target.
+   * @return socket addr.
    */
   public static InetSocketAddress createSocketAddr(String target) {
     return createSocketAddr(target, -1);
   }
 
+  public static InetSocketAddress createSocketAddrUnresolved(String target) {
+    return createSocketAddr(target, -1, null, false, false);
+  }
+
   /**
-   * Util method to build socket addr from either:
+   * Util method to build socket addr from either.
    *   {@literal <host>}
    *   {@literal <host>:<port>}
    *   {@literal <fs>://<host>:<port>/<path>}
+   *
+   * @param target target.
+   * @param defaultPort default port.
+   * @return socket addr.
    */
   public static InetSocketAddress createSocketAddr(String target,
                                                    int defaultPort) {
@@ -183,6 +194,7 @@ public class NetUtils {
    * @param configName the name of the configuration from which
    *                   <code>target</code> was loaded. This is used in the
    *                   exception message in the case that parsing fails.
+   * @return socket addr.
    */
   public static InetSocketAddress createSocketAddr(String target,
                                                    int defaultPort,
@@ -204,11 +216,18 @@ public class NetUtils {
    *                   <code>target</code> was loaded. This is used in the
    *                   exception message in the case that parsing fails.
    * @param useCacheIfPresent Whether use cache when create URI
+   * @return  socket addr
    */
   public static InetSocketAddress createSocketAddr(String target,
                                                    int defaultPort,
                                                    String configName,
                                                    boolean useCacheIfPresent) {
+    return createSocketAddr(target, defaultPort, configName, useCacheIfPresent, true);
+  }
+
+  public static InetSocketAddress createSocketAddr(
+      String target, int defaultPort, String configName,
+      boolean useCacheIfPresent, boolean isResolved) {
     String helpText = "";
     if (configName != null) {
       helpText = " (configuration property '" + configName + "')";
@@ -234,7 +253,10 @@ public class NetUtils {
           "Does not contain a valid host:port authority: " + target + helpText
       );
     }
-    return createSocketAddrForHost(host, port);
+    if (isResolved) {
+      return createSocketAddrForHost(host, port);
+    }
+    return InetSocketAddress.createUnresolved(host, port);
   }
 
   private static final long URI_CACHE_SIZE_DEFAULT = 1000;
@@ -361,8 +383,8 @@ public class NetUtils {
    * daemons, one can set up mappings from those hostnames to "localhost".
    * {@link NetUtils#getStaticResolution(String)} can be used to query for
    * the actual hostname. 
-   * @param host
-   * @param resolvedName
+   * @param host the hostname or IP use to instantiate the object.
+   * @param resolvedName resolved name.
    */
   public static void addStaticResolution(String host, String resolvedName) {
     synchronized (hostToResolved) {
@@ -374,7 +396,7 @@ public class NetUtils {
    * Retrieves the resolved name for the passed host. The resolved name must
    * have been set earlier using 
    * {@link NetUtils#addStaticResolution(String, String)}
-   * @param host
+   * @param host the hostname or IP use to instantiate the object.
    * @return the resolution
    */
   public static String getStaticResolution(String host) {
@@ -410,7 +432,7 @@ public class NetUtils {
    * the server binds to "0.0.0.0". This returns "hostname:port" of the server,
    * or "127.0.0.1:port" when the getListenerAddress() returns "0.0.0.0:port".
    * 
-   * @param server
+   * @param server server.
    * @return socket address that a client can use to connect to the server.
    */
   public static InetSocketAddress getConnectAddress(Server server) {
@@ -438,8 +460,10 @@ public class NetUtils {
   
   /**
    * Same as <code>getInputStream(socket, socket.getSoTimeout()).</code>
-   * <br><br>
-   * 
+   *
+   * @param socket socket.
+   * @throws IOException raised on errors performing I/O.
+   * @return SocketInputWrapper for reading from the socket.
    * @see #getInputStream(Socket, long)
    */
   public static SocketInputWrapper getInputStream(Socket socket) 
@@ -462,11 +486,11 @@ public class NetUtils {
    *
    * @see Socket#getChannel()
    * 
-   * @param socket
+   * @param socket socket.
    * @param timeout timeout in milliseconds. zero for waiting as
    *                long as necessary.
    * @return SocketInputWrapper for reading from the socket.
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public static SocketInputWrapper getInputStream(Socket socket, long timeout) 
                                            throws IOException {
@@ -494,9 +518,9 @@ public class NetUtils {
    * 
    * @see #getOutputStream(Socket, long)
    * 
-   * @param socket
+   * @param socket socket.
    * @return OutputStream for writing to the socket.
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */  
   public static OutputStream getOutputStream(Socket socket) 
                                              throws IOException {
@@ -516,11 +540,11 @@ public class NetUtils {
    * 
    * @see Socket#getChannel()
    * 
-   * @param socket
+   * @param socket socket.
    * @param timeout timeout in milliseconds. This may not always apply. zero
    *        for waiting as long as necessary.
    * @return OutputStream for writing to the socket.
-   * @throws IOException   
+   * @throws IOException raised on errors performing I/O.
    */
   public static OutputStream getOutputStream(Socket socket, long timeout) 
                                              throws IOException {
@@ -541,9 +565,10 @@ public class NetUtils {
    * 
    * @see java.net.Socket#connect(java.net.SocketAddress, int)
    * 
-   * @param socket
+   * @param socket socket.
    * @param address the remote address
    * @param timeout timeout in milliseconds
+   * @throws IOException raised on errors performing I/O.
    */
   public static void connect(Socket socket,
       SocketAddress address,
@@ -555,10 +580,11 @@ public class NetUtils {
    * Like {@link NetUtils#connect(Socket, SocketAddress, int)} but
    * also takes a local address and port to bind the socket to. 
    * 
-   * @param socket
+   * @param socket socket.
    * @param endpoint the remote address
    * @param localAddr the local address to bind the socket to
    * @param timeout timeout in milliseconds
+   * @throws IOException raised on errors performing I/O.
    */
   public static void connect(Socket socket, 
                              SocketAddress endpoint,
@@ -589,7 +615,7 @@ public class NetUtils {
     } catch (SocketTimeoutException ste) {
       throw new ConnectTimeoutException(ste.getMessage());
     }  catch (UnresolvedAddressException uae) {
-      throw new UnknownHostException(uae.getMessage());
+      throw new UnknownHostException(endpoint.toString());
     }
 
     // There is a very rare case allowed by the TCP specification, such that
@@ -644,7 +670,7 @@ public class NetUtils {
    * Performs a sanity check on the list of hostnames/IPs to verify they at least
    * appear to be valid.
    * @param names - List of hostnames/IPs
-   * @throws UnknownHostException
+   * @throws UnknownHostException Unknown Host Exception.
    */
   public static void verifyHostnames(String[] names) throws UnknownHostException {
     for (String name: names) {
@@ -735,9 +761,29 @@ public class NetUtils {
 
   /**
    * Compose a "host:port" string from the address.
+   *
+   * @param addr address.
+   * @return hort port string.
    */
   public static String getHostPortString(InetSocketAddress addr) {
     return addr.getHostName() + ":" + addr.getPort();
+  }
+
+  /**
+   * Get port as integer from host port string like host:port.
+   *
+   * @param addr host + port string like host:port.
+   * @return an integer value representing the port.
+   * @throws IllegalArgumentException if the input is not in the correct format.
+   */
+  public static int getPortFromHostPortString(String addr)
+      throws IllegalArgumentException {
+    String[] hostport = addr.split(":");
+    if (hostport.length != 2) {
+      String errorMsg = "Address should be <host>:<port>, but it is " + addr;
+      throw new IllegalArgumentException(errorMsg);
+    }
+    return Integer.parseInt(hostport[1]);
   }
   
   /**
@@ -894,10 +940,59 @@ public class NetUtils {
 
       }
     } catch (IOException ex) {
-      return (IOException) new IOException("Failed on local exception: "
-          + exception + "; Host Details : "
-          + getHostDetailsAsString(destHost, destPort, localHost))
-          .initCause(exception);
+      try {
+        return new IOException("Failed on local exception: "
+            + exception + "; Host Details : "
+            + getHostDetailsAsString(destHost, destPort, localHost), exception);
+      } catch (Exception ignore) {
+        // in worst case, return the original exception
+        return exception;
+      }
+    }
+  }
+
+  /**
+   * Return an @{@link IOException} of the same type as the input exception but with
+   * a modified exception message that includes the node name.
+   *
+   * @param ioe existing exception.
+   * @param nodeName name of the node.
+   * @return IOException
+   */
+  public static IOException addNodeNameToIOException(final IOException ioe, final String nodeName) {
+    try {
+      final Throwable cause = ioe.getCause();
+      IOException newIoe = null;
+      if (cause != null) {
+        try {
+          DynConstructors.Ctor<? extends IOException> ctor =
+              new DynConstructors.Builder()
+                  .impl(ioe.getClass(), String.class, Throwable.class)
+                  .buildChecked();
+          newIoe = ctor.newInstance(nodeName + ": " + ioe.getMessage(), cause);
+        } catch (NoSuchMethodException e) {
+          // no matching constructor - try next approach below
+        }
+      }
+      if (newIoe == null) {
+        DynConstructors.Ctor<? extends IOException> ctor =
+            new DynConstructors.Builder()
+                .impl(ioe.getClass(), String.class)
+                .buildChecked();
+        newIoe = ctor.newInstance(nodeName + ": " + ioe.getMessage());
+        if (cause != null) {
+          try {
+            newIoe.initCause(cause);
+          } catch (Exception e) {
+            // Unable to initCause. Ignore the exception.
+          }
+        }
+      }
+      newIoe.setStackTrace(ioe.getStackTrace());
+      return newIoe;
+    } catch (Exception e) {
+      // Unable to create new exception. Return the original exception.
+      return ioe;
     }
   }
 
@@ -910,9 +1005,22 @@ public class NetUtils {
       T exception, String msg) throws T {
     Class<? extends Throwable> clazz = exception.getClass();
     try {
-      Constructor<? extends Throwable> ctor = clazz.getConstructor(String.class);
-      Throwable t = ctor.newInstance(msg);
-      return (T)(t.initCause(exception));
+      try {
+        DynConstructors.Ctor<T> ctor =
+            new DynConstructors.Builder()
+                .impl(clazz, String.class, Throwable.class)
+                .buildChecked();
+        return ctor.newInstance(msg, exception);
+      } catch (NoSuchMethodException e) {
+        // no matching constructor - try next approach below
+      }
+      DynConstructors.Ctor<T> ctor =
+          new DynConstructors.Builder()
+              .impl(clazz, String.class)
+              .buildChecked();
+      T newException = ctor.newInstance(msg);
+      newException.initCause(exception);
+      return newException;
     } catch (NoSuchMethodException e) {
       return exception;
     } catch (Throwable e) {
@@ -952,6 +1060,8 @@ public class NetUtils {
   }
 
   /**
+   * isValidSubnet.
+   * @param subnet subnet.
    * @return true if the given string is a subnet specified
    *     using CIDR notation, false otherwise
    */
@@ -987,6 +1097,7 @@ public class NetUtils {
    * @param returnSubinterfaces
    *            whether to return IPs associated with subinterfaces
    * @throws IllegalArgumentException if subnet is invalid
+   * @return ips.
    */
   public static List<InetAddress> getIPs(String subnet,
       boolean returnSubinterfaces) {
@@ -1037,11 +1148,37 @@ public class NetUtils {
   }
 
   /**
-   * Return an @{@link InetAddress} to bind to. If bindWildCardAddress is true
-   * than returns null.
+   * Return free ports. There is no guarantee they will remain free, so
+   * ports should be used immediately. The number of free ports returned by
+   * this method should match argument {@code numOfPorts}. Num of ports
+   * provided in the argument should not exceed 25.
    *
-   * @param localAddr
-   * @param bindWildCardAddress
+   * @param numOfPorts Number of free ports to acquire.
+   * @return Free ports for binding a local socket.
+   */
+  public static Set<Integer> getFreeSocketPorts(int numOfPorts) {
+    Preconditions.checkArgument(numOfPorts > 0 && numOfPorts <= 25,
+        "Valid range for num of ports is between 0 and 26");
+    final Set<Integer> freePorts = new HashSet<>(numOfPorts);
+    for (int i = 0; i < numOfPorts * 5; i++) {
+      int port = getFreeSocketPort();
+      if (port == 0) {
+        continue;
+      }
+      freePorts.add(port);
+      if (freePorts.size() == numOfPorts) {
+        return freePorts;
+      }
+    }
+    throw new IllegalStateException(numOfPorts + " free ports could not be acquired.");
+  }
+
+  /**
+   * Return an @{@link InetAddress} to bind to. If bindWildCardAddress is true
+   * then returns null.
+   *
+   * @param localAddr local addr.
+   * @param bindWildCardAddress bind wildcard address.
    * @return InetAddress
    */
   public static InetAddress bindToLocalAddress(InetAddress localAddr, boolean

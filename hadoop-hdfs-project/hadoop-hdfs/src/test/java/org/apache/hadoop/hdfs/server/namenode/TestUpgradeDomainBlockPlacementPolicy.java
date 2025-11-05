@@ -41,10 +41,12 @@ import org.apache.hadoop.hdfs.server.blockmanagement.HostConfigManager;
 import org.apache.hadoop.hdfs.util.HostsFileWriter;
 import org.apache.hadoop.net.StaticMapping;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * End-to-end test case for upgrade domain
@@ -69,11 +71,11 @@ public class TestUpgradeDomainBlockPlacementPolicy {
   static final Set<DatanodeID> expectedDatanodeIDs = new HashSet<>();
   private MiniDFSCluster cluster = null;
   private HostsFileWriter hostsFileWriter = new HostsFileWriter();
+  private Configuration conf = new HdfsConfiguration();
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     StaticMapping.resetMap();
-    Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, DEFAULT_BLOCK_SIZE);
     conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, DEFAULT_BLOCK_SIZE / 2);
     conf.setClass(DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_KEY,
@@ -89,7 +91,7 @@ public class TestUpgradeDomainBlockPlacementPolicy {
     refreshDatanodeAdminProperties();
   }
 
-  @After
+  @AfterEach
   public void teardown() throws IOException {
     hostsFileWriter.cleanup();
     if (cluster != null) {
@@ -130,7 +132,7 @@ public class TestUpgradeDomainBlockPlacementPolicy {
     datanodes[0].setAdminState(DatanodeInfo.AdminStates.DECOMMISSIONED);
     datanodes[5].setAdminState(DatanodeInfo.AdminStates.DECOMMISSIONED);
     hostsFileWriter.initIncludeHosts(datanodes);
-    cluster.getFileSystem().refreshNodes();
+    cluster.getNamesystem(0).getBlockManager().getDatanodeManager().refreshNodes(conf);
 
     expectedDatanodeIDs.clear();
     expectedDatanodeIDs.add(cluster.getDataNodes().get(2).getDatanodeId());
@@ -169,7 +171,7 @@ public class TestUpgradeDomainBlockPlacementPolicy {
     datanodes[2].setAdminState(DatanodeInfo.AdminStates.DECOMMISSIONED);
     datanodes[3].setAdminState(DatanodeInfo.AdminStates.DECOMMISSIONED);
     hostsFileWriter.initIncludeHosts(datanodes);
-    cluster.getFileSystem().refreshNodes();
+    cluster.getNamesystem(0).getBlockManager().getDatanodeManager().refreshNodes(conf);
 
     expectedDatanodeIDs.clear();
     expectedDatanodeIDs.add(cluster.getDataNodes().get(0).getDatanodeId());
@@ -203,12 +205,13 @@ public class TestUpgradeDomainBlockPlacementPolicy {
         }
       }
       for (DatanodeID datanodeID : expectedDatanodeIDs) {
-        Assert.assertTrue(locs.contains(datanodeID));
+        assertTrue(locs.contains(datanodeID));
       }
     }
   }
 
-  @Test(timeout = 300000)
+  @Test
+  @Timeout(value = 300)
   public void testPlacementAfterDecommission() throws Exception {
     final long fileSize = FILE_SIZE;
     final String testFile = "/testfile-afterdecomm";
@@ -256,7 +259,7 @@ public class TestUpgradeDomainBlockPlacementPolicy {
           cluster.getNamesystem().getBlockManager()
               .getBlockPlacementPolicy()
               .verifyBlockPlacement(block.getLocations(), REPLICATION_FACTOR);
-      Assert.assertTrue(status.isPlacementPolicySatisfied());
+      assertTrue(status.isPlacementPolicySatisfied());
     }
   }
 }

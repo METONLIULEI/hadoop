@@ -10,7 +10,8 @@
   "scripts": {
     "build": "TMPDIR=tmp node ./node_modules/ember-cli/bin/ember build",
     "start": "TMPDIR=tmp node ./node_modules/ember-cli/bin/ember server",
-    "build:mvn": "TMPDIR=tmp node/node ./node_modules/ember-cli/bin/ember build -prod"
+    "build:mvn": "TMPDIR=tmp node/node ./node_modules/ember-cli/bin/ember build -prod",
+    "build:mvn:windows": "set TMPDIR=tmp; node/node ./node_modules/ember-cli/bin/ember build -prod"
   },
   "repository": "",
   "engines": {
@@ -33,7 +34,6 @@
     "ember-cli-dependency-checker": "1.2.0",
     "ember-cli-htmlbars": "1.0.2",
     "ember-cli-htmlbars-inline-precompile": "0.3.1",
-    "ember-cli-ic-ajax": "0.2.1",
     "ember-cli-inject-live-reload": "1.4.0",
     "ember-cli-jquery-ui": "0.0.20",
     "ember-cli-moment-shim": "0.7.3",
@@ -58,5 +58,9 @@
   "dependencies": {
     "em-helpers": "^0.8.0",
     "em-table": "0.12.0"
+  },
+  "resolutions": {
+    "graceful-fs": "^4.2.4",
+    "node-gyp": "5.1.1"
   }
 }

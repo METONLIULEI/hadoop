@@ -16,8 +16,6 @@
  */
 package org.apache.hadoop.hdfs.server.common.blockaliasmap.impl;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
-import org.apache.hadoop.thirdparty.com.google.common.io.Files;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -28,22 +26,23 @@ import org.apache.hadoop.hdfs.server.aliasmap.InMemoryAliasMap;
 import org.apache.hadoop.hdfs.server.aliasmap.InMemoryLevelDBAliasMapServer;
 import org.apache.hadoop.hdfs.server.common.blockaliasmap.BlockAliasMap;
 import org.apache.hadoop.hdfs.server.common.FileRegion;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.LambdaTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_BIND_HOST_KEY;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
@@ -64,17 +63,16 @@ public class TestInMemoryLevelDBAliasMapClient {
   private Configuration conf;
   private final static String BPID = "BPID-0";
 
-  @Rule
-  public final ExpectedException exception = ExpectedException.none();
-
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     conf = new Configuration();
     int port = 9876;
 
     conf.set(DFSConfigKeys.DFS_PROVIDED_ALIASMAP_INMEMORY_RPC_ADDRESS,
         "localhost:" + port);
-    tempDir = Files.createTempDir();
+    File testDir = GenericTestUtils.getTestDir();
+    tempDir = Files
+        .createTempDirectory(testDir.toPath(), "test").toFile();
     File levelDBDir = new File(tempDir, BPID);
     levelDBDir.mkdirs();
     conf.set(DFSConfigKeys.DFS_PROVIDED_ALIASMAP_INMEMORY_LEVELDB_DIR,
@@ -84,7 +82,7 @@ public class TestInMemoryLevelDBAliasMapClient {
     inMemoryLevelDBAliasMapClient = new InMemoryLevelDBAliasMapClient();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     levelDBAliasMapServer.close();
     inMemoryLevelDBAliasMapClient.close();
@@ -143,7 +141,7 @@ public class TestInMemoryLevelDBAliasMapClient {
     }
 
     assertArrayEquals(
-        new FileRegion[] {new FileRegion(block1, providedStorageLocation1),
+        new FileRegion[]{new FileRegion(block1, providedStorageLocation1),
             new FileRegion(block2, providedStorageLocation2)},
         actualFileRegions.toArray());
   }

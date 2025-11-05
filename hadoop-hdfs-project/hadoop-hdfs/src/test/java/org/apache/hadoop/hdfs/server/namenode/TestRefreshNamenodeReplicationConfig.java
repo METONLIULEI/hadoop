@@ -24,12 +24,13 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.test.LambdaTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import java.io.IOException;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * This class tests the replication related parameters in the namenode can
@@ -39,7 +40,7 @@ public class TestRefreshNamenodeReplicationConfig {
   private MiniDFSCluster cluster = null;
   private BlockManager bm;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     Configuration config = new Configuration();
     config.setInt(
@@ -49,6 +50,9 @@ public class TestRefreshNamenodeReplicationConfig {
     config.setInt(
         DFSConfigKeys.DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION,
         12);
+    config.setInt(
+        DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY,
+        300);
 
     cluster = new MiniDFSCluster.Builder(config)
         .nnTopology(MiniDFSNNTopology.simpleSingleNN(0, 0))
@@ -57,7 +61,7 @@ public class TestRefreshNamenodeReplicationConfig {
     bm = cluster.getNameNode().getNamesystem().getBlockManager();
   }
 
-  @After
+  @AfterEach
   public void teardown() throws IOException {
     cluster.shutdown();
   }
@@ -66,12 +70,14 @@ public class TestRefreshNamenodeReplicationConfig {
    * Tests to ensure each of the block replication parameters can be passed
    * updated successfully.
    */
-  @Test(timeout = 90000)
+  @Test
+  @Timeout(value = 90)
   public void testParamsCanBeReconfigured() throws ReconfigurationException {
 
     assertEquals(8, bm.getMaxReplicationStreams());
     assertEquals(10, bm.getReplicationStreamsHardLimit());
     assertEquals(12, bm.getBlocksReplWorkMultiplier());
+    assertEquals(300, bm.getReconstructionPendingTimeout());
 
     cluster.getNameNode().reconfigurePropertyImpl(
         DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, "20");
@@ -81,22 +87,28 @@ public class TestRefreshNamenodeReplicationConfig {
     cluster.getNameNode().reconfigurePropertyImpl(
         DFSConfigKeys.DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION,
         "24");
+    cluster.getNameNode().reconfigurePropertyImpl(
+        DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY,
+        "180");
 
     assertEquals(20, bm.getMaxReplicationStreams());
     assertEquals(22, bm.getReplicationStreamsHardLimit());
     assertEquals(24, bm.getBlocksReplWorkMultiplier());
+    assertEquals(180, bm.getReconstructionPendingTimeout());
   }
 
   /**
    * Tests to ensure reconfiguration fails with a negative, zero or string value
    * value for each parameter.
    */
-  @Test(timeout = 90000)
+  @Test
+  @Timeout(value = 90)
   public void testReconfigureFailsWithInvalidValues() throws Exception {
     String[] keys = new String[]{
         DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY,
         DFSConfigKeys.DFS_NAMENODE_REPLICATION_STREAMS_HARD_LIMIT_KEY,
-        DFSConfigKeys.DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION
+        DFSConfigKeys.DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION,
+        DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY
     };
 
     // Ensure we cannot set any of the parameters negative
@@ -105,27 +117,30 @@ public class TestRefreshNamenodeReplicationConfig {
           LambdaTestUtils.intercept(ReconfigurationException.class,
               () -> cluster.getNameNode().reconfigurePropertyImpl(key, "-20"));
       assertTrue(e.getCause() instanceof IllegalArgumentException);
-      assertEquals(key+" = '-20' is invalid. It should be a "
-          +"positive, non-zero integer value.", e.getCause().getMessage());
+      assertEquals(
+          key + " = '-20' is invalid. It should be a " + "positive, non-zero integer value.",
+          e.getCause().getMessage());
     }
     // Ensure none of the values were updated from the defaults
     assertEquals(8, bm.getMaxReplicationStreams());
     assertEquals(10, bm.getReplicationStreamsHardLimit());
     assertEquals(12, bm.getBlocksReplWorkMultiplier());
+    assertEquals(300, bm.getReconstructionPendingTimeout());
 
     for (String key : keys) {
       ReconfigurationException e =
           LambdaTestUtils.intercept(ReconfigurationException.class,
               () -> cluster.getNameNode().reconfigurePropertyImpl(key, "0"));
       assertTrue(e.getCause() instanceof IllegalArgumentException);
-      assertEquals(key+" = '0' is invalid. It should be a "
-          +"positive, non-zero integer value.", e.getCause().getMessage());
+      assertEquals(key + " = '0' is invalid. It should be a " + "positive, non-zero integer value.",
+          e.getCause().getMessage());
     }
 
     // Ensure none of the values were updated from the defaults
     assertEquals(8, bm.getMaxReplicationStreams());
     assertEquals(10, bm.getReplicationStreamsHardLimit());
     assertEquals(12, bm.getBlocksReplWorkMultiplier());
+    assertEquals(300, bm.getReconstructionPendingTimeout());
 
     // Ensure none of the parameters can be set to a string value
     for (String key : keys) {
@@ -139,5 +154,6 @@ public class TestRefreshNamenodeReplicationConfig {
     assertEquals(8, bm.getMaxReplicationStreams());
     assertEquals(10, bm.getReplicationStreamsHardLimit());
     assertEquals(12, bm.getBlocksReplWorkMultiplier());
+    assertEquals(300, bm.getReconstructionPendingTimeout());
   }
 }

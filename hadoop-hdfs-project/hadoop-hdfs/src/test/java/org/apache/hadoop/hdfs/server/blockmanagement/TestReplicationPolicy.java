@@ -18,12 +18,13 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOADBYSTORAGETYPE_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -55,6 +56,7 @@ import org.apache.hadoop.hdfs.TestBlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.StatefulBlockInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
@@ -66,18 +68,19 @@ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.Namesystem;
 import org.apache.hadoop.hdfs.server.namenode.TestINodeFile;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 import org.apache.log4j.spi.LoggingEvent;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
 
-@RunWith(Parameterized.class)
+@MethodSource("data")
+@ParameterizedClass
 public class TestReplicationPolicy extends BaseReplicationPolicyTest {
 
   private static final String filename = "/dummyfile.txt";
@@ -85,14 +88,11 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
   private static final long staleInterval =
       DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_DEFAULT;
   private static AtomicLong mockINodeId = new AtomicLong(0);
-  @Rule
-  public ExpectedException exception = ExpectedException.none();
 
   public TestReplicationPolicy(String blockPlacementPolicyClassName) {
     this.blockPlacementPolicy = blockPlacementPolicyClassName;
   }
 
-  @Parameterized.Parameters
   public static Iterable<Object[]> data() {
     return Arrays.asList(new Object[][] {
         { BlockPlacementPolicyDefault.class.getName() },
@@ -842,7 +842,8 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
    * Test for the high priority blocks are processed before the low priority
    * blocks.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testReplicationWithPriority() throws Exception {
     int DFS_NAMENODE_REPLICATION_INTERVAL = 1000;
     int HIGH_PRIORITY = 0;
@@ -873,8 +874,8 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
 
       // Check replication completed successfully. Need not wait till it process
       // all the 100 normal blocks.
-      assertFalse("Not able to clear the element from high priority list",
-          neededReconstruction.iterator(HIGH_PRIORITY).hasNext());
+      assertFalse(neededReconstruction.iterator(HIGH_PRIORITY).hasNext(),
+          "Not able to clear the element from high priority list");
     } finally {
       cluster.shutdown();
     }
@@ -944,11 +945,11 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
       List<List<BlockInfo>> chosenBlocks, int... expectedSizes) {
     int i = 0;
     for(; i < chosenBlocks.size(); i++) {
-      assertEquals("Not returned the expected number for i=" + i,
-          expectedSizes[i], chosenBlocks.get(i).size());
+      assertEquals(expectedSizes[i], chosenBlocks.get(i).size(),
+          "Not returned the expected number for i=" + i);
     }
     for(; i < expectedSizes.length; i++) {
-      assertEquals("Expected size is non-zero for i=" + i, 0, expectedSizes[i]);
+      assertEquals(0, expectedSizes[i], "Expected size is non-zero for i=" + i);
     }
   }
   
@@ -1015,6 +1016,64 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     chosen = ((BlockPlacementPolicyDefault) replicator).chooseReplicaToDelete(
         first, second, excessTypes, rackMap);
     assertEquals(chosen, storages[1]);
+  }
+
+  /**
+   * Test for the chooseReplicaToDelete are processed based on
+   * EC and STRIPED Policy.
+   */
+  @Test
+  public void testStripedChooseReplicaToDelete() throws Exception {
+    List<DatanodeStorageInfo> replicaList = new ArrayList<>();
+    List<DatanodeStorageInfo> candidate = new ArrayList<>();
+    final Map<String, List<DatanodeStorageInfo>> rackMap
+        = new HashMap<String, List<DatanodeStorageInfo>>();
+
+    replicaList.add(storages[0]);
+    replicaList.add(storages[1]);
+    replicaList.add(storages[2]);
+    replicaList.add(storages[4]);
+
+    candidate.add(storages[0]);
+    candidate.add(storages[2]);
+    candidate.add(storages[4]);
+
+    // Refresh the last update time for all the datanodes
+    for (int i = 0; i < dataNodes.length; i++) {
+      DFSTestUtil.resetLastUpdatesWithOffset(dataNodes[i], 0);
+    }
+
+    List<DatanodeStorageInfo> first = new ArrayList<>();
+    List<DatanodeStorageInfo> second = new ArrayList<>();
+    BlockPlacementPolicy policy = getStriptedPolicy();
+    policy.splitNodesWithRack(replicaList, candidate, rackMap, first,
+        second);
+    // storages[0] is in first set as its rack has two replica nodes,
+    // while storages[2] and dataNodes[4] are in second set.
+    assertEquals(1, first.size());
+    assertEquals(2, second.size());
+    List<StorageType> excessTypes = new ArrayList<>();
+    excessTypes.add(StorageType.DEFAULT);
+    DatanodeStorageInfo chosen = ((BlockPlacementPolicyDefault) policy)
+        .chooseReplicaToDelete(first, second, excessTypes, rackMap);
+    // Within all storages, storages[0] is in the rack that has two replica blocks
+    assertEquals(chosen, storages[0]);
+    policy.adjustSetsWithChosenReplica(rackMap, first, second, chosen);
+    assertEquals(0, first.size());
+    assertEquals(2, second.size());
+
+    // Within second set, storages[2] should be next to be deleted in order.
+    excessTypes.add(StorageType.DEFAULT);
+    chosen = ((BlockPlacementPolicyDefault) policy).chooseReplicaToDelete(
+        first, second, excessTypes, rackMap);
+    assertEquals(chosen, storages[2]);
+    policy.adjustSetsWithChosenReplica(rackMap, first, second, chosen);
+    assertEquals(0, first.size());
+    assertEquals(1, second.size());
+
+    chosen = ((BlockPlacementPolicyDefault) policy).chooseReplicaToDelete(
+        first, second, excessTypes, rackMap);
+    assertEquals(chosen, null);
   }
 
   private long calculateRemaining(DatanodeDescriptor dataNode) {
@@ -1234,8 +1293,9 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     
     conf.set(DFSConfigKeys.
         DFS_NAMENODE_INVALIDATE_WORK_PCT_PER_ITERATION, "0.0f");
-    exception.expect(IllegalArgumentException.class);
-    blocksInvalidateWorkPct = DFSUtil.getInvalidateWorkPctPerIteration(conf);
+    assertThrows(IllegalArgumentException.class, () -> {
+      DFSUtil.getInvalidateWorkPctPerIteration(conf);
+    });
   }
   
   /**
@@ -1252,8 +1312,9 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     
     conf.set(DFSConfigKeys.
         DFS_NAMENODE_INVALIDATE_WORK_PCT_PER_ITERATION, "-0.5f");
-    exception.expect(IllegalArgumentException.class);
-    blocksInvalidateWorkPct = DFSUtil.getInvalidateWorkPctPerIteration(conf);
+    assertThrows(IllegalArgumentException.class, () -> {
+      DFSUtil.getInvalidateWorkPctPerIteration(conf);
+    });
   }
   
   /**
@@ -1270,8 +1331,9 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     
     conf.set(DFSConfigKeys.
         DFS_NAMENODE_INVALIDATE_WORK_PCT_PER_ITERATION, "1.5f");
-    exception.expect(IllegalArgumentException.class);
-    blocksInvalidateWorkPct = DFSUtil.getInvalidateWorkPctPerIteration(conf);
+    assertThrows(IllegalArgumentException.class, () -> {
+      DFSUtil.getInvalidateWorkPctPerIteration(conf);
+    });
   }
 
   /**
@@ -1293,11 +1355,13 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     
     conf.set(DFSConfigKeys.
         DFS_NAMENODE_REPLICATION_WORK_MULTIPLIER_PER_ITERATION,"-1");
-    exception.expect(IllegalArgumentException.class);
-    blocksReplWorkMultiplier = DFSUtil.getReplWorkMultiplier(conf);
+    assertThrows(IllegalArgumentException.class, () -> {
+      DFSUtil.getReplWorkMultiplier(conf);
+    });
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testUpdateDoesNotCauseSkippedReplication() {
     LowRedundancyBlocks lowRedundancyBlocks = new LowRedundancyBlocks();
 
@@ -1341,12 +1405,19 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     assertTheChosenBlocks(chosenBlocks, 0, 0, 1, 0, 0);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testAddStoredBlockDoesNotCauseSkippedReplication()
       throws IOException {
     FSNamesystem mockNS = mock(FSNamesystem.class);
     when(mockNS.hasWriteLock()).thenReturn(true);
     when(mockNS.hasReadLock()).thenReturn(true);
+    when(mockNS.hasWriteLock(RwLockMode.GLOBAL)).thenReturn(true);
+    when(mockNS.hasReadLock(RwLockMode.GLOBAL)).thenReturn(true);
+    when(mockNS.hasWriteLock(RwLockMode.BM)).thenReturn(true);
+    when(mockNS.hasReadLock(RwLockMode.BM)).thenReturn(true);
+    when(mockNS.hasWriteLock(RwLockMode.FS)).thenReturn(true);
+    when(mockNS.hasReadLock(RwLockMode.FS)).thenReturn(true);
     BlockManager bm = new BlockManager(mockNS, false, new HdfsConfiguration());
     LowRedundancyBlocks lowRedundancyBlocks = bm.neededReconstruction;
 
@@ -1390,12 +1461,14 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     assertTheChosenBlocks(chosenBlocks, 1, 0, 0, 0, 0);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void
       testConvertLastBlockToUnderConstructionDoesNotCauseSkippedReplication()
           throws IOException {
     Namesystem mockNS = mock(Namesystem.class);
     when(mockNS.hasWriteLock()).thenReturn(true);
+    when(mockNS.hasWriteLock(RwLockMode.BM)).thenReturn(true);
 
     BlockManager bm = new BlockManager(mockNS, false, new HdfsConfiguration());
     LowRedundancyBlocks lowRedundancyBlocks = bm.neededReconstruction;
@@ -1463,7 +1536,8 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     assertTheChosenBlocks(chosenBlocks, 1, 0, 0, 0, 0);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testupdateNeededReplicationsDoesNotCauseSkippedReplication()
       throws IOException {
     Namesystem mockNS = mock(Namesystem.class);
@@ -1524,8 +1598,8 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     targets = chooseTarget(5, dataNodes[2], null, favouredNodes);
     assertEquals(targets.length, 5);
     for (int i = 0; i < targets.length; i++) {
-      assertTrue("Target should be a part of Expected Targets",
-          expectedTargets.contains(targets[i].getDatanodeDescriptor()));
+      assertTrue(expectedTargets.contains(targets[i].getDatanodeDescriptor()),
+          "Target should be a part of Expected Targets");
     }
   }
 
@@ -1544,8 +1618,8 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
           favouredNodes);
       assertEquals(targets.length, 2);
       for (int i = 0; i < targets.length; i++) {
-        assertTrue("Target should be a part of Expected Targets",
-            expectedTargets.contains(targets[i].getDatanodeDescriptor()));
+        assertTrue(expectedTargets.contains(targets[i].getDatanodeDescriptor()),
+            "Target should be a part of Expected Targets");
       }
     } finally {
       ((BlockPlacementPolicyDefault) replicator).setPreferLocalNode(true);
@@ -1647,5 +1721,55 @@ public class TestReplicationPolicy extends BaseReplicationPolicyTest {
     when(node.getXceiverCount()).thenReturn(100);
 
     assertFalse(bppd.excludeNodeByLoad(node));
+  }
+
+  @Test
+  public void testChosenFailureForStorageType() {
+    final LogVerificationAppender appender = new LogVerificationAppender();
+    final Logger logger = Logger.getRootLogger();
+    logger.addAppender(appender);
+
+    DatanodeStorageInfo[] targets = replicator.chooseTarget(filename, 1,
+        dataNodes[0], new ArrayList<DatanodeStorageInfo>(), false, null,
+        BLOCK_SIZE, TestBlockStoragePolicy.POLICY_SUITE.getPolicy(
+            HdfsConstants.StoragePolicy.COLD.value()), null);
+    assertEquals(0, targets.length);
+    assertNotEquals(0,
+        appender.countLinesWithMessage("NO_REQUIRED_STORAGE_TYPE"));
+  }
+
+  @Test
+  public void testReduceChooseTimesIfNOStaleNode() {
+    for(int i = 0; i < 6; i++) {
+      updateHeartbeatWithUsage(dataNodes[i],
+          2 * HdfsServerConstants.MIN_BLOCKS_FOR_WRITE * BLOCK_SIZE, 0L,
+          (HdfsServerConstants.MIN_BLOCKS_FOR_WRITE - 1) * BLOCK_SIZE,
+          0L, 0L, 0L, 0, 0);
+    }
+    assertFalse(dnManager.shouldAvoidStaleDataNodesForWrite());
+    resetHeartbeatForStorages();
+  }
+
+  @Test
+  public void testChosenFailureForNotEnoughStorageSpace() {
+    final LogVerificationAppender appender = new LogVerificationAppender();
+    final Logger logger = Logger.getRootLogger();
+    logger.addAppender(appender);
+
+    // Set all datanode storage remaining space is 1 * BLOCK_SIZE.
+    for(int i = 0; i < dataNodes.length; i++) {
+      updateHeartbeatWithUsage(dataNodes[i], BLOCK_SIZE, 0L, BLOCK_SIZE,
+          0L, 0L, 0L, 0, 0);
+    }
+
+    // Set chooseStorage4Block required the minimum number of blocks is 2.
+    replicator.setMinBlocksForWrite(2);
+    DatanodeStorageInfo[] targets = chooseTarget(1, dataNodes[1],
+        new ArrayList<DatanodeStorageInfo>(), null);
+    assertEquals(0, targets.length);
+    assertNotEquals(0,
+        appender.countLinesWithMessage("NOT_ENOUGH_STORAGE_SPACE"));
+
+    resetHeartbeatForStorages();
   }
 }

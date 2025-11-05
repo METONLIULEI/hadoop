@@ -19,8 +19,8 @@ package org.apache.hadoop.hdfs.server.federation.router;
 
 import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.simulateSlowNamenode;
 import static org.apache.hadoop.util.Time.monotonicNow;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.Iterator;
@@ -50,10 +50,10 @@ import org.apache.hadoop.hdfs.server.federation.store.protocol.DisableNameservic
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.codehaus.jettison.json.JSONObject;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test the behavior when disabling name services.
@@ -65,7 +65,7 @@ public class TestDisableNameservices {
   private static RouterClient routerAdminClient;
   private static ClientProtocol routerProtocol;
 
-  @BeforeClass
+  @BeforeAll
   public static void setUp() throws Exception {
     // Build and start a federated cluster
     cluster = new StateStoreDFSCluster(false, 2);
@@ -131,7 +131,7 @@ public class TestDisableNameservices {
     nn1.getFileSystem().mkdirs(new Path("/dirns1/1"));
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() {
     if (cluster != null) {
       cluster.stopRouter(routerContext);
@@ -140,7 +140,7 @@ public class TestDisableNameservices {
     }
   }
 
-  @After
+  @AfterEach
   public void cleanup() throws IOException {
     Router router = routerContext.getRouter();
     StateStoreService stateStore = router.getStateStore();
@@ -159,10 +159,9 @@ public class TestDisableNameservices {
   public void testWithoutDisabling() throws IOException {
     // ns0 is slow and renewLease should take a long time
     long t0 = monotonicNow();
-    routerProtocol.renewLease("client0");
+    routerProtocol.renewLease("client0", null);
     long t = monotonicNow() - t0;
-    assertTrue("It took too little: " + t + "ms",
-        t > TimeUnit.SECONDS.toMillis(1));
+    assertTrue(t > TimeUnit.SECONDS.toMillis(1), "It took too little: " + t + "ms");
     // Return the results from all subclusters even if slow
     FileSystem routerFs = routerContext.getFileSystem();
     FileStatus[] filesStatus = routerFs.listStatus(new Path("/"));
@@ -178,10 +177,9 @@ public class TestDisableNameservices {
 
     // renewLease should be fast as we are skipping ns0
     long t0 = monotonicNow();
-    routerProtocol.renewLease("client0");
+    routerProtocol.renewLease("client0", null);
     long t = monotonicNow() - t0;
-    assertTrue("It took too long: " + t + "ms",
-        t < TimeUnit.SECONDS.toMillis(1));
+    assertTrue(t < TimeUnit.SECONDS.toMillis(1), "It took too long: " + t + "ms");
     // We should not report anything from ns0
     FileSystem routerFs = routerContext.getFileSystem();
 

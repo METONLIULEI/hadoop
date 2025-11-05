@@ -18,7 +18,6 @@
 
 package org.apache.hadoop.hdfs.server.federation.router;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileSystem;
@@ -40,9 +39,9 @@ import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.LambdaTestUtils;
 import org.apache.hadoop.tools.GetUserMappingsProtocol;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,16 +56,18 @@ import java.io.UnsupportedEncodingException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -120,13 +121,13 @@ public class TestRouterUserMappings {
       LOG.info("Getting groups in MockUnixGroupsMapping");
       String g1 = user + (10 * i + 1);
       String g2 = user + (10 * i + 2);
-      Set<String> s = Sets.newHashSet(g1, g2);
+      Set<String> s = new HashSet<>(Arrays.asList(g1, g2));
       i++;
       return s;
     }
   }
 
-  @Before
+  @BeforeEach
   public void setUp() {
     conf = new Configuration(false);
     conf.setClass("hadoop.security.group.mapping",
@@ -294,8 +295,8 @@ public class TestRouterUserMappings {
     PrintStream oldOut = System.out;
     System.setOut(new PrintStream(out));
     new GetGroups(config).run(new String[]{username});
-    assertTrue("Wrong output: " + out,
-        out.toString().startsWith(username + " : " + username));
+    assertTrue(out.toString().startsWith(username + " : " + username),
+        "Wrong output: " + out);
     out.reset();
     System.setOut(oldOut);
   }
@@ -331,7 +332,7 @@ public class TestRouterUserMappings {
     List<String> g2 = groups.getGroups(user);
     LOG.info("Group 2 :{}", g2);
     for(int i = 0; i < g2.size(); i++) {
-      assertEquals("Should be same group ", g1.get(i), g2.get(i));
+      assertEquals(g1.get(i), g2.get(i), "Should be same group ");
     }
 
     // set fs.defaultFS point to router(s).
@@ -345,8 +346,8 @@ public class TestRouterUserMappings {
     List<String> g3 = groups.getGroups(user);
     LOG.info("Group 3:{}", g3);
     for(int i = 0; i < g3.size(); i++) {
-      assertNotEquals("Should be different group: "
-          + g1.get(i) + " and " + g3.get(i), g1.get(i), g3.get(i));
+      assertNotEquals(g1.get(i), g3.get(i), "Should be different group: "
+          + g1.get(i) + " and " + g3.get(i));
     }
 
     // Test timeout
@@ -396,7 +397,7 @@ public class TestRouterUserMappings {
     return tmp;
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     if (router != null) {
       router.shutDown();

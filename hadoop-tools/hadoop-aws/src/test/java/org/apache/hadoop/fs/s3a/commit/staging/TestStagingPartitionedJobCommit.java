@@ -24,7 +24,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.UUID;
 
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalFileSystem;
@@ -32,13 +33,15 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.s3a.MockS3AFileSystem;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.fs.s3a.commit.PathCommitException;
+import org.apache.hadoop.fs.s3a.commit.files.UploadEtag;
 import org.apache.hadoop.fs.s3a.commit.files.PendingSet;
 import org.apache.hadoop.fs.s3a.commit.files.SinglePendingCommit;
-import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.fs.s3a.commit.impl.CommitContext;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.reset;
 import static org.apache.hadoop.fs.s3a.commit.staging.StagingTestBase.*;
 import static org.apache.hadoop.fs.s3a.commit.CommitConstants.*;
 
@@ -46,6 +49,7 @@ import static org.apache.hadoop.fs.s3a.commit.CommitConstants.*;
 public class TestStagingPartitionedJobCommit
     extends StagingTestBase.JobCommitterTest<PartitionedStagingCommitter> {
 
+  @BeforeEach
   @Override
   public void setupJob() throws Exception {
     super.setupJob();
@@ -67,7 +71,7 @@ public class TestStagingPartitionedJobCommit
 
     private PartitionedStagingCommitterForTesting(TaskAttemptContext context)
         throws IOException {
-      super(StagingTestBase.outputPath, context);
+      super(StagingTestBase.getOutputPath(), context);
     }
 
     /**
@@ -75,14 +79,15 @@ public class TestStagingPartitionedJobCommit
      * This is quite complex as the mock pending uploads need to be saved
      * to a filesystem for the next stage of the commit process.
      * To simulate multiple commit, more than one .pendingset file is created,
-     * @param context job context
+     * @param commitContext job context
      * @return an active commit containing a list of paths to valid pending set
      * file.
      * @throws IOException IO failure
      */
+    @SuppressWarnings("CollectionDeclaredAsConcreteClass")
     @Override
     protected ActiveCommit listPendingUploadsToCommit(
-        JobContext context) throws IOException {
+        CommitContext commitContext) throws IOException {
 
       LocalFileSystem localFS = FileSystem.getLocal(getConf());
       ActiveCommit activeCommit = new ActiveCommit(localFS,
@@ -99,9 +104,9 @@ public class TestStagingPartitionedJobCommit
           commit.setDestinationKey(key);
           commit.setUri("s3a://" + BUCKET + "/" + key);
           commit.setUploadId(uploadId);
-          ArrayList<String> etags = new ArrayList<>();
-          etags.add("tag1");
-          commit.setEtags(etags);
+          ArrayList<UploadEtag> uploadEtags = new ArrayList<>();
+          uploadEtags.add(new UploadEtag("tag1", null, null));
+          commit.setEtags(uploadEtags);
           pendingSet.add(commit);
           // register the upload so commit operations are not rejected
           getMockResults().addUpload(uploadId, key);
@@ -109,17 +114,17 @@ public class TestStagingPartitionedJobCommit
         File file = File.createTempFile("staging", ".pendingset");
         file.deleteOnExit();
         Path path = new Path(file.toURI());
-        pendingSet.save(localFS, path, true);
+        pendingSet.save(localFS, path, PendingSet.serializer());
         activeCommit.add(localFS.getFileStatus(path));
       }
       return activeCommit;
     }
 
     @Override
-    protected void abortJobInternal(JobContext context,
+    protected void abortJobInternal(CommitContext commitContext,
         boolean suppressExceptions) throws IOException {
       this.aborted = true;
-      super.abortJobInternal(context, suppressExceptions);
+      super.abortJobInternal(commitContext, suppressExceptions);
     }
   }
 
@@ -242,7 +247,7 @@ public class TestStagingPartitionedJobCommit
     pathsExist(mockS3, "dateint=20161116/hour=14");
     when(mockS3
         .delete(
-            new Path(outputPath, "dateint=20161116/hour=14"),
+            new Path(getOutputPath(), "dateint=20161116/hour=14"),
             true))
         .thenThrow(new PathCommitException("fake",
             "Fake IOException for delete"));
@@ -253,8 +258,8 @@ public class TestStagingPartitionedJobCommit
 
     verifyReplaceCommitActions(mockS3);
     verifyDeleted(mockS3, "dateint=20161116/hour=14");
-    assertTrue("Should have aborted",
-        ((PartitionedStagingCommitterForTesting) committer).aborted);
+    assertTrue(((PartitionedStagingCommitterForTesting) committer).aborted,
+        "Should have aborted");
     verifyCompletion(mockS3);
   }
 

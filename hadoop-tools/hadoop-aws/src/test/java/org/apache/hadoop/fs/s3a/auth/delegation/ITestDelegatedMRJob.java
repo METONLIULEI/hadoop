@@ -20,11 +20,13 @@ import java.net.URI;
 import java.util.Arrays;
 import java.util.Collection;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +35,7 @@ import org.apache.hadoop.examples.WordCount;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.s3a.Constants;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
@@ -49,16 +52,19 @@ import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 
 import static java.util.Objects.requireNonNull;
-import static org.apache.hadoop.fs.s3a.Constants.S3GUARD_METASTORE_NULL;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.assumeSessionTestsEnabled;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.deployService;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.disableFilesystemCaching;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.getTestPropertyInt;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.removeBaseAndBucketOverrides;
 import static org.apache.hadoop.fs.s3a.S3ATestUtils.terminateService;
 import static org.apache.hadoop.fs.s3a.auth.RoleTestUtils.probeForAssumedRoleARN;
 import static org.apache.hadoop.fs.s3a.auth.delegation.DelegationConstants.*;
 import static org.apache.hadoop.fs.s3a.auth.delegation.MiniKerberizedHadoopCluster.assertSecurityEnabled;
 import static org.apache.hadoop.fs.s3a.auth.delegation.MiniKerberizedHadoopCluster.closeUserFileSystems;
+import static org.apache.hadoop.fs.s3a.test.PublicDatasetTestUtils.getOrcData;
+import static org.apache.hadoop.fs.s3a.test.PublicDatasetTestUtils.isUsingDefaultExternalDataFile;
+import static org.apache.hadoop.fs.s3a.test.PublicDatasetTestUtils.requireAnonymousDataPath;
 
 /**
  * Submit a job with S3 delegation tokens.
@@ -82,7 +88,8 @@ import static org.apache.hadoop.fs.s3a.auth.delegation.MiniKerberizedHadoopClust
  * This is needed to verify that job resources have their tokens extracted
  * too.
  */
-@RunWith(Parameterized.class)
+@ParameterizedClass(name="token={0}")
+@MethodSource("params")
 public class ITestDelegatedMRJob extends AbstractDelegationIT {
 
   private static final Logger LOG =
@@ -107,16 +114,22 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
 
   private Path destPath;
 
-  private static final Path EXTRA_JOB_RESOURCE_PATH
-      = new Path("s3a://osm-pds/planet/planet-latest.orc");
+  /**
+   * Path of the extra job resource; set up in
+   * {@link #createConfiguration()}.
+   */
+  private Path extraJobResourcePath;
 
-  public static final URI jobResource = EXTRA_JOB_RESOURCE_PATH.toUri();
+  /**
+   * URI of the extra job resource; set up in
+   * {@link #createConfiguration()}.
+   */
+  private URI jobResourceUri;
 
   /**
    * Test array for parameterized test runs.
    * @return a list of parameter tuples.
    */
-  @Parameterized.Parameters
   public static Collection<Object[]> params() {
     return Arrays.asList(new Object[][]{
         {"session", DELEGATION_TOKEN_SESSION_BINDING, SESSION_TOKEN_KIND},
@@ -134,7 +147,7 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
   /***
    * Set up the clusters.
    */
-  @BeforeClass
+  @BeforeAll
   public static void setupCluster() throws Exception {
     JobConf conf = new JobConf();
     assumeSessionTestsEnabled(conf);
@@ -145,7 +158,7 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
   /**
    * Tear down the cluster.
    */
-  @AfterClass
+  @AfterAll
   public static void teardownCluster() throws Exception {
     cluster = terminateService(cluster);
   }
@@ -162,11 +175,9 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
     conf.setInt(YarnConfiguration.RESOURCEMANAGER_CONNECT_RETRY_INTERVAL_MS,
         10_000);
 
-    // turn off DDB for the job resource bucket
-    String host = jobResource.getHost();
-    conf.set(
-        String.format("fs.s3a.bucket.%s.metadatastore.impl", host),
-        S3GUARD_METASTORE_NULL);
+    extraJobResourcePath = getOrcData(conf);
+    jobResourceUri = extraJobResourcePath.toUri();
+    String host = jobResourceUri.getHost();
     // and fix to the main endpoint if the caller has moved
     conf.set(
         String.format("fs.s3a.bucket.%s.endpoint", host), "");
@@ -182,6 +193,7 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
   }
 
   @Override
+  @BeforeEach
   public void setup() throws Exception {
     cluster.loginPrincipal();
     super.setup();
@@ -204,6 +216,7 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
 
   }
 
+  @AfterEach
   @Override
   public void teardown() throws Exception {
     describe("Teardown operations");
@@ -234,21 +247,25 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
 
   @Test
   public void testCommonCrawlLookup() throws Throwable {
-    FileSystem resourceFS = EXTRA_JOB_RESOURCE_PATH.getFileSystem(
+    FileSystem resourceFS = extraJobResourcePath.getFileSystem(
         getConfiguration());
-    FileStatus status = resourceFS.getFileStatus(EXTRA_JOB_RESOURCE_PATH);
+    FileStatus status = resourceFS.getFileStatus(extraJobResourcePath);
     LOG.info("Extra job resource is {}", status);
-    assertTrue("Not encrypted: " + status, status.isEncrypted());
+    assertTrue(status.isEncrypted(), "Not encrypted: " + status);
   }
 
   @Test
   public void testJobSubmissionCollectsTokens() throws Exception {
     describe("Mock Job test");
     JobConf conf = new JobConf(getConfiguration());
+    if (isUsingDefaultExternalDataFile(conf)) {
+      removeBaseAndBucketOverrides(conf,
+          Constants.ENDPOINT);
+    }
 
-    // the input here is the landsat file; which lets
+    // the input here is the external file; which lets
     // us differentiate source URI from dest URI
-    Path input = new Path(DEFAULT_CSVTEST_FILE);
+    Path input = requireAnonymousDataPath(getConfiguration());
     final FileSystem sourceFS = input.getFileSystem(conf);
 
 
@@ -277,7 +294,7 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
     // This is to actually stress the terasort code for which
     // the yarn ResourceLocalizationService was having problems with
     // fetching resources from.
-    URI partitionUri = new URI(EXTRA_JOB_RESOURCE_PATH.toString() +
+    URI partitionUri = new URI(extraJobResourcePath.toString() +
         "#_partition.lst");
     job.addCacheFile(partitionUri);
 
@@ -285,10 +302,8 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
 
     job.submit();
     final JobStatus status = job.getStatus();
-    assertEquals("not a mock job",
-        MockJob.NAME, status.getSchedulingInfo());
-    assertEquals("Job State",
-        JobStatus.State.RUNNING, status.getState());
+    assertEquals(MockJob.NAME, status.getSchedulingInfo(), "not a mock job");
+    assertEquals(JobStatus.State.RUNNING, status.getState(), "Job State");
 
     final Credentials submittedCredentials =
         requireNonNull(job.getSubmittedCredentials(),
@@ -307,7 +322,7 @@ public class ITestDelegatedMRJob extends AbstractDelegationIT {
     // look up the destination token
     lookupToken(submittedCredentials, fs.getUri(), tokenKind);
     lookupToken(submittedCredentials,
-        EXTRA_JOB_RESOURCE_PATH.getFileSystem(conf).getUri(), tokenKind);
+        extraJobResourcePath.getFileSystem(conf).getUri(), tokenKind);
   }
 
 }

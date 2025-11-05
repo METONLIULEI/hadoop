@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.preemption;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
@@ -28,6 +28,7 @@ import org.apache.hadoop.yarn.util.resource.Resources;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -55,8 +56,9 @@ public class PreemptionManager {
             new PreemptableQueue(parentEntity));
       }
 
-      if (current.getChildQueues() != null) {
-        for (CSQueue child : current.getChildQueues()) {
+      List<CSQueue> childQueues = current.getChildQueuesByTryLock();
+      if (childQueues != null) {
+        for (CSQueue child : childQueues) {
           refreshQueues(current, child);
         }
       }

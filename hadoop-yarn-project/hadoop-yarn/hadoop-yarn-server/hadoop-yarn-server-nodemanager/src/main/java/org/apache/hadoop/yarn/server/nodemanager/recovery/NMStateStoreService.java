@@ -186,7 +186,7 @@ public abstract class NMStateStoreService extends AbstractService {
 
     @Override
     public String toString() {
-      return new StringBuffer("Status: ").append(getStatus())
+      return new StringBuilder("Status: ").append(getStatus())
           .append(", Exit code: ").append(exitCode)
           .append(", Version: ").append(version)
           .append(", Start Time: ").append(startTime)
@@ -785,6 +785,15 @@ public abstract class NMStateStoreService extends AbstractService {
   public abstract void storeAssignedResources(Container container,
       String resourceType, List<Serializable> assignedResources)
       throws IOException;
+
+  /**
+   * Delete the assigned resources of a container of specific resourceType.
+   * @param containerId Container Id
+   * @param resourceType resource Type
+   * @throws IOException while releasing resources
+   */
+  public void releaseAssignedResources(ContainerId containerId, String resourceType)
+      throws IOException {}
 
   protected abstract void initStorage(Configuration conf) throws IOException;
 

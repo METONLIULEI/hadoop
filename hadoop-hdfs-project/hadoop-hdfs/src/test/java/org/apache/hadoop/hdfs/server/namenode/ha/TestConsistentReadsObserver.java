@@ -18,9 +18,13 @@
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_STATE_CONTEXT_ENABLED_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.apache.hadoop.test.MetricsAsserts.getLongCounter;
+import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -28,6 +32,7 @@ import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -48,13 +53,15 @@ import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.RpcScheduler;
 import org.apache.hadoop.ipc.Schedulable;
 import org.apache.hadoop.ipc.StandbyException;
+import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,7 +80,7 @@ public class TestConsistentReadsObserver {
 
   private final Path testPath= new Path("/TestConsistentReadsObserver");
 
-  @BeforeClass
+  @BeforeAll
   public static void startUpCluster() throws Exception {
     conf = new Configuration();
     conf.setBoolean(DFS_NAMENODE_STATE_CONTEXT_ENABLED_KEY, true);
@@ -85,17 +92,17 @@ public class TestConsistentReadsObserver {
     dfsCluster = qjmhaCluster.getDfsCluster();
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     dfs = setObserverRead(true);
   }
 
-  @After
+  @AfterEach
   public void cleanUp() throws IOException {
     dfs.delete(testPath, true);
   }
 
-  @AfterClass
+  @AfterAll
   public static void shutDownCluster() throws IOException {
     if (qjmhaCluster != null) {
       qjmhaCluster.shutdown();
@@ -104,8 +111,6 @@ public class TestConsistentReadsObserver {
 
   @Test
   public void testRequeueCall() throws Exception {
-    setObserverRead(true);
-
     // Update the configuration just for the observer, by enabling
     // IPC backoff and using the test scheduler class, which starts to backoff
     // after certain number of calls.
@@ -121,6 +126,7 @@ public class TestConsistentReadsObserver {
         + CommonConfigurationKeys.IPC_BACKOFF_ENABLE, true);
 
     NameNodeAdapter.getRpcServer(nn).refreshCallQueue(configuration);
+    assertThat(NameNodeAdapter.getRpcServer(nn).getTotalRequests()).isGreaterThan(0);
 
     dfs.create(testPath, (short)1).close();
     assertSentTo(0);
@@ -130,6 +136,7 @@ public class TestConsistentReadsObserver {
     // be triggered and client should retry active NN.
     dfs.getFileStatus(testPath);
     assertSentTo(0);
+    assertThat(NameNodeAdapter.getRpcServer(nn).getTotalRequests()).isGreaterThan(1);
     // reset the original call queue
     NameNodeAdapter.getRpcServer(nn).refreshCallQueue(originalConf);
   }
@@ -243,10 +250,12 @@ public class TestConsistentReadsObserver {
     testMsync(true, 5);
   }
 
-  @Test(expected = TimeoutException.class)
+  @Test
   public void testAutoMsyncLongPeriod() throws Exception {
+    assertThrows(TimeoutException.class, () -> {
+      testMsync(true, Long.MAX_VALUE);
+    });
     // This should fail since the auto-msync is never activated
-    testMsync(true, Long.MAX_VALUE);
   }
 
   // A new client should first contact the active, before using an observer,
@@ -384,20 +393,20 @@ public class TestConsistentReadsObserver {
       fail("listStatus should have thrown exception");
     } catch (RemoteException re) {
       IOException e = re.unwrapRemoteException();
-      assertTrue("should have thrown StandbyException but got "
-              + e.getClass().getSimpleName(),
-          e instanceof StandbyException);
+      assertTrue(e instanceof StandbyException,
+          "should have thrown StandbyException but got " + e.getClass().getSimpleName());
     }
   }
 
-  @Test(timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testMsyncFileContext() throws Exception {
     NameNode nn0 = dfsCluster.getNameNode(0);
     NameNode nn2 = dfsCluster.getNameNode(2);
     HAServiceStatus st = nn0.getRpcServer().getServiceStatus();
-    assertEquals("nn0 is not active", HAServiceState.ACTIVE, st.getState());
+    assertEquals(HAServiceState.ACTIVE, st.getState(), "nn0 is not active");
     st = nn2.getRpcServer().getServiceStatus();
-    assertEquals("nn2 is not observer", HAServiceState.OBSERVER, st.getState());
+    assertEquals(HAServiceState.OBSERVER, st.getState(), "nn2 is not observer");
 
     FileContext fc = FileContext.getFileContext(conf);
     // initialize observer proxy for FileContext
@@ -419,9 +428,59 @@ public class TestConsistentReadsObserver {
     }
   }
 
+  @Test
+  public void testRpcQueueTimeNumOpsMetrics() throws Exception {
+    // 0 == not completed, 1 == succeeded, -1 == failed
+    AtomicInteger readStatus = new AtomicInteger(0);
+
+    // Making an uncoordinated call, which initialize the proxy
+    // to Observer node.
+    dfs.getClient().getHAServiceState();
+    dfs.mkdir(testPath, FsPermission.getDefault());
+    assertSentTo(0);
+
+    Thread reader = new Thread(new Runnable() {
+      @Override
+      public void run() {
+        try {
+          // this read will block until roll and tail edits happen.
+          dfs.getFileStatus(testPath);
+          readStatus.set(1);
+        } catch (IOException e) {
+          e.printStackTrace();
+          readStatus.set(-1);
+        }
+      }
+    });
+
+    reader.start();
+    // the reader is still blocking, not succeeded yet.
+    assertEquals(0, readStatus.get());
+    dfsCluster.rollEditLogAndTail(0);
+    // wait a while for all the change to be done
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return readStatus.get() != 0;
+      }
+    }, 100, 10000);
+    // the reader should have succeed.
+    assertEquals(1, readStatus.get());
+
+    final int observerIdx = 2;
+    NameNode observerNN = dfsCluster.getNameNode(observerIdx);
+    MetricsRecordBuilder rpcMetrics =
+        getMetrics("RpcActivityForPort"
+            + observerNN.getNameNodeAddress().getPort());
+    long rpcQueueTimeNumOps = getLongCounter("RpcQueueTimeNumOps", rpcMetrics);
+    long rpcProcessingTimeNumOps = getLongCounter("RpcProcessingTimeNumOps",
+        rpcMetrics);
+    assertEquals(rpcQueueTimeNumOps, rpcProcessingTimeNumOps);
+  }
+
   private void assertSentTo(int nnIdx) throws IOException {
-    assertTrue("Request was not sent to the expected namenode " + nnIdx,
-        HATestUtil.isSentToAnyOfNameNodes(dfs, dfsCluster, nnIdx));
+    assertTrue(HATestUtil.isSentToAnyOfNameNodes(dfs, dfsCluster, nnIdx),
+        "Request was not sent to the expected namenode " + nnIdx);
   }
 
   private DistributedFileSystem setObserverRead(boolean flag) throws Exception {

@@ -24,6 +24,8 @@ import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.INodeId;
 import org.apache.hadoop.hdfs.util.LightWeightHashSet;
 import org.apache.hadoop.hdfs.util.LightWeightLinkedSet;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.HashMap;
@@ -32,8 +34,7 @@ import java.util.Map;
 import java.util.List;
 import java.util.Iterator;
 import java.util.LinkedList;
-import java.util.ArrayDeque;
-import java.util.Queue;
+import java.util.stream.Collectors;
 
 /**
  * This class implements the logic to track decommissioning and entering
@@ -71,16 +72,10 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
       outOfServiceNodeBlocks = new HashMap<>();
 
   /**
-   * Any nodes where decommission or maintenance has been cancelled are added
-   * to this queue for later processing.
-   */
-  private final Queue<DatanodeDescriptor> cancelledNodes = new ArrayDeque<>();
-
-  /**
-   * The numbe of blocks to process when moving blocks to pendingReplication
+   * The number of blocks to process when moving blocks to pendingReplication
    * before releasing and reclaiming the namenode lock.
    */
-  private int blocksPerLock;
+  private volatile int blocksPerLock;
 
   /**
    * The number of blocks that have been checked on this tick.
@@ -89,7 +84,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
   /**
    * The maximum number of blocks to hold in PendingRep at any time.
    */
-  private int pendingRepLimit;
+  private volatile int pendingRepLimit;
 
   /**
    * The list of blocks which have been placed onto the replication queue
@@ -149,8 +144,8 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
    */
   @Override
   public void stopTrackingNode(DatanodeDescriptor dn) {
-    pendingNodes.remove(dn);
-    cancelledNodes.add(dn);
+    getPendingNodes().remove(dn);
+    getCancelledNodes().add(dn);
   }
 
   @Override
@@ -176,7 +171,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
     numBlocksChecked = 0;
     // Check decommission or maintenance progress.
     try {
-      namesystem.writeLock();
+      namesystem.writeLock(RwLockMode.BM);
       try {
         /**
          * Other threads can modify the pendingNode list and the cancelled
@@ -189,9 +184,32 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
          * node will be removed from tracking by the pending cancel.
          */
         processCancelledNodes();
+
+        // Having more nodes decommissioning than can be tracked will impact decommissioning
+        // performance due to queueing delay
+        int numTrackedNodes = outOfServiceNodeBlocks.size();
+        int numQueuedNodes = getPendingNodes().size();
+        int numDecommissioningNodes = numTrackedNodes + numQueuedNodes;
+        if (numDecommissioningNodes > maxConcurrentTrackedNodes) {
+          LOG.warn(
+              "{} nodes are decommissioning but only {} nodes will be tracked at a time. "
+                  + "{} nodes are currently queued waiting to be decommissioned.",
+              numDecommissioningNodes, maxConcurrentTrackedNodes, numQueuedNodes);
+
+          // Re-queue unhealthy nodes to make space for decommissioning healthy nodes
+          final List<DatanodeDescriptor> unhealthyDns = outOfServiceNodeBlocks.keySet().stream()
+              .filter(dn -> !blockManager.isNodeHealthyForDecommissionOrMaintenance(dn))
+              .collect(Collectors.toList());
+          getUnhealthyNodesToRequeue(unhealthyDns, numDecommissioningNodes).forEach(dn -> {
+            getPendingNodes().add(dn);
+            outOfServiceNodeBlocks.remove(dn);
+            pendingRep.remove(dn);
+          });
+        }
+
         processPendingNodes();
       } finally {
-        namesystem.writeUnlock();
+        namesystem.writeUnlock(RwLockMode.BM, "DatanodeAdminMonitorV2Thread");
       }
       // After processing the above, various parts of the check() method will
       // take and drop the read / write lock as needed. Aside from the
@@ -207,8 +225,8 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
       LOG.info("Checked {} blocks this tick. {} nodes are now " +
           "in maintenance or transitioning state. {} nodes pending. {} " +
           "nodes waiting to be cancelled.",
-          numBlocksChecked, outOfServiceNodeBlocks.size(), pendingNodes.size(),
-          cancelledNodes.size());
+          numBlocksChecked, outOfServiceNodeBlocks.size(), getPendingNodes().size(),
+          getCancelledNodes().size());
     }
   }
 
@@ -220,10 +238,10 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
    * the pendingNodes list from being modified externally.
    */
   private void processPendingNodes() {
-    while (!pendingNodes.isEmpty() &&
+    while (!getPendingNodes().isEmpty() &&
         (maxConcurrentTrackedNodes == 0 ||
             outOfServiceNodeBlocks.size() < maxConcurrentTrackedNodes)) {
-      outOfServiceNodeBlocks.put(pendingNodes.poll(), null);
+      outOfServiceNodeBlocks.put(getPendingNodes().poll(), null);
     }
   }
 
@@ -235,8 +253,8 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
    * write lock to prevent the cancelledNodes list being modified externally.
    */
   private void processCancelledNodes() {
-    while(!cancelledNodes.isEmpty()) {
-      DatanodeDescriptor dn = cancelledNodes.poll();
+    while(!getCancelledNodes().isEmpty()) {
+      DatanodeDescriptor dn = getCancelledNodes().poll();
       outOfServiceNodeBlocks.remove(dn);
       pendingRep.remove(dn);
     }
@@ -309,7 +327,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
    */
   private void processMaintenanceNodes() {
     // Check for any maintenance state nodes which need to be expired
-    namesystem.writeLock();
+    namesystem.writeLock(RwLockMode.GLOBAL);
     try {
       for (DatanodeDescriptor dn : outOfServiceNodeBlocks.keySet()) {
         if (dn.isMaintenance() && dn.maintenanceExpired()) {
@@ -321,12 +339,12 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
           // which added the node to the cancelled list. Therefore expired
           // maintenance nodes do not need to be added to the toRemove list.
           dnAdmin.stopMaintenance(dn);
-          namesystem.writeUnlock();
-          namesystem.writeLock();
+          namesystem.writeUnlock(RwLockMode.GLOBAL, "processMaintenanceNodes");
+          namesystem.writeLock(RwLockMode.GLOBAL);
         }
       }
     } finally {
-      namesystem.writeUnlock();
+      namesystem.writeUnlock(RwLockMode.GLOBAL, "processMaintenanceNodes");
     }
   }
 
@@ -343,7 +361,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
       // taking the write lock at all.
       return;
     }
-    namesystem.writeLock();
+    namesystem.writeLock(RwLockMode.BM);
     try {
       for (DatanodeDescriptor dn : toRemove) {
         final boolean isHealthy =
@@ -385,7 +403,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
         }
       }
     } finally {
-      namesystem.writeUnlock();
+      namesystem.writeUnlock(RwLockMode.BM, "processCompletedNodes");
     }
   }
 
@@ -469,7 +487,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
       return;
     }
 
-    namesystem.writeLock();
+    namesystem.writeLock(RwLockMode.GLOBAL);
     try {
       long repQueueSize = blockManager.getLowRedundancyBlocksCount();
 
@@ -507,8 +525,8 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
           // replication
           if (blocksProcessed >= blocksPerLock) {
             blocksProcessed = 0;
-            namesystem.writeUnlock();
-            namesystem.writeLock();
+            namesystem.writeUnlock(RwLockMode.GLOBAL, "moveBlocksToPending");
+            namesystem.writeLock(RwLockMode.GLOBAL);
           }
           blocksProcessed++;
           if (nextBlockAddedToPending(blockIt, dn)) {
@@ -529,7 +547,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
         }
       }
     } finally {
-      namesystem.writeUnlock();
+      namesystem.writeUnlock(RwLockMode.GLOBAL, "moveBlocksToPending");
     }
     LOG.debug("{} blocks are now pending replication", pendingCount);
   }
@@ -609,15 +627,16 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
     }
 
     DatanodeStorageInfo[] storage;
-    namesystem.readLock();
+    namesystem.readLock(RwLockMode.BM);
     try {
       storage = dn.getStorageInfos();
     } finally {
-      namesystem.readUnlock();
+      namesystem.readUnlock(RwLockMode.BM, "scanDatanodeStorage");
     }
 
     for (DatanodeStorageInfo s : storage) {
-      namesystem.readLock();
+      // isBlockReplicatedOk involves FS.
+      namesystem.readLock(RwLockMode.GLOBAL);
       try {
         // As the lock is dropped and re-taken between each storage, we need
         // to check the storage is still present before processing it, as it
@@ -643,7 +662,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
           numBlocksChecked++;
         }
       } finally {
-        namesystem.readUnlock();
+        namesystem.readUnlock(RwLockMode.GLOBAL, "scanDatanodeStorage");
       }
     }
   }
@@ -666,7 +685,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
    * namenode write lock while it runs.
    */
   private void processPendingReplication() {
-    namesystem.writeLock();
+    namesystem.writeLock(RwLockMode.GLOBAL);
     try {
       for (Iterator<Map.Entry<DatanodeDescriptor, List<BlockInfo>>>
            entIt = pendingRep.entrySet().iterator(); entIt.hasNext();) {
@@ -698,7 +717,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
             suspectBlocks.getOutOfServiceBlockCount());
       }
     } finally {
-      namesystem.writeUnlock();
+      namesystem.writeUnlock(RwLockMode.GLOBAL, "processPendingReplication");
     }
   }
 
@@ -721,7 +740,7 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
    * @return
    */
   private boolean isBlockReplicatedOk(DatanodeDescriptor datanode,
-      BlockInfo block, Boolean scheduleReconStruction,
+      BlockInfo block, boolean scheduleReconStruction,
       BlockStats suspectBlocks) {
     if (blockManager.blocksMap.getStoredBlock(block) == null) {
       LOG.trace("Removing unknown block {}", block);
@@ -743,19 +762,8 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
     boolean isDecommission = datanode.isDecommissionInProgress();
     boolean isMaintenance = datanode.isEnteringMaintenance();
 
-    boolean neededReconstruction = isDecommission ?
-        blockManager.isNeededReconstruction(block, num) :
-        blockManager.isNeededReconstructionForMaintenance(block, num);
-    if (neededReconstruction && scheduleReconStruction) {
-      if (!blockManager.neededReconstruction.contains(block) &&
-          blockManager.pendingReconstruction.getNumReplicas(block) == 0 &&
-          blockManager.isPopulatingReplQueues()) {
-        // Process these blocks only when active NN is out of safe mode.
-        blockManager.neededReconstruction.add(block,
-            liveReplicas, num.readOnlyReplicas(),
-            num.outOfServiceReplicas(),
-            blockManager.getExpectedRedundancyNum(block));
-      }
+    if (scheduleReconStruction) {
+      addReconstructionBlockIfNeeded(isDecommission, block, num, liveReplicas);
     }
 
     if (suspectBlocks != null) {
@@ -783,6 +791,26 @@ public class DatanodeAdminBackoffMonitor extends DatanodeAdminMonitorBase
       return true;
     }
     return false;
+  }
+
+  @VisibleForTesting
+  @Override
+  public int getPendingRepLimit() {
+    return pendingRepLimit;
+  }
+
+  public void setPendingRepLimit(int pendingRepLimit) {
+    this.pendingRepLimit = pendingRepLimit;
+  }
+
+  @VisibleForTesting
+  @Override
+  public int getBlocksPerLock() {
+    return blocksPerLock;
+  }
+
+  public void setBlocksPerLock(int blocksPerLock) {
+    this.blocksPerLock = blocksPerLock;
   }
 
   static class BlockStats {

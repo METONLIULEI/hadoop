@@ -18,7 +18,7 @@
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
 import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration.PREFIX;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -43,8 +43,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaS
 import org.apache.hadoop.yarn.server.resourcemanager.security.AppPriorityACLsManager;
 import org.apache.hadoop.yarn.util.ControlledClock;
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestCSMaxRunningAppsEnforcer {
   private CapacitySchedulerQueueManager queueManager;
@@ -56,7 +56,7 @@ public class TestCSMaxRunningAppsEnforcer {
   private ActivitiesManager activitiesManager;
   private CapacitySchedulerConfiguration csConfig;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     csConfig = new CapacitySchedulerConfiguration();
     rmContext = mock(RMContext.class);
@@ -92,18 +92,26 @@ public class TestCSMaxRunningAppsEnforcer {
     when(preemptionManager.getKillableResource(any(), anyString()))
         .thenReturn(Resource.newInstance(0, 0));
     when(scheduler.getPreemptionManager()).thenReturn(preemptionManager);
+    when(scheduler.getActivitiesManager()).thenReturn(activitiesManager);
     queueManager = new CapacitySchedulerQueueManager(csConfig, labelManager,
         appPriorityACLManager);
     queueManager.setCapacitySchedulerContext(scheduler);
+    when(scheduler.getCapacitySchedulerQueueManager()).thenReturn(queueManager);
+    CapacitySchedulerQueueContext queueContext = new CapacitySchedulerQueueContext(scheduler);
+    when(scheduler.getQueueContext()).thenReturn(queueContext);
     queueManager.initializeQueues(csConfig);
   }
 
   private void setupQueues(CapacitySchedulerConfiguration config) {
-    config.setQueues(CapacitySchedulerConfiguration.ROOT,
-        new String[] {"queue1", "queue2"});
-    config.setQueues("root.queue1", new String[] {"subqueue1", "subqueue2"});
-    config.setQueues("root.queue1.subqueue1", new String[] {"leaf1"});
-    config.setQueues("root.queue1.subqueue2", new String[] {"leaf2"});
+    QueuePath root = new QueuePath(CapacitySchedulerConfiguration.ROOT);
+    QueuePath queue1 = new QueuePath("root.queue1");
+    QueuePath subqueue1 = new QueuePath("root.queue1.subqueue1");
+    QueuePath subqueue2 = new QueuePath("root.queue1.subqueue2");
+
+    config.setQueues(root, new String[] {"queue1", "queue2"});
+    config.setQueues(queue1, new String[] {"subqueue1", "subqueue2"});
+    config.setQueues(subqueue1, new String[] {"leaf1"});
+    config.setQueues(subqueue2, new String[] {"leaf2"});
     config.setFloat(PREFIX + "root.capacity", 100.0f);
     config.setFloat(PREFIX + "root.queue1.capacity", 50.0f);
     config.setFloat(PREFIX + "root.queue2.capacity", 50.0f);
@@ -139,7 +147,7 @@ public class TestCSMaxRunningAppsEnforcer {
   }
 
   private void removeApp(FiCaSchedulerApp attempt) {
-    LeafQueue queue = attempt.getCSLeafQueue();
+    AbstractLeafQueue queue = attempt.getCSLeafQueue();
     queue.finishApplicationAttempt(attempt, queue.getQueuePath());
     maxAppsEnforcer.untrackApp(attempt);
     maxAppsEnforcer.updateRunnabilityOnAppRemoval(attempt);

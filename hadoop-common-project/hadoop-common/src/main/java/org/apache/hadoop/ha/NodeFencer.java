@@ -25,10 +25,10 @@ import java.util.regex.Pattern;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.ReflectionUtils;
 
 import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,8 +46,9 @@ import org.slf4j.LoggerFactory;
  * The fencing methods that ship with Hadoop may also be referred to
  * by shortened names:<br>
  * <ul>
- * <li><code>shell(/path/to/some/script.sh args...)</code></li>
+ * <li><code>shell(/path/to/some/script.sh args...)</code> (see {@link ShellCommandFencer})
  * <li><code>sshfence(...)</code> (see {@link SshFenceByTcpPort})
+ * <li><code>powershell(...)</code> (see {@link PowerShellFencer})
  * </ul>
  */
 @InterfaceAudience.Private

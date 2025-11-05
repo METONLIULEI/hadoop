@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.io.File;
 import java.io.FilenameFilter;
@@ -27,9 +27,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.Iterator;
 import java.util.List;
+import java.util.function.Supplier;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -41,16 +40,18 @@ import org.apache.hadoop.hdfs.qjournal.server.JournalTestUtil;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.Lists;
+
 import static org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter.getFileInfo;
 import static org.apache.hadoop.hdfs.qjournal.client.QuorumJournalManager.QJM_RPC_MAX_TXNS_KEY;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
-import java.util.function.Supplier;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Test cases for in progress tailing edit logs by
@@ -65,7 +66,7 @@ public class TestStandbyInProgressTail {
   private NameNode nn0;
   private NameNode nn1;
 
-  @Before
+  @BeforeEach
   public void startUp() throws IOException {
     conf = new Configuration();
     // Set period of tail edits to a large value (20 mins) for test purposes
@@ -84,7 +85,7 @@ public class TestStandbyInProgressTail {
     nn1 = cluster.getNameNode(1);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     if (qjmhaCluster != null) {
       qjmhaCluster.shutdown();

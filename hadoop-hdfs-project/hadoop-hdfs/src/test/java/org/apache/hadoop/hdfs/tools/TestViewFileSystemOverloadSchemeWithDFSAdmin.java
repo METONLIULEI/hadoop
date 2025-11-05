@@ -17,10 +17,8 @@
  */
 package org.apache.hadoop.hdfs.tools;
 
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -41,13 +39,12 @@ import org.apache.hadoop.fs.viewfs.ViewFsTestSetup;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.test.PathUtils;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.ToolRunner;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests DFSAdmin with ViewFileSystemOverloadScheme with configured mount links.
@@ -71,7 +68,7 @@ public class TestViewFileSystemOverloadSchemeWithDFSAdmin {
   /**
    * Sets up the configurations and starts the MiniDFSCluster.
    */
-  @Before
+  @BeforeEach
   public void startCluster() throws IOException {
     conf = new Configuration();
     conf.setInt(
@@ -86,10 +83,10 @@ public class TestViewFileSystemOverloadSchemeWithDFSAdmin {
     defaultFSURI =
         URI.create(conf.get(CommonConfigurationKeys.FS_DEFAULT_NAME_KEY));
     localTargetDir = new File(TEST_ROOT_DIR, "/root/");
-    Assert.assertEquals(HDFS_SCHEME, defaultFSURI.getScheme()); // hdfs scheme.
+    assertEquals(HDFS_SCHEME, defaultFSURI.getScheme()); // hdfs scheme.
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     try {
       System.out.flush();
@@ -127,13 +124,13 @@ public class TestViewFileSystemOverloadSchemeWithDFSAdmin {
   private void assertErrMsg(String errorMsg, int line) {
     final List<String> errList = Lists.newArrayList();
     scanIntoList(err, errList);
-    assertThat(errList.get(line), containsString(errorMsg));
+    assertThat(errList.get(line)).contains(errorMsg);
   }
 
   private void assertOutMsg(String outMsg, int line) {
     final List<String> errList = Lists.newArrayList();
     scanIntoList(out, errList);
-    assertThat(errList.get(line), containsString(outMsg));
+    assertThat(errList.get(line)).contains(outMsg);
   }
 
   /**
@@ -198,13 +195,15 @@ public class TestViewFileSystemOverloadSchemeWithDFSAdmin {
    */
   @Test
   public void testSafeModeWithWrongFS() throws Exception {
+    String wrongFsUri = "hdfs://nonExistent";
     final Path hdfsTargetPath =
-        new Path("hdfs://nonExistent" + HDFS_USER_FOLDER);
+        new Path(wrongFsUri + HDFS_USER_FOLDER);
     addMountLinks(defaultFSURI.getHost(), new String[] {HDFS_USER_FOLDER},
         new String[] {hdfsTargetPath.toUri().toString()}, conf);
     final DFSAdmin dfsAdmin = new DFSAdmin(conf);
     redirectStream();
-    int ret = ToolRunner.run(dfsAdmin, new String[] {"-safemode", "enter" });
+    int ret = ToolRunner.run(dfsAdmin,
+        new String[] {"-fs", wrongFsUri, "-safemode", "enter" });
     assertEquals(-1, ret);
     assertErrMsg("safemode: java.net.UnknownHostException: nonExistent", 0);
   }

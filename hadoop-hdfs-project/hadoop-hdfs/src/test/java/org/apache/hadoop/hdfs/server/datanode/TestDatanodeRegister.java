@@ -19,8 +19,8 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import static org.apache.hadoop.test.LambdaTestUtils.intercept;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -29,13 +29,6 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
-
-import org.junit.Assert;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
@@ -47,9 +40,13 @@ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.IncorrectVersionException;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.VersionInfo;
-import org.junit.Before;
-import org.junit.Test;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestDatanodeRegister { 
   public static final Logger LOG =
@@ -63,7 +60,7 @@ public class TestDatanodeRegister {
   NamespaceInfo fakeNsInfo;
   DNConf mockDnConf;
   
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
     mockDnConf = mock(DNConf.class);
     doReturn(VersionInfo.getVersion()).when(mockDnConf).getMinimumNameNodeVersion();
@@ -78,7 +75,7 @@ public class TestDatanodeRegister {
     actor = new BPServiceActor("test", "test", INVALID_ADDR, null, mockBPOS);
 
     fakeNsInfo = mock(NamespaceInfo.class);
-    // Return a a good software version.
+    // Return a good software version.
     doReturn(VersionInfo.getVersion()).when(fakeNsInfo).getSoftwareVersion();
     // Return a good layout version for now.
     doReturn(HdfsServerConstants.NAMENODE_LAYOUT_VERSION).when(fakeNsInfo)
@@ -93,8 +90,7 @@ public class TestDatanodeRegister {
   @Test
   public void testSoftwareVersionDifferences() throws Exception {
     // We expect no exception to be thrown when the software versions match.
-    assertEquals(VersionInfo.getVersion(),
-        actor.retrieveNamespaceInfo().getSoftwareVersion());
+    assertEquals(VersionInfo.getVersion(), actor.retrieveNamespaceInfo().getSoftwareVersion());
     
     // We expect no exception to be thrown when the min NN version is below the
     // reported NN version.
@@ -146,7 +142,7 @@ public class TestDatanodeRegister {
     DataNode dn = new DataNode(conf, locations, null, null);
     BPOfferService bpos = new BPOfferService("test_ns",
         Lists.newArrayList("nn0"), Lists.newArrayList(nnADDR),
-        Collections.<InetSocketAddress>nCopies(1, null), dn);
+        Collections.nCopies(1, null), dn);
     DatanodeProtocolClientSideTranslatorPB fakeDnProt =
         mock(DatanodeProtocolClientSideTranslatorPB.class);
     when(fakeDnProt.versionRequest()).thenReturn(fakeNsInfo);
@@ -160,8 +156,7 @@ public class TestDatanodeRegister {
       localActor.stop();
       localActor.register(nsInfo);
     } catch (IOException e) {
-      Assert.assertEquals("DN shut down before block pool registered",
-          e.getMessage());
+      assertEquals("DN shut down before block pool registered", e.getMessage());
     }
   }
 

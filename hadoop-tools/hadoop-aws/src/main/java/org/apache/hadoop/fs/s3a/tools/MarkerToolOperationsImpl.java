@@ -21,16 +21,15 @@ package org.apache.hadoop.fs.s3a.tools;
 import java.io.IOException;
 import java.util.List;
 
-import com.amazonaws.AmazonClientException;
-import com.amazonaws.services.s3.model.DeleteObjectsRequest;
-import com.amazonaws.services.s3.model.DeleteObjectsResult;
-import com.amazonaws.services.s3.model.MultiObjectDeleteException;
+import software.amazon.awssdk.awscore.exception.AwsServiceException;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.s3a.S3AFileStatus;
+import org.apache.hadoop.fs.s3a.impl.MultiObjectDeleteException;
 import org.apache.hadoop.fs.s3a.impl.OperationCallbacks;
-import org.apache.hadoop.fs.s3a.s3guard.BulkOperationState;
+
 
 /**
  * Implement the marker tool operations by forwarding to the
@@ -56,15 +55,12 @@ public class MarkerToolOperationsImpl implements MarkerToolOperations {
   }
 
   @Override
-  public DeleteObjectsResult removeKeys(
-      final List<DeleteObjectsRequest.KeyVersion> keysToDelete,
-      final boolean deleteFakeDir,
-      final List<Path> undeletedObjectsOnFailure,
-      final BulkOperationState operationState,
-      final boolean quiet)
-      throws MultiObjectDeleteException, AmazonClientException, IOException {
-    return operationCallbacks.removeKeys(keysToDelete, deleteFakeDir,
-        undeletedObjectsOnFailure, operationState, quiet);
+  public void removeKeys(
+      final List<ObjectIdentifier> keysToDelete,
+      final boolean deleteFakeDir)
+      throws MultiObjectDeleteException, AwsServiceException, IOException {
+    operationCallbacks.removeKeys(keysToDelete, deleteFakeDir
+    );
   }
 
 }

@@ -40,7 +40,7 @@ import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.records.AuxServiceConfiguration;
@@ -80,7 +80,7 @@ import org.apache.hadoop.yarn.server.nodemanager.DeletionService;
 import org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerService;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.deletion.task.FileDeletionTask;
 import org.apache.hadoop.yarn.util.FSDownload;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 public class AuxServices extends AbstractService
     implements ServiceStateChangeListener, EventHandler<AuxServicesEvent> {
@@ -240,7 +240,7 @@ public class AuxServices extends AbstractService
     }
 
     return AuxiliaryServiceWithCustomClassLoader.getInstance(conf, className,
-        appLocalClassPath, getSystemClasses(service, className));
+        appLocalClassPath, getSystemClasses(service));
   }
 
   /**
@@ -292,7 +292,7 @@ public class AuxServices extends AbstractService
           + " is using the custom classloader with classpath " + destFiles);
       return AuxiliaryServiceWithCustomClassLoader.getInstance(conf,
           className, StringUtils.join(File.pathSeparatorChar, destFiles),
-          getSystemClasses(service, className));
+          getSystemClasses(service));
     } else {
       return createAuxServiceFromConfiguration(service);
     }
@@ -516,7 +516,8 @@ public class AuxServices extends AbstractService
     loadServices(services, getConfig(), true);
   }
 
-  private boolean checkManifestPermissions(FileStatus status) throws
+  @VisibleForTesting
+  boolean checkManifestPermissions(FileStatus status) throws
       IOException {
     if ((status.getPermission().toShort() & 0022) != 0) {
       LOG.error("Manifest file and parents must not be writable by group or " +
@@ -528,7 +529,7 @@ public class AuxServices extends AbstractService
     if (parent == null) {
       return true;
     }
-    return checkManifestPermissions(manifestFS.getFileStatus(parent));
+    return checkManifestPermissions(getManifestFS().getFileStatus(parent));
   }
 
   private boolean checkManifestOwnerAndPermissions(FileStatus status) throws
@@ -681,15 +682,12 @@ public class AuxServices extends AbstractService
     return serviceConf.getProperty(CLASS_NAME);
   }
 
-  private static String[] getSystemClasses(AuxServiceRecord service, String
-      className) {
-    AuxServiceConfiguration serviceConf =
-        service.getConfiguration();
-    if (serviceConf == null) {
-      return new String[]{className};
+  private static String[] getSystemClasses(AuxServiceRecord service) {
+    AuxServiceConfiguration serviceConf = service.getConfiguration();
+    if (serviceConf == null || serviceConf.getProperty(SYSTEM_CLASSES) == null) {
+      return new String[]{};
     }
-    return StringUtils.split(serviceConf.getProperty(SYSTEM_CLASSES,
-        className));
+    return StringUtils.split(serviceConf.getProperty(SYSTEM_CLASSES));
   }
 
   /**
@@ -965,6 +963,10 @@ public class AuxServices extends AbstractService
   protected static void setSystemClasses(AuxServiceRecord service, String
       systemClasses) {
     service.getConfiguration().setProperty(SYSTEM_CLASSES, systemClasses);
+  }
+
+  protected FileSystem getManifestFS() {
+    return manifestFS;
   }
 
   /**

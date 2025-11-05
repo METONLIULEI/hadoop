@@ -22,8 +22,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.EnumSet;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +36,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
+import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainerState;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,6 +82,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.RMServerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
 import org.apache.hadoop.yarn.server.resourcemanager.monitor.SchedulingMonitorManager;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEventType;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
@@ -108,7 +115,7 @@ import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.SettableFuture;
 
 
@@ -151,6 +158,7 @@ public abstract class AbstractYarnScheduler
   Thread updateThread;
   private final Object updateThreadMonitor = new Object();
   private Timer releaseCache;
+  private boolean autoCorrectContainerAllocation;
 
   /*
    * All schedulers which are inheriting AbstractYarnScheduler should use
@@ -159,6 +167,7 @@ public abstract class AbstractYarnScheduler
   protected ConcurrentMap<ApplicationId, SchedulerApplication<T>> applications;
   protected int nmExpireInterval;
   protected long nmHeartbeatInterval;
+  private long skipNodeInterval;
 
   private final static List<Container> EMPTY_CONTAINER_LIST =
       new ArrayList<Container>();
@@ -210,6 +219,10 @@ public abstract class AbstractYarnScheduler
     nmHeartbeatInterval =
         conf.getLong(YarnConfiguration.RM_NM_HEARTBEAT_INTERVAL_MS,
             YarnConfiguration.DEFAULT_RM_NM_HEARTBEAT_INTERVAL_MS);
+    skipNodeInterval = YarnConfiguration.getSkipNodeInterval(conf);
+    autoCorrectContainerAllocation =
+        conf.getBoolean(YarnConfiguration.RM_SCHEDULER_AUTOCORRECT_CONTAINER_ALLOCATION,
+            YarnConfiguration.DEFAULT_RM_SCHEDULER_AUTOCORRECT_CONTAINER_ALLOCATION);
     long configuredMaximumAllocationWaitTime =
         conf.getLong(YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS,
           YarnConfiguration.DEFAULT_RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS);
@@ -312,6 +325,7 @@ public abstract class AbstractYarnScheduler
    * Add blacklisted NodeIds to the list that is passed.
    *
    * @param app application attempt.
+   * @return blacklisted NodeIds.
    */
   public List<N> getBlacklistedNodes(final SchedulerApplicationAttempt app) {
 
@@ -366,6 +380,10 @@ public abstract class AbstractYarnScheduler
 
   public long getLastNodeUpdateTime() {
     return lastNodeUpdateTime;
+  }
+
+  public long getSkipNodeInterval(){
+    return skipNodeInterval;
   }
 
   protected void containerLaunchedOnNode(
@@ -578,8 +596,14 @@ public abstract class AbstractYarnScheduler
             rmContainer);
 
         // recover scheduler attempt
-        schedulerAttempt.recoverContainer(schedulerNode, rmContainer);
+        final boolean recovered = schedulerAttempt.recoverContainer(
+            schedulerNode, rmContainer);
 
+        if (recovered && rmContainer.getExecutionType() ==
+            ExecutionType.OPPORTUNISTIC) {
+          OpportunisticSchedulerMetrics.getMetrics()
+              .incrAllocatedOppContainers(1);
+        }
         // set master container for the current running AMContainer for this
         // attempt.
         RMAppAttempt appAttempt = rmApp.getCurrentAppAttempt();
@@ -608,6 +632,106 @@ public abstract class AbstractYarnScheduler
       }
     } finally {
       writeLock.unlock();
+    }
+  }
+
+  /**
+   * Autocorrect container resourceRequests by decrementing the number of newly allocated containers
+   * from the current container request. This also updates the newlyAllocatedContainers to be within
+   * the limits of the current container resourceRequests.
+   * ResourceRequests locality/resourceName is not considered while autocorrecting the container
+   * request, hence when there are two types of resourceRequest which is same except for the
+   * locality/resourceName, it is counted as same {@link ContainerObjectType} and the container
+   * ask and number of newly allocated container is decremented accordingly.
+   * For example when a client requests for 4 containers with locality/resourceName
+   * as "node1", AMRMClientaugments the resourceRequest into two
+   * where R1(numContainer=4,locality=*) and R2(numContainer=4,locality=node1),
+   * if Yarn allocated 6 containers previously, it will release 2 containers as well as
+   * update the container ask to 0.
+   *
+   * If there is a client which directly calls Yarn (without AMRMClient) with
+   * two where R1(numContainer=4,locality=*) and R2(numContainer=4,locality=node1)
+   * the autocorrection may not work as expected. The use case of such client is very rare.
+   *
+   * <p>
+   * This method is called from {@link AbstractYarnScheduler#allocate} method. It is package private
+   * to be used within the scheduler package only.
+   * @param resourceRequests List of resources to be allocated
+   * @param application ApplicationAttempt
+   */
+  @VisibleForTesting
+  protected void autoCorrectContainerAllocation(List<ResourceRequest> resourceRequests,
+      SchedulerApplicationAttempt application) {
+
+    // if there is no resourceRequests for containers or no newly allocated container from
+    // the previous request there is nothing to do.
+    if (!autoCorrectContainerAllocation || resourceRequests.isEmpty() ||
+        application.newlyAllocatedContainers.isEmpty()) {
+      return;
+    }
+
+    // iterate newlyAllocatedContainers and form a mapping of container type
+    // and number of its occurrence.
+    Map<ContainerObjectType, List<RMContainer>> allocatedContainerMap = new HashMap<>();
+    for (RMContainer rmContainer : application.newlyAllocatedContainers) {
+      Container container = rmContainer.getContainer();
+      ContainerObjectType containerObjectType = new ContainerObjectType(
+          container.getAllocationRequestId(), container.getPriority(),
+          container.getExecutionType(), container.getResource());
+      allocatedContainerMap.computeIfAbsent(containerObjectType,
+          k -> new ArrayList<>()).add(rmContainer);
+    }
+
+    Map<ContainerObjectType, Integer> extraContainerAllocatedMap = new HashMap<>();
+    // iterate through resourceRequests and update the request by
+    // decrementing the already allocated containers.
+    for (ResourceRequest request : resourceRequests) {
+      ContainerObjectType containerObjectType =
+          new ContainerObjectType(request.getAllocationRequestId(),
+              request.getPriority(), request.getExecutionTypeRequest().getExecutionType(),
+              request.getCapability());
+      int numContainerAllocated = allocatedContainerMap.getOrDefault(containerObjectType,
+          Collections.emptyList()).size();
+      if (numContainerAllocated > 0) {
+        int numContainerAsk = request.getNumContainers();
+        int updatedContainerRequest = numContainerAsk - numContainerAllocated;
+        if (updatedContainerRequest < 0) {
+          // add an entry to extra allocated map
+          extraContainerAllocatedMap.put(containerObjectType, Math.abs(updatedContainerRequest));
+          LOG.debug("{} container of the resource type: {} will be released",
+              Math.abs(updatedContainerRequest), request);
+          // if newlyAllocatedContainer count is more than the current container
+          // resourceRequests, reset it to 0.
+          updatedContainerRequest = 0;
+        }
+
+        // update the request
+        LOG.debug("Updating container resourceRequests from {} to {} for the resource type: {}",
+            numContainerAsk, updatedContainerRequest, request);
+        request.setNumContainers(updatedContainerRequest);
+      }
+    }
+
+    // Iterate over the entries in extraContainerAllocatedMap
+    for (Map.Entry<ContainerObjectType, Integer> entry : extraContainerAllocatedMap.entrySet()) {
+      ContainerObjectType containerObjectType = entry.getKey();
+      int extraContainers = entry.getValue();
+
+      // Get the list of allocated containers for the current ContainerObjectType
+      List<RMContainer> allocatedContainers = allocatedContainerMap.get(containerObjectType);
+      if (allocatedContainers != null) {
+        for (RMContainer rmContainer : allocatedContainers) {
+          if (extraContainers > 0) {
+            // Change the state of the container from ALLOCATED to EXPIRED since it is not required.
+            LOG.debug("Removing extra container:{}", rmContainer.getContainer());
+            completedContainer(rmContainer, SchedulerUtils.createAbnormalContainerStatus(
+                rmContainer.getContainerId(), SchedulerUtils.EXPIRED_CONTAINER),
+                RMContainerEventType.EXPIRE);
+            application.newlyAllocatedContainers.remove(rmContainer);
+            extraContainers--;
+          }
+        }
+      }
     }
   }
 
@@ -642,6 +766,14 @@ public abstract class AbstractYarnScheduler
 
     // If container state is moved to ACQUIRED, request will be empty.
     if (containerRequest == null) {
+      return;
+    }
+
+    // when auto correct container allocation is enabled, there can be a case when extra containers
+    // go to expired state from allocated state. When such scenario happens do not re-attempt the
+    // container request since this is expected.
+    if (autoCorrectContainerAllocation &&
+        RMContainerState.EXPIRED.equals(rmContainer.getState())) {
       return;
     }
 
@@ -714,7 +846,10 @@ public abstract class AbstractYarnScheduler
       SchedulerApplicationAttempt schedulerAttempt =
           getCurrentAttemptForContainer(containerId);
       if (schedulerAttempt != null) {
-        schedulerAttempt.removeRMContainer(containerId);
+        if (schedulerAttempt.removeRMContainer(containerId)) {
+          OpportunisticSchedulerMetrics.getMetrics()
+              .incrReleasedOppContainers(1);
+        }
       }
       LOG.debug("Completed container: {} in state: {} event:{}",
           rmContainer.getContainerId(), rmContainer.getState(), event);
@@ -723,7 +858,6 @@ public abstract class AbstractYarnScheduler
       if (node != null) {
         node.releaseContainer(rmContainer.getContainerId(), false);
       }
-      OpportunisticSchedulerMetrics.getMetrics().incrReleasedOppContainers(1);
     }
 
     // If the container is getting killed in ACQUIRED state, the requester (AM
@@ -742,10 +876,9 @@ public abstract class AbstractYarnScheduler
       RMContainer rmContainer, ContainerStatus containerStatus,
       RMContainerEventType event) {
     N schedulerNode = getSchedulerNode(rmContainer.getNodeId());
-    if (schedulerNode != null &&
-        schedulerNode.getReservedContainer() != null) {
+    if (schedulerNode != null) {
       RMContainer resContainer = schedulerNode.getReservedContainer();
-      if (resContainer.getReservedSchedulerKey() != null) {
+      if (resContainer != null && resContainer.getReservedSchedulerKey() != null) {
         ContainerId containerToUpdate = resContainer
             .getReservedSchedulerKey().getContainerToUpdate();
         if (containerToUpdate != null &&
@@ -836,12 +969,20 @@ public abstract class AbstractYarnScheduler
 
   /**
    * Process resource update on a node.
+   *
+   * @param nm RMNode.
+   * @param resourceOption resourceOption.
    */
   public void updateNodeResource(RMNode nm,
       ResourceOption resourceOption) {
     writeLock.lock();
     try {
       SchedulerNode node = getSchedulerNode(nm.getNodeID());
+      if (node == null) {
+        LOG.info("Node: " + nm.getNodeID() + " has already been taken out of " +
+            "scheduling. Skip updating its resource");
+        return;
+      }
       Resource newResource = resourceOption.getResource();
       final int timeout = resourceOption.getOverCommitTimeout();
       Resource oldResource = node.getTotalResource();
@@ -1310,6 +1451,7 @@ public abstract class AbstractYarnScheduler
    * Normalize a list of resource requests
    * using queue maximum resource allocations.
    * @param asks resource requests
+   * @param queueName queue Name.
    */
   protected void normalizeResourceRequests(List<ResourceRequest> asks,
       String queueName) {
@@ -1400,6 +1542,8 @@ public abstract class AbstractYarnScheduler
             RMContainer demotedRMContainer =
                 createDemotedRMContainer(appAttempt, oppCntxt, rmContainer);
             if (demotedRMContainer != null) {
+              OpportunisticSchedulerMetrics.getMetrics()
+                  .incrAllocatedOppContainers(1);
               appAttempt.addToNewlyDemotedContainers(
                       uReq.getContainerId(), demotedRMContainer);
             }
@@ -1535,7 +1679,8 @@ public abstract class AbstractYarnScheduler
   }
 
   @Override
-  public long checkAndGetApplicationLifetime(String queueName, long lifetime) {
+  public long checkAndGetApplicationLifetime(String queueName, long lifetime,
+                                             RMAppImpl app) {
     // Lifetime is the application lifetime by default.
     return lifetime;
   }
@@ -1651,5 +1796,78 @@ public abstract class AbstractYarnScheduler
           + " doesn't exist");
     }
     return apps;
+  }
+
+  /**
+   * ContainerObjectType is a container object with the following properties.
+   * Namely allocationId, priority, executionType and resourceType.
+   */
+  protected class ContainerObjectType extends Object {
+    private final long allocationId;
+    private final Priority priority;
+    private final ExecutionType executionType;
+    private final Resource resource;
+
+    public ContainerObjectType(long allocationId, Priority priority,
+        ExecutionType executionType, Resource resource) {
+      this.allocationId = allocationId;
+      this.priority = priority;
+      this.executionType = executionType;
+      this.resource = resource;
+    }
+
+    public long getAllocationId() {
+      return allocationId;
+    }
+
+    public Priority getPriority() {
+      return priority;
+    }
+
+    public ExecutionType getExecutionType() {
+      return executionType;
+    }
+
+    public Resource getResource() {
+      return resource;
+    }
+
+    @Override
+    public int hashCode() {
+      return new HashCodeBuilder(17, 37)
+          .append(allocationId)
+          .append(priority)
+          .append(executionType)
+          .append(resource)
+          .toHashCode();
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      if (obj == null) {
+        return false;
+      }
+      if (obj.getClass() != this.getClass()) {
+        return false;
+      }
+
+      ContainerObjectType other = (ContainerObjectType) obj;
+      return new EqualsBuilder()
+          .append(allocationId, other.getAllocationId())
+          .append(priority, other.getPriority())
+          .append(executionType, other.getExecutionType())
+          .append(resource, other.getResource())
+          .isEquals();
+    }
+
+    @Override
+    public String toString() {
+      return "{ContainerObjectType: "
+          + ", Priority: " + getPriority()
+          + ", Allocation Id: " + getAllocationId()
+          + ", Execution Type: " + getExecutionType()
+          + ", Resource: " + getResource()
+          + "}";
+    }
   }
 }

@@ -22,13 +22,15 @@ import static java.lang.Thread.sleep;
 
 import java.util.Map;
 import org.eclipse.jetty.util.ajax.JSON;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.apache.hadoop.ipc.DecayRpcScheduler.IPC_DECAYSCHEDULER_THRESHOLDS_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -55,16 +57,43 @@ public class TestDecayRpcScheduler {
     return mockCall;
   }
 
-  private DecayRpcScheduler scheduler;
-
-  @Test(expected=IllegalArgumentException.class)
-  public void testNegativeScheduler() {
-    scheduler = new DecayRpcScheduler(-1, "", new Configuration());
+  private static class TestIdentityProvider implements IdentityProvider {
+    public String makeIdentity(Schedulable obj) {
+      UserGroupInformation ugi = obj.getUserGroupInformation();
+      if (ugi == null) {
+        return null;
+      }
+      return ugi.getShortUserName();
+    }
   }
 
-  @Test(expected=IllegalArgumentException.class)
+  private static class TestCostProvider implements CostProvider {
+
+    @Override
+    public void init(String namespace, Configuration conf) {
+      // No-op
+    }
+
+    @Override
+    public long getCost(ProcessingDetails details) {
+      return 1;
+    }
+  }
+
+  private DecayRpcScheduler scheduler;
+
+  @Test
+  public void testNegativeScheduler() {
+    assertThrows(IllegalArgumentException.class, () -> {
+      scheduler = new DecayRpcScheduler(-1, "", new Configuration());
+    });
+  }
+
+  @Test
   public void testZeroScheduler() {
-    scheduler = new DecayRpcScheduler(0, "", new Configuration());
+    assertThrows(IllegalArgumentException.class, () -> {
+      scheduler = new DecayRpcScheduler(0, "", new Configuration());
+    });
   }
 
   @Test
@@ -80,6 +109,44 @@ public class TestDecayRpcScheduler {
     conf.setLong("ipc.2." + DecayRpcScheduler.IPC_FCQ_DECAYSCHEDULER_PERIOD_KEY,
       1058);
     scheduler = new DecayRpcScheduler(1, "ipc.2", conf);
+    assertEquals(1058L, scheduler.getDecayPeriodMillis());
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void testParsePeriodWithPortLessIdentityProvider() {
+    // By default
+    scheduler = new DecayRpcScheduler(1, "ipc.50", new Configuration());
+    assertEquals(DecayRpcScheduler.IPC_SCHEDULER_DECAYSCHEDULER_PERIOD_DEFAULT,
+        scheduler.getDecayPeriodMillis());
+
+    // Custom
+    Configuration conf = new Configuration();
+    conf.setLong("ipc.51." + DecayRpcScheduler.IPC_FCQ_DECAYSCHEDULER_PERIOD_KEY,
+        1058);
+    conf.unset("ipc.51." + CommonConfigurationKeys.IPC_IDENTITY_PROVIDER_KEY);
+    conf.set("ipc." + CommonConfigurationKeys.IPC_IDENTITY_PROVIDER_KEY,
+        "org.apache.hadoop.ipc.TestDecayRpcScheduler$TestIdentityProvider");
+    scheduler = new DecayRpcScheduler(1, "ipc.51", conf);
+    assertEquals(1058L, scheduler.getDecayPeriodMillis());
+  }
+
+  @Test
+  @SuppressWarnings("deprecation")
+  public void testParsePeriodWithPortLessCostProvider() {
+    // By default
+    scheduler = new DecayRpcScheduler(1, "ipc.52", new Configuration());
+    assertEquals(DecayRpcScheduler.IPC_SCHEDULER_DECAYSCHEDULER_PERIOD_DEFAULT,
+        scheduler.getDecayPeriodMillis());
+
+    // Custom
+    Configuration conf = new Configuration();
+    conf.setLong("ipc.52." + DecayRpcScheduler.IPC_FCQ_DECAYSCHEDULER_PERIOD_KEY,
+        1058);
+    conf.unset("ipc.52." + CommonConfigurationKeys.IPC_COST_PROVIDER_KEY);
+    conf.set("ipc." + CommonConfigurationKeys.IPC_COST_PROVIDER_KEY,
+        "org.apache.hadoop.ipc.TestDecayRpcScheduler$TestCostProvider");
+    scheduler = new DecayRpcScheduler(1, "ipc.52", conf);
     assertEquals(1058L, scheduler.getDecayPeriodMillis());
   }
 
@@ -231,17 +298,18 @@ public class TestDecayRpcScheduler {
         "Hadoop:service="+ namespace + ",name=DecayRpcScheduler");
 
     String cvs1 = (String) mbs.getAttribute(mxbeanName, "CallVolumeSummary");
-    assertTrue("Get expected JMX of CallVolumeSummary before decay",
-        cvs1.equals("{\"A\":6,\"B\":2,\"C\":2}"));
+    assertTrue(cvs1.equals("{\"A\":6,\"B\":2,\"C\":2}"),
+        "Get expected JMX of CallVolumeSummary before decay");
 
     scheduler.forceDecay();
 
     String cvs2 = (String) mbs.getAttribute(mxbeanName, "CallVolumeSummary");
-    assertTrue("Get expected JMX for CallVolumeSummary after decay",
-        cvs2.equals("{\"A\":3,\"B\":1,\"C\":1}"));
+    assertTrue(cvs2.equals("{\"A\":3,\"B\":1,\"C\":1}"),
+        "Get expected JMX for CallVolumeSummary after decay");
   }
 
-  @Test(timeout=2000)
+  @Test
+  @Timeout(value = 2)
   @SuppressWarnings("deprecation")
   public void testPeriodic() throws InterruptedException {
     Configuration conf = new Configuration();
@@ -264,7 +332,8 @@ public class TestDecayRpcScheduler {
     }
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testNPEatInitialization() throws InterruptedException {
     // redirect the LOG to and check if there is NPE message while initializing
     // the DecayRpcScheduler

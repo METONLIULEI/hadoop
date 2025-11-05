@@ -18,22 +18,26 @@
 package org.apache.hadoop.fs.azurebfs.contract;
 
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.fs.FileSystemContractBaseTest;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.contract.ContractTestUtils;
 
-import org.junit.Before;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.apache.hadoop.fs.azurebfs.constants.TestConfigurationKeys.TEST_TIMEOUT;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Basic Contract test for Azure BlobFileSystem.
  */
+@Timeout(value = TEST_TIMEOUT, unit = TimeUnit.MILLISECONDS)
 public class ITestAzureBlobFileSystemBasics extends FileSystemContractBaseTest {
   private final ABFSContractTestBinding binding;
 
@@ -44,7 +48,7 @@ public class ITestAzureBlobFileSystemBasics extends FileSystemContractBaseTest {
   }
 
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     binding.setup();
     fs = binding.getFileSystem();
@@ -99,7 +103,7 @@ public class ITestAzureBlobFileSystemBasics extends FileSystemContractBaseTest {
   }
 
   @Override
-  @Ignore("Not implemented in ABFS yet")
+  @Disabled("Not implemented in ABFS yet")
   public void testMkdirsWithUmask() throws Exception {
   }
 }

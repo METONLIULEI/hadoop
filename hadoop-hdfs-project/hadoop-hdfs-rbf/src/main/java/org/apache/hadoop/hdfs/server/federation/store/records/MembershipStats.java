@@ -122,6 +122,11 @@ public abstract class MembershipStats extends BaseRecord {
 
   public abstract long getNumberOfMissingBlocksWithReplicationFactorOne();
 
+  public abstract void setNumberOfBadlyDistributedBlocks(
+      long blocks);
+
+  public abstract long getNumberOfBadlyDistributedBlocks();
+
   public abstract void setHighestPriorityLowRedundancyReplicatedBlocks(
       long blocks);
 
@@ -132,6 +137,10 @@ public abstract class MembershipStats extends BaseRecord {
       long blocks);
 
   public abstract long getHighestPriorityLowRedundancyECBlocks();
+
+  public abstract void setPendingSPSPaths(int pendingSPSPaths);
+
+  public abstract int getPendingSPSPaths();
 
   @Override
   public SortedMap<String, String> getPrimaryKeys() {

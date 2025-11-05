@@ -42,7 +42,6 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
-import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -98,7 +97,7 @@ import org.apache.hadoop.yarn.util.UnitsConversionUtil;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -587,7 +586,7 @@ public class Client {
           + " exiting. Specified numContainer=" + numContainers);
     }
     
-    nodeLabelExpression = cliParser.getOptionValue("node_label_expression", null);
+    nodeLabelExpression = cliParser.getOptionValue("node_label_expression", () -> null);
 
     clientTimeout = Integer.parseInt(cliParser.getOptionValue("timeout", "600000"));
 
@@ -953,6 +952,8 @@ public class Client {
     vargs.add("\"" + Environment.JAVA_HOME.$$() + "/bin/java\"");
     // Set Xmx based on am memory size
     vargs.add("-Xmx" + amMemory + "m");
+    // JDK17 support
+    vargs.add(ApplicationConstants.JVM_ADD_OPENS_VAR);
     // Set class name 
     vargs.add(appMasterMainClass);
     // Set params for Application Master
@@ -1221,13 +1222,9 @@ public class Client {
     Path dst =
         new Path(fs.getHomeDirectory(), suffix);
     if (fileSrcPath == null) {
-      FSDataOutputStream ostream = null;
-      try {
-        ostream = FileSystem
-            .create(fs, dst, new FsPermission((short) 0710));
+      try (FSDataOutputStream ostream = FileSystem.create(fs, dst,
+          new FsPermission((short) 0710))) {
         ostream.writeUTF(resources);
-      } finally {
-        IOUtils.closeQuietly(ostream);
       }
     } else {
       fs.copyFromLocalFile(new Path(fileSrcPath), dst);
@@ -1378,7 +1375,7 @@ public class Client {
       resourcesStr = resourcesStr.substring(1);
     }
     if (resourcesStr.endsWith("]")) {
-      resourcesStr = resourcesStr.substring(0, resourcesStr.length());
+      resourcesStr = resourcesStr.substring(0, resourcesStr.length() - 1);
     }
 
     for (String resource : resourcesStr.trim().split(",")) {

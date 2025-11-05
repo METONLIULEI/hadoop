@@ -19,8 +19,6 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,13 +40,11 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.StorageBlockReport;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * This test verifies NameNode behavior when it gets unexpected block reports
@@ -70,7 +66,7 @@ public class TestBlockHasMultipleReplicasOnSameDN {
   private DFSClient client;
   private String bpid;
 
-  @Before
+  @BeforeEach
   public void startUpCluster() throws IOException {
     conf = new HdfsConfiguration();
     cluster = new MiniDFSCluster.Builder(conf)
@@ -81,7 +77,7 @@ public class TestBlockHasMultipleReplicasOnSameDN {
     bpid = cluster.getNamesystem().getBlockPoolId();
   }
 
-  @After
+  @AfterEach
   public void shutDownCluster() throws IOException {
     if (cluster != null) {
       fs.close();
@@ -118,13 +114,12 @@ public class TestBlockHasMultipleReplicasOnSameDN {
     StorageBlockReport reports[] =
         new StorageBlockReport[cluster.getStoragesPerDatanode()];
 
-    ArrayList<ReplicaInfo> blocks = new ArrayList<>();
+    ArrayList<Replica> blocks = new ArrayList<>();
 
     for (LocatedBlock locatedBlock : locatedBlocks.getLocatedBlocks()) {
       Block localBlock = locatedBlock.getBlock().getLocalBlock();
       blocks.add(new FinalizedReplica(localBlock, null, null));
     }
-    Collections.sort(blocks);
 
     try (FsDatasetSpi.FsVolumeReferences volumes =
       dn.getFSDataset().getFsVolumeReferences()) {
@@ -137,7 +132,7 @@ public class TestBlockHasMultipleReplicasOnSameDN {
 
     // Should not assert!
     cluster.getNameNodeRpc().blockReport(dnReg, bpid, reports,
-        new BlockReportContext(1, 0, System.nanoTime(), 0L, true));
+        new BlockReportContext(1, 0, System.nanoTime(), 0L));
 
     // Get the block locations once again.
     locatedBlocks = client.getLocatedBlocks(filename, 0, BLOCK_SIZE * NUM_BLOCKS);
@@ -145,8 +140,8 @@ public class TestBlockHasMultipleReplicasOnSameDN {
     // Make sure that each block has two replicas, one on each DataNode.
     for (LocatedBlock locatedBlock : locatedBlocks.getLocatedBlocks()) {
       DatanodeInfo[] locations = locatedBlock.getLocations();
-      assertThat(locations.length, is((int) NUM_DATANODES));
-      assertThat(locations[0].getDatanodeUuid(), not(locations[1].getDatanodeUuid()));
+      assertThat(locations.length).isEqualTo((int) NUM_DATANODES);
+      assertThat(locations[0].getDatanodeUuid()).isNotEqualTo(locations[1].getDatanodeUuid());
     }
   }
 }

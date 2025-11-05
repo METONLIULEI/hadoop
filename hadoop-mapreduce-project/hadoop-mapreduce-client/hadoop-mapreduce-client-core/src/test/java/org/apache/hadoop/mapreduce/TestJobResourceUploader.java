@@ -18,15 +18,18 @@
 
 package org.apache.hadoop.mapreduce;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.spy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.net.URI;
@@ -47,8 +50,7 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
 import org.apache.hadoop.mapred.JobConf;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.verification.VerificationMode;
 
@@ -64,26 +66,25 @@ public class TestJobResourceUploader {
     JobResourceUploader uploader =
         new JobResourceUploader(FileSystem.getLocal(conf), false);
 
-    Assert.assertEquals("Failed: absolute, no scheme, with fragment",
-        "/testWithFragment.txt",
-        uploader.stringToPath("/testWithFragment.txt#fragment.txt").toString());
+    assertEquals("/testWithFragment.txt",
+        uploader.stringToPath("/testWithFragment.txt#fragment.txt").toString(),
+        "Failed: absolute, no scheme, with fragment");
 
-    Assert.assertEquals("Failed: absolute, with scheme, with fragment",
-        "file:/testWithFragment.txt",
-        uploader.stringToPath("file:///testWithFragment.txt#fragment.txt")
-            .toString());
+    assertEquals("file:/testWithFragment.txt",
+        uploader.stringToPath("file:///testWithFragment.txt#fragment.txt").toString(),
+        "Failed: absolute, with scheme, with fragment");
 
-    Assert.assertEquals("Failed: relative, no scheme, with fragment",
-        "testWithFragment.txt",
-        uploader.stringToPath("testWithFragment.txt#fragment.txt").toString());
+    assertEquals("testWithFragment.txt",
+        uploader.stringToPath("testWithFragment.txt#fragment.txt").toString(),
+        "Failed: relative, no scheme, with fragment");
 
-    Assert.assertEquals("Failed: relative, no scheme, no fragment",
-        "testWithFragment.txt",
-        uploader.stringToPath("testWithFragment.txt").toString());
+    assertEquals("testWithFragment.txt",
+        uploader.stringToPath("testWithFragment.txt").toString(),
+        "Failed: relative, no scheme, no fragment");
 
-    Assert.assertEquals("Failed: absolute, with scheme, no fragment",
-        "file:/testWithFragment.txt",
-        uploader.stringToPath("file:///testWithFragment.txt").toString());
+    assertEquals("file:/testWithFragment.txt",
+        uploader.stringToPath("file:///testWithFragment.txt").toString(),
+        "Failed: absolute, with scheme, no fragment");
   }
 
   @Test
@@ -399,7 +400,6 @@ public class TestJobResourceUploader {
       Path expectedRemotePath) throws IOException, URISyntaxException {
     Path dstPath = new Path("hdfs://localhost:1234/home/hadoop/");
     DistributedFileSystem fs = mock(DistributedFileSystem.class);
-    when(fs.makeQualified(any(Path.class))).thenReturn(dstPath);
     // make sure that FileUtils.copy() doesn't try to copy anything
     when(fs.mkdirs(any(Path.class))).thenReturn(false);
     when(fs.getUri()).thenReturn(dstPath.toUri());
@@ -408,7 +408,6 @@ public class TestJobResourceUploader {
     JobConf jConf = new JobConf();
     Path originalPath = spy(path);
     FileSystem localFs = mock(FileSystem.class);
-    when(localFs.makeQualified(any(Path.class))).thenReturn(path);
     FileStatus fileStatus = mock(FileStatus.class);
     when(localFs.getFileStatus(any(Path.class))).thenReturn(fileStatus);
     when(fileStatus.isDirectory()).thenReturn(true);
@@ -422,14 +421,8 @@ public class TestJobResourceUploader {
         originalPath, jConf, (short) 1);
 
     ArgumentCaptor<Path> pathCaptor = ArgumentCaptor.forClass(Path.class);
-    verify(fs, times(2)).makeQualified(pathCaptor.capture());
-    List<Path> paths = pathCaptor.getAllValues();
-    // first call is invoked on a path which was created by the test,
-    // but the second one is created in copyRemoteFiles()
-    Assert.assertEquals("Expected remote path",
-        expectedRemotePath, paths.get(0));
-    Assert.assertEquals("Expected remote path",
-        expectedRemotePath, paths.get(1));
+    verify(fs).makeQualified(pathCaptor.capture());
+    assertEquals(expectedRemotePath, pathCaptor.getValue(), "Path");
   }
 
   private void testErasureCodingSetting(boolean defaultBehavior)
@@ -490,8 +483,8 @@ public class TestJobResourceUploader {
     validateResourcePathsSub(job.getCacheArchives(), expectedArchives);
     // We use a different job object here because the jobjar was set on a
     // different job object
-    Assert.assertEquals("Job jar path is different than expected!",
-        expectedJobJar, job.getJar());
+    assertEquals(expectedJobJar, job.getJar(),
+        "Job jar path is different than expected!");
   }
 
   private void validateResourcePathsSub(URI[] actualURIs,
@@ -499,14 +492,14 @@ public class TestJobResourceUploader {
     List<URI> actualList = Arrays.asList(actualURIs);
     Set<String> expectedSet = new HashSet<>(Arrays.asList(expectedURIs));
     if (actualList.size() != expectedSet.size()) {
-      Assert.fail("Expected list of resources (" + expectedSet.size()
+      fail("Expected list of resources (" + expectedSet.size()
           + ") and actual list of resources (" + actualList.size()
           + ") are different lengths!");
     }
 
     for (URI u : actualList) {
       if (!expectedSet.contains(u.toString())) {
-        Assert.fail("Resource list contained unexpected path: " + u.toString());
+        fail("Resource list contained unexpected path: " + u);
       }
     }
   }
@@ -519,7 +512,7 @@ public class TestJobResourceUploader {
       ResourceViolation violation) throws IOException {
 
     if (!checkShouldSucceed && violation == null) {
-      Assert.fail("Test is misconfigured. checkShouldSucceed is set to false"
+      fail("Test is misconfigured. checkShouldSucceed is set to false"
           + " and a ResourceViolation is not specified.");
     }
 
@@ -536,36 +529,36 @@ public class TestJobResourceUploader {
           conf.getStringCollection("tmpjars"),
           conf.getStringCollection("tmparchives"),
           conf.getJar(), statCache);
-      Assert.assertTrue("Limits check succeeded when it should have failed.",
-          checkShouldSucceed);
+      assertTrue(checkShouldSucceed,
+          "Limits check succeeded when it should have failed.");
     } catch (IOException e) {
       if (checkShouldSucceed) {
-        Assert.fail("Limits check failed when it should have succeeded: " + e);
+        fail("Limits check failed when it should have succeeded: " + e);
       }
       switch (violation) {
       case NUMBER_OF_RESOURCES:
         if (!e.getMessage().contains(
             JobResourceUploader.MAX_RESOURCE_ERR_MSG)) {
-          Assert.fail("Test failed unexpectedly: " + e);
+          fail("Test failed unexpectedly: " + e);
         }
         break;
 
       case TOTAL_RESOURCE_SIZE:
         if (!e.getMessage().contains(
             JobResourceUploader.MAX_TOTAL_RESOURCE_MB_ERR_MSG)) {
-          Assert.fail("Test failed unexpectedly: " + e);
+          fail("Test failed unexpectedly: " + e);
         }
         break;
 
       case SINGLE_RESOURCE_SIZE:
         if (!e.getMessage().contains(
             JobResourceUploader.MAX_SINGLE_RESOURCE_MB_ERR_MSG)) {
-          Assert.fail("Test failed unexpectedly: " + e);
+          fail("Test failed unexpectedly: " + e);
         }
         break;
 
       default:
-        Assert.fail("Test failed unexpectedly: " + e);
+        fail("Test failed unexpectedly: " + e);
         break;
       }
     }

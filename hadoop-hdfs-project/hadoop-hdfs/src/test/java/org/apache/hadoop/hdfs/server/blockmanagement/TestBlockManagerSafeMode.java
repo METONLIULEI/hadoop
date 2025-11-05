@@ -27,20 +27,23 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerSafeMode.BMSafe
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.Whitebox;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.util.concurrent.TimeoutException;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SAFEMODE_EXTENSION_DEFAULT;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
@@ -81,7 +84,7 @@ public class TestBlockManagerSafeMode {
    *
    * @throws IOException
    */
-  @Before
+  @BeforeEach
   public void setupMockCluster() throws IOException {
     Configuration conf = new HdfsConfiguration();
     conf.setDouble(DFSConfigKeys.DFS_NAMENODE_SAFEMODE_THRESHOLD_PCT_KEY,
@@ -94,6 +97,8 @@ public class TestBlockManagerSafeMode {
     fsn = mock(FSNamesystem.class);
     doReturn(true).when(fsn).hasWriteLock();
     doReturn(true).when(fsn).hasReadLock();
+    doReturn(true).when(fsn).hasWriteLock(RwLockMode.BM);
+    doReturn(true).when(fsn).hasReadLock(RwLockMode.BM);
     doReturn(true).when(fsn).isRunning();
     NameNode.initMetrics(conf, NamenodeRole.NAMENODE);
 
@@ -113,10 +118,11 @@ public class TestBlockManagerSafeMode {
    * The block total is set which will call checkSafeMode for the first time
    * and bmSafeMode transfers from OFF to PENDING_THRESHOLD status
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testInitialize() {
-    assertFalse("Block manager should not be in safe mode at beginning.",
-        bmSafeMode.isInSafeMode());
+    assertFalse(bmSafeMode.isInSafeMode(),
+        "Block manager should not be in safe mode at beginning.");
     bmSafeMode.activate(BLOCK_TOTAL);
     assertEquals(BMSafeModeStatus.PENDING_THRESHOLD, getSafeModeStatus());
     assertTrue(bmSafeMode.isInSafeMode());
@@ -137,7 +143,8 @@ public class TestBlockManagerSafeMode {
    * stage and will stop if the safe mode leaves to OFF state. Across different
    * test cases, this thread should be reset.
    */
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testCheckSafeMode1() {
     // stays in PENDING_THRESHOLD: pending block threshold
     bmSafeMode.activate(BLOCK_TOTAL);
@@ -150,7 +157,8 @@ public class TestBlockManagerSafeMode {
   }
 
   /** Check safe mode transition from PENDING_THRESHOLD to EXTENSION. */
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testCheckSafeMode2() {
     bmSafeMode.activate(BLOCK_TOTAL);
     Whitebox.setInternalState(bmSafeMode, "extension", Integer.MAX_VALUE);
@@ -161,7 +169,8 @@ public class TestBlockManagerSafeMode {
   }
 
   /** Check safe mode transition from PENDING_THRESHOLD to OFF. */
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testCheckSafeMode3() {
     bmSafeMode.activate(BLOCK_TOTAL);
     Whitebox.setInternalState(bmSafeMode, "extension", 0);
@@ -172,7 +181,8 @@ public class TestBlockManagerSafeMode {
   }
 
   /** Check safe mode stays in EXTENSION pending threshold. */
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testCheckSafeMode4() {
     bmSafeMode.activate(BLOCK_TOTAL);
     setBlockSafe(0);
@@ -183,7 +193,8 @@ public class TestBlockManagerSafeMode {
   }
 
   /** Check safe mode stays in EXTENSION pending extension period. */
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testCheckSafeMode5() {
     bmSafeMode.activate(BLOCK_TOTAL);
     Whitebox.setInternalState(bmSafeMode, "extension", Integer.MAX_VALUE);
@@ -194,7 +205,8 @@ public class TestBlockManagerSafeMode {
   }
 
   /** Check it will not leave safe mode during NN transitionToActive. */
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testCheckSafeMode6() {
     doReturn(true).when(fsn).inTransitionToActive();
     bmSafeMode.activate(BLOCK_TOTAL);
@@ -206,7 +218,8 @@ public class TestBlockManagerSafeMode {
   }
 
   /** Check smmthread will leave safe mode if NN is not in transitionToActive.*/
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testCheckSafeMode7() throws Exception {
     doReturn(false).when(fsn).inTransitionToActive();
     bmSafeMode.activate(BLOCK_TOTAL);
@@ -230,6 +243,34 @@ public class TestBlockManagerSafeMode {
     assertEquals(BMSafeModeStatus.OFF, getSafeModeStatus());
   }
 
+  @Test
+  @Timeout(value = 20)
+  public void testCheckSafeMode9() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    conf.setLong(DFSConfigKeys.DFS_NAMENODE_SAFEMODE_RECHECK_INTERVAL_KEY, 3000);
+    GenericTestUtils.LogCapturer logs =
+        GenericTestUtils.LogCapturer.captureLogs(BlockManagerSafeMode.LOG);
+    BlockManagerSafeMode blockManagerSafeMode = new BlockManagerSafeMode(bm,
+        fsn, true, conf);
+    String content = logs.getOutput();
+    assertTrue(content.contains("Using 3000 as SafeModeMonitor Interval"));
+  }
+
+  @Test
+  @Timeout(value = 20)
+  public void testCheckSafeMode10(){
+    Configuration conf = new HdfsConfiguration();
+    conf.setLong(DFSConfigKeys.DFS_NAMENODE_SAFEMODE_RECHECK_INTERVAL_KEY, -1);
+    GenericTestUtils.LogCapturer logs =
+            GenericTestUtils.LogCapturer.captureLogs(BlockManagerSafeMode.LOG);
+    BlockManagerSafeMode blockManagerSafeMode = new BlockManagerSafeMode(bm,
+            fsn, true, conf);
+    String content = logs.getOutput();
+    assertThat(content).contains("Invalid value for " +
+            DFSConfigKeys.DFS_NAMENODE_SAFEMODE_RECHECK_INTERVAL_KEY +
+            ". Should be greater than 0, but is -1");
+  }
+
   /**
    * Test that the block safe increases up to block threshold.
    *
@@ -237,7 +278,8 @@ public class TestBlockManagerSafeMode {
    * increment will be a no-op.
    * The safe mode status lifecycle: OFF -> PENDING_THRESHOLD -> OFF
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testIncrementSafeBlockCount() {
     bmSafeMode.activate(BLOCK_TOTAL);
     Whitebox.setInternalState(bmSafeMode, "extension", 0);
@@ -257,7 +299,8 @@ public class TestBlockManagerSafeMode {
    * increment will be a no-op.
    * The safe mode status lifecycle: OFF -> PENDING_THRESHOLD -> EXTENSION-> OFF
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testIncrementSafeBlockCountWithExtension() throws Exception {
     bmSafeMode.activate(BLOCK_TOTAL);
 
@@ -279,7 +322,8 @@ public class TestBlockManagerSafeMode {
    * The block manager stays in safe mode.
    * The safe mode status lifecycle: OFF -> PENDING_THRESHOLD
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testDecrementSafeBlockCount() {
     bmSafeMode.activate(BLOCK_TOTAL);
     Whitebox.setInternalState(bmSafeMode, "extension", 0);
@@ -301,7 +345,8 @@ public class TestBlockManagerSafeMode {
    * Both the increment and decrement will be a no-op if the safe mode is OFF.
    * The safe mode status lifecycle: OFF -> PENDING_THRESHOLD -> OFF
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testIncrementAndDecrementSafeBlockCount() {
     bmSafeMode.activate(BLOCK_TOTAL);
     Whitebox.setInternalState(bmSafeMode, "extension", 0);
@@ -326,7 +371,8 @@ public class TestBlockManagerSafeMode {
    * Both the increment and decrement will be a no-op if the safe mode is OFF.
    * The safe mode status lifecycle: OFF -> PENDING_THRESHOLD -> OFF
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testIncrementAndDecrementStripedSafeBlockCount() {
     bmSafeMode.activate(BLOCK_TOTAL);
     Whitebox.setInternalState(bmSafeMode, "extension", 0);
@@ -338,6 +384,7 @@ public class TestBlockManagerSafeMode {
     for (long i = 1; i <= BLOCK_TOTAL; i++) {
       BlockInfoStriped blockInfo = mock(BlockInfoStriped.class);
       when(blockInfo.getRealDataBlockNum()).thenReturn(realDataBlockNum);
+      when(blockInfo.isStriped()).thenReturn(true);
 
       bmSafeMode.incrementSafeBlockCount(realDataBlockNum, blockInfo);
       bmSafeMode.decrementSafeBlockCount(blockInfo);
@@ -353,7 +400,8 @@ public class TestBlockManagerSafeMode {
    * The monitor will make block manager leave the safe mode after  extension
    * period.
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testSafeModeMonitor() throws Exception {
     bmSafeMode.activate(BLOCK_TOTAL);
 
@@ -369,7 +417,8 @@ public class TestBlockManagerSafeMode {
   /**
    * Test block manager won't leave safe mode if datanode threshold is not met.
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testDatanodeThreshodShouldBeMet() throws Exception {
     bmSafeMode.activate(BLOCK_TOTAL);
 
@@ -390,7 +439,8 @@ public class TestBlockManagerSafeMode {
    * Test block manager won't leave safe mode if datanode threshold is not met
    * only if datanodeThreshold is configured > 0.
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testDatanodeThreshodShouldBeMetOnlyIfConfigured()
           throws Exception {
     bmSafeMode.activate(BLOCK_TOTAL);
@@ -471,7 +521,8 @@ public class TestBlockManagerSafeMode {
    * Test block manager won't leave safe mode if there are blocks with
    * generation stamp (GS) in future.
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testStayInSafeModeWhenBytesInFuture() throws Exception {
     bmSafeMode.activate(BLOCK_TOTAL);
 
@@ -485,17 +536,18 @@ public class TestBlockManagerSafeMode {
     // PENDING_THRESHOLD -> EXTENSION
     bmSafeMode.checkSafeMode();
 
-    assertFalse("Shouldn't leave safe mode in case of blocks with future GS! ",
-        bmSafeMode.leaveSafeMode(false));
-    assertTrue("Leaving safe mode forcefully should succeed regardless of " +
-        "blocks with future GS.", bmSafeMode.leaveSafeMode(true));
-    assertEquals("Number of blocks with future GS should have been cleared " +
-        "after leaving safe mode", 0L, bmSafeMode.getBytesInFuture());
-    assertTrue("Leaving safe mode should succeed after blocks with future GS " +
-        "are cleared.", bmSafeMode.leaveSafeMode(false));
+    assertFalse(bmSafeMode.leaveSafeMode(false),
+        "Shouldn't leave safe mode in case of blocks with future GS! ");
+    assertTrue(bmSafeMode.leaveSafeMode(true),
+        "Leaving safe mode forcefully should succeed regardless of " + "blocks with future GS.");
+    assertEquals(0L, bmSafeMode.getBytesInFuture(),
+        "Number of blocks with future GS should have been cleared " + "after leaving safe mode");
+    assertTrue(bmSafeMode.leaveSafeMode(false),
+        "Leaving safe mode should succeed after blocks with future GS " + "are cleared.");
   }
 
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testExtensionConfig() {
     final Configuration conf = new HdfsConfiguration();
     bmSafeMode = new BlockManagerSafeMode(bm, fsn, false, conf);
@@ -517,7 +569,8 @@ public class TestBlockManagerSafeMode {
   /**
    * Test get safe mode tip.
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testGetSafeModeTip() throws Exception {
     bmSafeMode.activate(BLOCK_TOTAL);
     String tip = bmSafeMode.getSafeModeTip();
@@ -586,7 +639,8 @@ public class TestBlockManagerSafeMode {
   /**
    * Test get safe mode tip in case of blocks with future GS.
    */
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testGetSafeModeTipForBlocksWithFutureGS() throws Exception {
     bmSafeMode.activate(BLOCK_TOTAL);
 
@@ -705,16 +759,16 @@ public class TestBlockManagerSafeMode {
 
   private void assertSafeModeIsLeftAtThreshold(long blockIndex) {
     if (blockIndex < BLOCK_THRESHOLD) {
-      assertEquals("Current block index should be equal to " +
-          "the safe block counter.", blockIndex, getblockSafe());
-      assertTrue("Block Manager should stay in safe mode until " +
-          "the safe block threshold is reached.", bmSafeMode.isInSafeMode());
+      assertEquals(blockIndex, getblockSafe(),
+          "Current block index should be equal to " + "the safe block counter.");
+      assertTrue(bmSafeMode.isInSafeMode(), "Block Manager should stay in safe mode until "
+          + "the safe block threshold is reached.");
     } else {
-      assertEquals("If safe block threshold is reached, safe block " +
-          "counter should not increase further.",
-          BLOCK_THRESHOLD, getblockSafe());
-      assertFalse("Block manager leaves safe mode if block " +
-          "threshold is met.", bmSafeMode.isInSafeMode());
+      assertEquals(BLOCK_THRESHOLD, getblockSafe(),
+          "If safe block threshold is reached, safe block "
+              + "counter should not increase further.");
+      assertFalse(bmSafeMode.isInSafeMode(),
+          "Block manager leaves safe mode if block " + "threshold is met.");
     }
   }
 }

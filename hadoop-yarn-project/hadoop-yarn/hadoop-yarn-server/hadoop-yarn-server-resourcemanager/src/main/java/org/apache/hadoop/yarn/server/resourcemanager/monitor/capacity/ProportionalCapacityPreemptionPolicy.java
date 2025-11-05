@@ -17,9 +17,12 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractParentQueue;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractLeafQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
@@ -38,9 +41,6 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
 
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity
-    .ManagedParentQueue;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.ParentQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueueCapacities;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.preemption.PreemptableQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.ContainerPreemptEvent;
@@ -111,6 +111,9 @@ public class ProportionalCapacityPreemptionPolicy
   private float maxAllowableLimitForIntraQueuePreemption;
   private float minimumThresholdForIntraQueuePreemption;
   private IntraQueuePreemptionOrderPolicy intraQueuePreemptionOrderPolicy;
+
+  private boolean crossQueuePreemptionConservativeDRF;
+  private boolean inQueuePreemptionConservativeDRF;
 
   // Current configuration
   private CapacitySchedulerConfiguration csConfig;
@@ -224,6 +227,18 @@ public class ProportionalCapacityPreemptionPolicy
                 CapacitySchedulerConfiguration.DEFAULT_INTRAQUEUE_PREEMPTION_ORDER_POLICY)
             .toUpperCase());
 
+    crossQueuePreemptionConservativeDRF =  config.getBoolean(
+        CapacitySchedulerConfiguration.
+        CROSS_QUEUE_PREEMPTION_CONSERVATIVE_DRF,
+        CapacitySchedulerConfiguration.
+        DEFAULT_CROSS_QUEUE_PREEMPTION_CONSERVATIVE_DRF);
+
+    inQueuePreemptionConservativeDRF =  config.getBoolean(
+        CapacitySchedulerConfiguration.
+        IN_QUEUE_PREEMPTION_CONSERVATIVE_DRF,
+        CapacitySchedulerConfiguration.
+        DEFAULT_IN_QUEUE_PREEMPTION_CONSERVATIVE_DRF);
+
     candidatesSelectionPolicies = new ArrayList<>();
 
     // Do we need white queue-priority preemption policy?
@@ -299,7 +314,12 @@ public class ProportionalCapacityPreemptionPolicy
           selectCandidatesForResevedContainers + "\n" +
         "additional_res_balance_based_on_reserved_containers = " +
           additionalPreemptionBasedOnReservedResource + "\n" +
-        "Preemption-to-balance-queue-enabled = " + isPreemptionToBalanceRequired);
+        "Preemption-to-balance-queue-enabled = " +
+          isPreemptionToBalanceRequired + "\n" +
+        "cross-queue-preemption.conservative-drf = " +
+          crossQueuePreemptionConservativeDRF + "\n" +
+        "in-queue-preemption.conservative-drf = " +
+          inQueuePreemptionConservativeDRF);
 
     csConfig = config;
   }
@@ -409,10 +429,14 @@ public class ProportionalCapacityPreemptionPolicy
   }
 
   private Set<String> getLeafQueueNames(TempQueuePerPartition q) {
-    // If its a ManagedParentQueue, it might not have any children
-    if ((q.children == null || q.children.isEmpty())
-        && !(q.parentQueue instanceof ManagedParentQueue)) {
-      return ImmutableSet.of(q.queueName);
+    // Only consider this a leaf queue if:
+    // It is a concrete leaf queue (not a childless parent)
+    if (CollectionUtils.isEmpty(q.children)) {
+      CSQueue queue = scheduler.getQueue(q.queueName);
+      if (queue instanceof AbstractLeafQueue) {
+        return ImmutableSet.of(q.queueName);
+      }
+      return Collections.emptySet();
     }
 
     Set<String> leafQueueNames = new HashSet<>();
@@ -422,7 +446,7 @@ public class ProportionalCapacityPreemptionPolicy
 
     return leafQueueNames;
   }
-  
+
   /**
    * This method selects and tracks containers to be preemptionCandidates. If a container
    * is in the target list for more than maxWaitTime it is killed.
@@ -473,7 +497,7 @@ public class ProportionalCapacityPreemptionPolicy
     Map<ApplicationAttemptId, Set<RMContainer>> toPreempt =
         new HashMap<>();
     Map<PreemptionCandidatesSelector, Map<ApplicationAttemptId,
-        Set<RMContainer>>> toPreemptPerSelector =  new HashMap<>();;
+        Set<RMContainer>>> toPreemptPerSelector =  new HashMap<>();
     for (PreemptionCandidatesSelector selector :
         candidatesSelectionPolicies) {
       long startTime = 0;
@@ -607,9 +631,9 @@ public class ProportionalCapacityPreemptionPolicy
           partitionToLookAt, killable, absCap, absMaxCap, partitionResource,
           reserved, curQueue, effMinRes, effMaxRes);
 
-      if (curQueue instanceof ParentQueue) {
+      if (curQueue instanceof AbstractParentQueue) {
         String configuredOrderingPolicy =
-            ((ParentQueue) curQueue).getQueueOrderingPolicy().getConfigName();
+            ((AbstractParentQueue) curQueue).getQueueOrderingPolicy().getConfigName();
 
         // Recursively add children
         for (CSQueue c : curQueue.getChildQueues()) {
@@ -779,6 +803,16 @@ public class ProportionalCapacityPreemptionPolicy
   @Override
   public IntraQueuePreemptionOrderPolicy getIntraQueuePreemptionOrderPolicy() {
     return intraQueuePreemptionOrderPolicy;
+  }
+
+  @Override
+  public boolean getCrossQueuePreemptionConservativeDRF() {
+    return crossQueuePreemptionConservativeDRF;
+  }
+
+  @Override
+  public boolean getInQueuePreemptionConservativeDRF() {
+    return inQueuePreemptionConservativeDRF;
   }
 
   @Override

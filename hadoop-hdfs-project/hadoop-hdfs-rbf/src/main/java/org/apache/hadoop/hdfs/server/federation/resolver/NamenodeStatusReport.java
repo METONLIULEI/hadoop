@@ -73,8 +73,10 @@ public class NamenodeStatusReport {
   private int corruptFilesCount = -1;
   private long scheduledReplicationBlocks = -1;
   private long numberOfMissingBlocksWithReplicationFactorOne = -1;
+  private long numberOfBadlyDistributedBlocks = -1;
   private long highestPriorityLowRedundancyReplicatedBlocks = -1;
   private long highestPriorityLowRedundancyECBlocks = -1;
+  private int pendingSPSPaths = -1;
 
   /** If the fields are valid. */
   private boolean registrationValid = false;
@@ -367,12 +369,13 @@ public class NamenodeStatusReport {
    * @param numBlocksPendingReplication Number of blocks pending replication.
    * @param numBlocksUnderReplicated Number of blocks under replication.
    * @param numBlocksPendingDeletion Number of blocks pending deletion.
-   * @param providedSpace Space in provided storage.
+   * @param providedStorageSpace Space in provided storage.
+   * @param numPendingSPSPaths The number of paths to be processed by storage policy satisfier.
    */
   public void setNamesystemInfo(long available, long total,
       long numFiles, long numBlocks, long numBlocksMissing,
       long numBlocksPendingReplication, long numBlocksUnderReplicated,
-      long numBlocksPendingDeletion, long providedSpace) {
+      long numBlocksPendingDeletion, long providedStorageSpace, int numPendingSPSPaths) {
     this.totalSpace = total;
     this.availableSpace = available;
     this.numOfBlocks = numBlocks;
@@ -382,7 +385,8 @@ public class NamenodeStatusReport {
     this.numOfBlocksPendingDeletion = numBlocksPendingDeletion;
     this.numOfFiles = numFiles;
     this.statsValid = true;
-    this.providedSpace = providedSpace;
+    this.providedSpace = providedStorageSpace;
+    this.pendingSPSPaths = numPendingSPSPaths;
   }
 
   /**
@@ -391,6 +395,7 @@ public class NamenodeStatusReport {
    * @param numCorruptFiles number of corrupt files.
    * @param numOfMissingBlocksWithReplicationFactorOne number of missing
    * blocks with rep one.
+   * @param numOfBadlyDistributedBlocks number of badly distributed blocks
    * @param highestPriorityLowRedundancyRepBlocks number of high priority low
    * redundancy rep blocks.
    * @param highPriorityLowRedundancyECBlocks number of high priority low
@@ -398,11 +403,14 @@ public class NamenodeStatusReport {
    */
   public void setNamenodeInfo(int numCorruptFiles,
       long numOfMissingBlocksWithReplicationFactorOne,
+      long numOfBadlyDistributedBlocks,
       long highestPriorityLowRedundancyRepBlocks,
       long highPriorityLowRedundancyECBlocks) {
     this.corruptFilesCount = numCorruptFiles;
     this.numberOfMissingBlocksWithReplicationFactorOne =
         numOfMissingBlocksWithReplicationFactorOne;
+    this.numberOfBadlyDistributedBlocks =
+        numOfBadlyDistributedBlocks;
     this.highestPriorityLowRedundancyReplicatedBlocks =
         highestPriorityLowRedundancyRepBlocks;
     this.highestPriorityLowRedundancyECBlocks =
@@ -439,6 +447,16 @@ public class NamenodeStatusReport {
   }
 
   /**
+   * Gets the total number of badly distributed blocks.
+   *
+   * @return the total number of badly distrubted blocks.
+   */
+  public long getNumberOfBadlyDistributedBlocks() {
+    return this.numberOfBadlyDistributedBlocks;
+  }
+
+
+  /**
    * Gets the total number of replicated low redundancy blocks on the cluster
    * with the highest risk of loss.
    *
@@ -458,6 +476,15 @@ public class NamenodeStatusReport {
    */
   public long getHighestPriorityLowRedundancyECBlocks() {
     return this.highestPriorityLowRedundancyECBlocks;
+  }
+
+  /**
+   * Returns the number of paths to be processed by storage policy satisfier.
+   *
+   * @return The number of paths to be processed by sps.
+   */
+  public int getPendingSPSPaths() {
+    return this.pendingSPSPaths;
   }
 
   /**

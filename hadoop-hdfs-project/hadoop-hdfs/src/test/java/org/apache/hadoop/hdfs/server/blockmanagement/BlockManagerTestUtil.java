@@ -33,37 +33,42 @@ import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.test.Whitebox;
-import org.junit.Assert;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class BlockManagerTestUtil {
+
+  static final long SLEEP_TIME = 1000;
+
   public static void setNodeReplicationLimit(final BlockManager blockManager,
       final int limit) {
-    blockManager.maxReplicationStreams = limit;
+    blockManager.setMaxReplicationStreams(limit, false);
   }
 
   /** @return the datanode descriptor for the given the given storageID. */
   public static DatanodeDescriptor getDatanode(final FSNamesystem ns,
       final String storageID) {
-    ns.readLock();
+    ns.readLock(RwLockMode.BM);
     try {
       return ns.getBlockManager().getDatanodeManager().getDatanode(storageID);
     } finally {
-      ns.readUnlock();
+      ns.readUnlock(RwLockMode.BM, "getDatanode");
     }
   }
 
   public static Iterator<BlockInfo> getBlockIterator(final FSNamesystem ns,
       final String storageID, final int startBlock) {
-    ns.readLock();
+    ns.readLock(RwLockMode.BM);
     try {
       DatanodeDescriptor dn =
           ns.getBlockManager().getDatanodeManager().getDatanode(storageID);
       return dn.getBlockIterator(startBlock);
     } finally {
-      ns.readUnlock();
+      ns.readUnlock(RwLockMode.BM, "getBlockIterator");
     }
   }
 
@@ -85,7 +90,7 @@ public class BlockManagerTestUtil {
    */
   public static int[] getReplicaInfo(final FSNamesystem namesystem, final Block b) {
     final BlockManager bm = namesystem.getBlockManager();
-    namesystem.readLock();
+    namesystem.readLock(RwLockMode.BM);
     try {
       final BlockInfo storedBlock = bm.getStoredBlock(b);
       return new int[]{getNumberOfRacks(bm, b),
@@ -93,7 +98,7 @@ public class BlockManagerTestUtil {
           bm.neededReconstruction.contains(storedBlock) ? 1 : 0,
           getNumberOfDomains(bm, b)};
     } finally {
-      namesystem.readUnlock();
+      namesystem.readUnlock(RwLockMode.BM, "getReplicaInfo");
     }
   }
 
@@ -178,7 +183,20 @@ public class BlockManagerTestUtil {
    */
   public static  CorruptReplicasMap getCorruptReplicas(final BlockManager blockManager){
     return blockManager.corruptReplicas;
-    
+
+  }
+
+  /**
+   * Wait for the processing of the marked deleted block to complete.
+   */
+  public static void waitForMarkedDeleteQueueIsEmpty(
+      BlockManager blockManager) throws InterruptedException {
+    while (true) {
+      if (blockManager.getMarkedDeleteQueue().isEmpty()) {
+        return;
+      }
+      Thread.sleep(SLEEP_TIME);
+    }
   }
 
   /**
@@ -231,7 +249,7 @@ public class BlockManagerTestUtil {
    */
   public static void noticeDeadDatanode(NameNode nn, String dnName) {
     FSNamesystem namesystem = nn.getNamesystem();
-    namesystem.writeLock();
+    namesystem.writeLock(RwLockMode.BM);
     try {
       DatanodeManager dnm = namesystem.getBlockManager().getDatanodeManager();
       HeartbeatManager hbm = dnm.getHeartbeatManager();
@@ -242,14 +260,14 @@ public class BlockManagerTestUtil {
           theDND = dnd;
         }
       }
-      Assert.assertNotNull("Could not find DN with name: " + dnName, theDND);
+      assertNotNull(theDND, "Could not find DN with name: " + dnName);
       
       synchronized (hbm) {
         DFSTestUtil.setDatanodeDead(theDND);
         hbm.heartbeatCheck();
       }
     } finally {
-      namesystem.writeUnlock();
+      namesystem.writeUnlock(RwLockMode.BM, "noticeDeadDatanode");
     }
   }
   
@@ -286,12 +304,13 @@ public class BlockManagerTestUtil {
    */
   public static int checkHeartbeatAndGetUnderReplicatedBlocksCount(
       FSNamesystem namesystem, BlockManager bm) {
-    namesystem.writeLock();
+    namesystem.writeLock(RwLockMode.BM);
     try {
       bm.getDatanodeManager().getHeartbeatManager().heartbeatCheck();
       return bm.getUnderReplicatedNotMissingBlocks();
     } finally {
-      namesystem.writeUnlock();
+      namesystem.writeUnlock(RwLockMode.BM,
+          "checkHeartbeatAndGetUnderReplicatedBlocksCount");
     }
   }
 
@@ -365,6 +384,16 @@ public class BlockManagerTestUtil {
   public static void recheckDecommissionState(DatanodeManager dm)
       throws ExecutionException, InterruptedException {
     dm.getDatanodeAdminManager().runMonitorForTest();
+  }
+
+  /**
+   * Have BlockManager check isNodeHealthyForDecommissionOrMaintenance for a given datanode.
+   * @param blockManager the BlockManager to check against
+   * @param dn the datanode to check
+   */
+  public static boolean isNodeHealthyForDecommissionOrMaintenance(BlockManager blockManager,
+      DatanodeDescriptor dn) {
+    return blockManager.isNodeHealthyForDecommissionOrMaintenance(dn);
   }
 
   /**

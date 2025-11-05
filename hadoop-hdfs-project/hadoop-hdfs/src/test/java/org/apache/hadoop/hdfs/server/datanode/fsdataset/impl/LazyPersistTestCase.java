@@ -30,10 +30,9 @@ import static org.apache.hadoop.fs.StorageType.DEFAULT;
 import static org.apache.hadoop.fs.StorageType.RAM_DISK;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
 import static org.apache.hadoop.util.Shell.getMemlockLimit;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
@@ -45,8 +44,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
-import org.apache.commons.io.IOUtils;
+import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
@@ -55,6 +54,7 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -80,11 +80,10 @@ import org.apache.hadoop.io.nativeio.NativeIO;
 import org.apache.hadoop.net.unix.TemporarySocketDirectory;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Rule;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.AfterEach;
 import org.slf4j.event.Level;
 
+@Timeout(300)
 public abstract class LazyPersistTestCase {
   static final byte LAZY_PERSIST_POLICY_ID = (byte) 15;
 
@@ -129,7 +128,7 @@ public abstract class LazyPersistTestCase {
   protected JMXGet jmx;
   protected TemporarySocketDirectory sockDir;
 
-  @After
+  @AfterEach
   public void shutDownCluster() throws Exception {
 
     // Dump all RamDisk JMX metrics before shutdown the cluster
@@ -151,19 +150,16 @@ public abstract class LazyPersistTestCase {
       jmx = null;
     }
 
-    IOUtils.closeQuietly(sockDir);
+    IOUtils.closeStream(sockDir);
     sockDir = null;
   }
-
-  @Rule
-  public Timeout timeout = Timeout.seconds(300);
 
   protected final LocatedBlocks ensureFileReplicasOnStorageType(
       Path path, StorageType storageType)
       throws IOException, TimeoutException, InterruptedException {
     // Ensure that returned block locations returned are correct!
     LOG.info("Ensure path: {} is on StorageType: {}", path, storageType);
-    assertThat(fs.exists(path), is(true));
+    assertThat(fs.exists(path)).isEqualTo(true);
     long fileLength = client.getFileInfo(path.toString()).getLen();
 
     GenericTestUtils.waitFor(() -> {
@@ -252,16 +248,13 @@ public abstract class LazyPersistTestCase {
       createFlags.add(LAZY_PERSIST);
     }
 
-    FSDataOutputStream fos = null;
-    try {
-      fos =
-          fs.create(path,
-              FsPermission.getFileDefault(),
-              createFlags,
-              BUFFER_LENGTH,
-              REPL_FACTOR,
-              BLOCK_SIZE,
-              null);
+    try (FSDataOutputStream fos = fs.create(path,
+        FsPermission.getFileDefault(),
+        createFlags,
+        BUFFER_LENGTH,
+        REPL_FACTOR,
+        BLOCK_SIZE,
+        null)) {
 
       // Allocate a block.
       byte[] buffer = new byte[BUFFER_LENGTH];
@@ -272,8 +265,6 @@ public abstract class LazyPersistTestCase {
       if (length > 0) {
         fos.hsync();
       }
-    } finally {
-      IOUtils.closeQuietly(fos);
     }
   }
 

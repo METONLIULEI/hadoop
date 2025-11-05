@@ -20,9 +20,9 @@ package org.apache.hadoop.hdfs.server.namenode;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
 import org.apache.hadoop.util.StringUtils;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
@@ -63,6 +63,7 @@ import org.apache.hadoop.hdfs.server.namenode.sps.StoragePolicySatisfyManager;
 import org.apache.hadoop.hdfs.util.ByteArray;
 import org.apache.hadoop.hdfs.util.EnumCounters;
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Time;
@@ -79,6 +80,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.concurrent.ForkJoinPool;
@@ -87,6 +89,8 @@ import java.util.concurrent.RecursiveAction;
 import static org.apache.hadoop.fs.CommonConfigurationKeys.FS_PROTECTED_DIRECTORIES;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_ACCESSTIME_PRECISION_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_ACCESS_CONTROL_ENFORCER_REPORTING_THRESHOLD_MS_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_ACCESS_CONTROL_ENFORCER_REPORTING_THRESHOLD_MS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_QUOTA_BY_STORAGETYPE_ENABLED_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_QUOTA_BY_STORAGETYPE_ENABLED_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_PROTECTED_SUBDIRECTORIES_ENABLE;
@@ -181,6 +185,8 @@ public class FSDirectory implements Closeable {
    * ACL-related operations.
    */
   private final boolean aclsEnabled;
+  /** Threshold to print a warning. */
+  private final long accessControlEnforcerReportingThresholdMs;
   /**
    * Support for POSIX ACL inheritance. Not final for testing purpose.
    */
@@ -257,37 +263,31 @@ public class FSDirectory implements Closeable {
    * remain as placeholders only
    */
   void readLock() {
-    assert namesystem.hasReadLock() : "Should hold namesystem read lock";
+    assert namesystem.hasReadLock(RwLockMode.FS) :
+        "Should hold read lock of namesystem FSLock";
   }
 
   void readUnlock() {
-    assert namesystem.hasReadLock() : "Should hold namesystem read lock";
+    assert namesystem.hasReadLock(RwLockMode.FS) :
+        "Should hold read lock of namesystem FSLock";
   }
 
   void writeLock() {
-    assert namesystem.hasWriteLock() : "Should hold namesystem write lock";
+    assert namesystem.hasWriteLock(RwLockMode.FS) :
+        "Should hold write lock of namesystem FSLock";
   }
 
   void writeUnlock() {
-    assert namesystem.hasWriteLock() : "Should hold namesystem write lock";
+    assert namesystem.hasWriteLock(RwLockMode.FS) :
+        "Should hold write lock of namesystem FSLock";
   }
 
   boolean hasWriteLock() {
-    return namesystem.hasWriteLock();
+    return namesystem.hasWriteLock(RwLockMode.FS);
   }
 
   boolean hasReadLock() {
-    return namesystem.hasReadLock();
-  }
-
-  @Deprecated // dirLock is obsolete, use namesystem.fsLock instead
-  public int getReadHoldCount() {
-    return namesystem.getReadHoldCount();
-  }
-
-  @Deprecated // dirLock is obsolete, use namesystem.fsLock instead
-  public int getWriteHoldCount() {
-    return namesystem.getWriteHoldCount();
+    return namesystem.hasReadLock(RwLockMode.FS);
   }
 
   public int getListLimit() {
@@ -387,6 +387,10 @@ public class FSDirectory implements Closeable {
     this.isProtectedSubDirectoriesEnable = conf.getBoolean(
         DFS_PROTECTED_SUBDIRECTORIES_ENABLE,
         DFS_PROTECTED_SUBDIRECTORIES_ENABLE_DEFAULT);
+
+    this.accessControlEnforcerReportingThresholdMs = conf.getLong(
+        DFS_NAMENODE_ACCESS_CONTROL_ENFORCER_REPORTING_THRESHOLD_MS_KEY,
+        DFS_NAMENODE_ACCESS_CONTROL_ENFORCER_REPORTING_THRESHOLD_MS_DEFAULT);
 
     Preconditions.checkArgument(this.inodeXAttrsLimit >= 0,
         "Cannot set a negative limit on the number of xattrs per inode (%s).",
@@ -686,7 +690,7 @@ public class FSDirectory implements Closeable {
    * accessible path that also passed additional sanity checks based on how
    * the path will be used as specified by the DirOp.
    *   READ:   Expands reserved paths and performs permission checks
-   *           during traversal.  Raw paths are only accessible by a superuser.
+   *           during traversal.
    *   WRITE:  In addition to READ checks, ensures the path is not a
    *           snapshot path.
    *   CREATE: In addition to WRITE checks, ensures path does not contain
@@ -717,18 +721,18 @@ public class FSDirectory implements Closeable {
 
     byte[][] components = INode.getPathComponents(src);
     boolean isRaw = isReservedRawName(components);
-    if (isPermissionEnabled && pc != null && isRaw) {
-      switch(dirOp) {
-        case READ_LINK:
-        case READ:
-          break;
-        default:
-          pc.checkSuperuserPrivilege();
-          break;
-      }
-    }
     components = resolveComponents(components, this);
     INodesInPath iip = INodesInPath.resolve(rootDir, components, isRaw);
+    if (isPermissionEnabled && pc != null && isRaw) {
+      switch(dirOp) {
+      case READ_LINK:
+      case READ:
+        break;
+      default:
+        pc.checkSuperuserPrivilege(iip.getPath());
+        break;
+      }
+    }
     // verify all ancestors are dirs and traversable.  note that only
     // methods that create new namespace items have the signature to throw
     // PNDE
@@ -1000,10 +1004,12 @@ public class FSDirectory implements Closeable {
    * when image/edits have been loaded and the file/dir to be deleted is not
    * contained in snapshots.
    */
-  void updateCountForDelete(final INode inode, final INodesInPath iip) {
+  void updateCountForDelete(final INode inode, final INodesInPath iip,
+      final Optional<QuotaCounts> quotaCounts) {
     if (getFSNamesystem().isImageLoaded() &&
         !inode.isInLatestSnapshot(iip.getLatestSnapshotId())) {
-      QuotaCounts counts = inode.computeQuotaUsage(getBlockStoragePolicySuite());
+      QuotaCounts counts = quotaCounts.orElseGet(() ->
+          inode.computeQuotaUsage(getBlockStoragePolicySuite()));
       unprotectedUpdateCount(iip, iip.length() - 1, counts.negation());
     }
   }
@@ -1100,7 +1106,7 @@ public class FSDirectory implements Closeable {
    */
   public void updateSpaceForCompleteBlock(BlockInfo completeBlk,
       INodesInPath inodes) throws IOException {
-    assert namesystem.hasWriteLock();
+    assert namesystem.hasWriteLock(RwLockMode.GLOBAL);
     INodesInPath iip = inodes != null ? inodes :
         INodesInPath.fromINode(namesystem.getBlockCollection(completeBlk));
     INodeFile fileINode = iip.getLastINode().asFile();
@@ -1190,7 +1196,7 @@ public class FSDirectory implements Closeable {
     cacheName(child);
     writeLock();
     try {
-      return addLastINode(existing, child, modes, true);
+      return addLastINode(existing, child, modes, true, Optional.empty());
     } finally {
       writeUnlock();
     }
@@ -1341,7 +1347,8 @@ public class FSDirectory implements Closeable {
    */
   @VisibleForTesting
   public INodesInPath addLastINode(INodesInPath existing, INode inode,
-      FsPermission modes, boolean checkQuota) throws QuotaExceededException {
+      FsPermission modes, boolean checkQuota, Optional<QuotaCounts> quotaCount)
+      throws QuotaExceededException {
     assert existing.getLastINode() != null &&
         existing.getLastINode().isDirectory();
 
@@ -1372,9 +1379,10 @@ public class FSDirectory implements Closeable {
     // always verify inode name
     verifyINodeName(inode.getLocalNameBytes());
 
-    final QuotaCounts counts = inode
-        .computeQuotaUsage(getBlockStoragePolicySuite(),
-            parent.getStoragePolicyID(), false, Snapshot.CURRENT_STATE_ID);
+    final QuotaCounts counts = quotaCount.orElseGet(() -> inode.
+        computeQuotaUsage(getBlockStoragePolicySuite(),
+            parent.getStoragePolicyID(), false,
+            Snapshot.CURRENT_STATE_ID));
     updateCount(existing, pos, counts, checkQuota);
 
     boolean isRename = (inode.getParent() != null);
@@ -1392,10 +1400,11 @@ public class FSDirectory implements Closeable {
     return INodesInPath.append(existing, inode, inode.getLocalNameBytes());
   }
 
-  INodesInPath addLastINodeNoQuotaCheck(INodesInPath existing, INode i) {
+  INodesInPath addLastINodeNoQuotaCheck(INodesInPath existing, INode i,
+      Optional<QuotaCounts> quotaCount) {
     try {
       // All callers do not have create modes to pass.
-      return addLastINode(existing, i, null, false);
+      return addLastINode(existing, i, null, false, quotaCount);
     } catch (QuotaExceededException e) {
       NameNode.LOG.warn("FSDirectory.addChildNoQuotaCheck - unexpected", e);
     }
@@ -1865,7 +1874,8 @@ public class FSDirectory implements Closeable {
       UserGroupInformation ugi) throws AccessControlException {
     return new FSPermissionChecker(
         fsOwner, superGroup, ugi, getUserFilteredAttributeProvider(ugi),
-        useAuthorizationWithContextAPI);
+        useAuthorizationWithContextAPI,
+        accessControlEnforcerReportingThresholdMs);
   }
 
   void checkOwner(FSPermissionChecker pc, INodesInPath iip)
@@ -1942,7 +1952,10 @@ public class FSDirectory implements Closeable {
       boolean doCheckOwner, FsAction ancestorAccess, FsAction parentAccess,
       FsAction access, FsAction subAccess, boolean ignoreEmptyDir)
       throws AccessControlException {
-    if (!pc.isSuperUser()) {
+    if (pc.isSuperUser()) {
+      // call the external enforcer for audit
+      pc.checkSuperuserPrivilege(iip.getPath());
+    } else {
       readLock();
       try {
         pc.checkPermission(iip, doCheckOwner, ancestorAccess,
@@ -1958,9 +1971,12 @@ public class FSDirectory implements Closeable {
     if (pc.isSuperUser()) {
       if (FSDirXAttrOp.getXAttrByPrefixedName(this, iip,
           SECURITY_XATTR_UNREADABLE_BY_SUPERUSER) != null) {
-        throw new AccessControlException(
-            "Access is denied for " + pc.getUser() + " since the superuser "
-            + "is not allowed to perform this operation.");
+        String errorMessage = "Access is denied for " + pc.getUser()
+            + " since the superuser is not allowed to perform this operation.";
+        pc.denyUserAccess(iip.getPath(), errorMessage);
+      } else {
+        // call the external enforcer for audit.
+        pc.checkSuperuserPrivilege(iip.getPath());
       }
     }
   }
@@ -2061,23 +2077,7 @@ public class FSDirectory implements Closeable {
       // first empty component for the root.  however file status
       // related calls are expected to strip out the root component according
       // to TestINodeAttributeProvider.
-      // Due to HDFS-15372 the attribute provider should received the resolved
-      // snapshot path. Ie, rather than seeing /d/.snapshot/sn/data it should
-      // see /d/data. However, for the path /d/.snapshot/sn it should see this
-      // full path. If the current inode is the snapshot name, it always has the
-      // same ID as its parent inode, so we can use that to check if it is the
-      // path which needs handled specially.
-      byte[][] components;
-      INodeDirectory parent = node.getParent();
-      if (iip.isSnapshot()
-          && parent != null && parent.getId() != node.getId()) {
-        // For snapshot paths, we always user node.getPathComponents so the
-        // snapshot path is resolved to the real path, unless the last component
-        // is the snapshot name root directory.
-        components = node.getPathComponents();
-      } else {
-        components = iip.getPathComponents();
-      }
+      byte[][] components = iip.getPathComponents();
       components = Arrays.copyOfRange(components, 1, components.length);
       nodeAttrs = ap.getAttributes(components, nodeAttrs);
     }

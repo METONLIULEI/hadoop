@@ -37,6 +37,32 @@ The primary abstraction provided by the `CapacityScheduler` is the concept of *q
 
 To provide further control and predictability on sharing of resources, the `CapacityScheduler` supports *hierarchical queues* to ensure resources are shared among the sub-queues of an organization before other queues are allowed to use free resources, thereby providing *affinity* for sharing free resources among applications of a given organization.
 
+The container allocation in `CapacityScheduler` can be triggered by using one of the following ways:
+
+* **Node heartbeat** : The container scheduling is triggered by a
+  heartbeat signal from a NodeManager to the ResourceManager.The scheduler then
+  selects an application that can be scheduled for the node.
+  This type of scheduling is random, and whichever node's heartbeat
+  gets the chance. If the NodeManager heartbeat interval is set to higher values,
+  it can negatively affect the container scheduling performance.
+
+* **Asynchronous scheduling** : The container scheduling is triggered by
+  single or multiple parallel threads running in the background.
+  The scheduler first selects a random node from the node list for scheduling,
+  and then it loops through the node list (circularly) to ensure that all the nodes get
+  a fair chance. This approach improves the scheduling performance because
+  it is proactive and does not need to wait for any events.
+
+* **Global scheduling** : It is similar to asynchronous scheduling,
+  but instead of randomly picking nodes, the nodes are selected for
+  scheduling based on factors such as the resource size, scheduling requirements,
+  and resource distribution of the applications. This approach allows the scheduler
+  to make optimal scheduling decisions. The node selection policy is pluggable,
+  meaning it can be customized to fit the specific needs of the application.
+
+Note: Asynchronous scheduling is the default scheduling mechanism for capacity scheduler.
+
+
 Features
 --------
 
@@ -64,7 +90,13 @@ The `CapacityScheduler` supports the following features:
 
 * **Priority Scheduling** - This feature allows applications to be submitted and scheduled with different priorities. Higher integer value indicates higher priority for an application. Currently Application priority is supported only for FIFO ordering policy.
 
+* **Percentage Resource Configuration** - Administrators could specify percentages of resources to a queue.
+
 * **Absolute Resource Configuration** - Administrators could specify absolute resources to a queue instead of providing percentage based values. This provides better control for admins to configure required amount of resources for a given queue.
+
+* **Weight Resource Configuration** - Administrators could specify weights to a queue instead of providing percentage based values. This provides better control for admins to configure resources for the queue in a dynamically changing queue hierarchy.
+
+* **Universal Capacity Vector Resource Configuration** - Administrators could specify resources in a mixed manner to a queue using absolute, weight or percentage modes for each defined resource types. This provides the most flexible way to configure the required amount of resources for a given queue.
 
 * **Dynamic Auto-Creation and Management of Leaf Queues** - This feature supports auto-creation of **leaf queues** in conjunction with **queue-mapping** which currently supports **user-group** based queue mappings for application placement to a queue. The scheduler also supports capacity management for these queues based on a policy configured on the parent queue.
 
@@ -78,6 +110,17 @@ Configuration
 | Property | Value |
 |:---- |:---- |
 | `yarn.resourcemanager.scheduler.class` | `org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler` |
+
+###Setting up scheduling strategy
+
+  To configure different scheduling strategy in capacity scheduler, set the following property in the **conf/capacity-scheduler.xml**:
+
+
+| Property                                                                                                         | Description                                                                                                                                                                                          |
+|:-----------------------------------------------------------------------------------------------------------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `yarn.scheduler.capacity.schedule-asynchronously.enable`                                                         | Specifies whether to enable asynchronous scheduling. The default value is true.                                                                                                                      |
+| `yarn.scheduler.capacity.multi-node-placement-enabled`                                                           | Specifies whether to enable global scheduling. The default value is false. In addition to this, node sorting policy needs to be set using `yarn.scheduler.capacity.multi-node-sorting.policy.names`. |
+
 
 ###Setting up queues
 
@@ -123,27 +166,77 @@ Configuration
 
 | Property | Description |
 |:---- |:---- |
-| `yarn.scheduler.capacity.<queue-path>.capacity` | Queue *capacity* in percentage (%) as a float (e.g. 12.5) OR as absolute resource queue minimum capacity. The sum of capacities for all queues, at each level, must be equal to 100. However if absolute resource is configured, sum of absolute resources of child queues could be less than it's parent absolute resource capacity. Applications in the queue may consume more resources than the queue's capacity if there are free resources, providing elasticity. |
-| `yarn.scheduler.capacity.<queue-path>.maximum-capacity` | Maximum queue capacity in percentage (%) as a float OR as absolute resource queue maximum capacity. This limits the *elasticity* for applications in the queue. 1) Value is between 0 and 100. 2) Admin needs to make sure absolute maximum capacity >= absolute capacity for each queue. Also, setting this value to -1 sets maximum capacity to 100%. |
-| `yarn.scheduler.capacity.<queue-path>.minimum-user-limit-percent` | Each queue enforces a limit on the percentage of resources allocated to a user at any given time, if there is demand for resources. The user limit can vary between a minimum and maximum value. The former (the minimum value) is set to this property value and the latter (the maximum value) depends on the number of users who have submitted applications. For e.g., suppose the value of this property is 25. If two users have submitted applications to a queue, no single user can use more than 50% of the queue resources. If a third user submits an application, no single user can use more than 33% of the queue resources. With 4 or more users, no user can use more than 25% of the queues resources. A value of 100 implies no user limits are imposed. The default is 100. Value is specified as a integer. |
-| `yarn.scheduler.capacity.<queue-path>.user-limit-factor` | The multiple of the queue capacity which can be configured to allow a single user to acquire more resources. By default this is set to 1 which ensures that a single user can never take more than the queue's configured capacity irrespective of how idle the cluster is. Value is specified as a float. |
+| `yarn.scheduler.capacity.legacy-queue-mode.enabled` | Disabling the legacy-queue mode opens up the possibility to mix different capacity modes and the usage of the Universal Capacity Vector format to allocate resources flexibly for the queues. Default is *true*. |
+| `yarn.scheduler.capacity.<queue-path>.capacity` | Queue *capacity* in percentage (%) as a float (e.g. 12.5), weight as a float with the postfix *w* (e.g. 2.0w) or as absolute resource queue minimum capacity. When using percentage values the sum of capacities for all queues, at each level, must be equal to 100. If absolute resource is configured, sum of absolute resources of child queues could be less than its parent absolute resource capacity. Applications in the queue may consume more resources than the queue's capacity if there are free resources, providing elasticity. When the legacy-queue-mode is disabled the Universal Capacity Vector format can be used to configure the queue capacities, e.g. `[memory=50%,vcores=2w,gpu=1]`. |
+| `yarn.scheduler.capacity.<queue-path>.maximum-capacity` | Maximum queue capacity in percentage (%) as a float (when the *capacity* property is defined with either percentages or weights) or as absolute resource queue maximum capacity. This limits the *elasticity* for applications in the queue. 1) Value is between 0 and 100. 2) Admin needs to make sure absolute maximum capacity >= absolute capacity for each queue. Also, setting this value to -1 sets maximum capacity to 100%. When the legacy-queue-mode is disabled the Universal Capacity Vector format can be used to configure the queue capacities, e.g. `[memory=50%,vcores=2w,gpu=1]`. |
+| `yarn.scheduler.capacity.minimum-user-limit-percent` / `yarn.scheduler.capacity.<queue-path>.minimum-user-limit-percent` | Each queue enforces a limit on the percentage of resources allocated to a user at any given time, if there is demand for resources. The user limit can vary between a minimum and maximum value. The former (the minimum value) is set to this property value and the latter (the maximum value) depends on the number of users who have submitted applications. For e.g., suppose the value of this property is 25. If two users have submitted applications to a queue, no single user can use more than 50% of the queue resources. If a third user submits an application, no single user can use more than 33% of the queue resources. With 4 or more users, no user can use more than 25% of the queues resources. A value of 100 implies no user limits are imposed. The default is 100. Value is specified as an integer. This can be set for all queues with `yarn.scheduler.capacity.minimum-user-limit-percent` and can also be overridden on a per queue basis by setting `yarn.scheduler.capacity.<queue-path>.minimum-user-limit-percent`. |
+| `yarn.scheduler.capacity.user-limit-factor` / `yarn.scheduler.capacity.<queue-path>.user-limit-factor` | User limit factor provides a way to control the max amount of resources that a single user can consume. It is the multiple of the queue's capacity. By default this is set to 1 which ensures that a single user can never take more than the queue's configured capacity irrespective of how idle the cluster is. Increasing it means a single user can use more than the minimum capacity of the cluster, while decreasing it results in lower maximum resources. Setting this to -1 will disable the feature. Value is specified as a float. Note: using the flexible auto queue creation (yarn.scheduler.capacity.\<queue-path\>.auto-queue-creation-v2) with weights will automatically set this property to -1, as the dynamic queues will be created with the hardcoded weight of 1 and in idle cluster scenarios they should be able to use more resources than calculated. This can be set for all queues with `yarn.scheduler.capacity.user-limit-factor` and can also be overridden on a per queue basis by setting `yarn.scheduler.capacity.<queue-path>.user-limit-factor`. |
 | `yarn.scheduler.capacity.<queue-path>.maximum-allocation-mb` | The per queue maximum limit of memory to allocate to each container request at the Resource Manager. This setting overrides the cluster configuration `yarn.scheduler.maximum-allocation-mb`. This value must be smaller than or equal to the cluster maximum. |
 | `yarn.scheduler.capacity.<queue-path>.maximum-allocation-vcores` | The per queue maximum limit of virtual cores to allocate to each container request at the Resource Manager. This setting overrides the cluster configuration `yarn.scheduler.maximum-allocation-vcores`. This value must be smaller than or equal to the cluster maximum. |
 | `yarn.scheduler.capacity.<queue-path>.user-settings.<user-name>.weight` | This floating point value is used when calculating the user limit resource values for users in a queue. This value will weight each user more or less than the other users in the queue. For example, if user A should receive 50% more resources in a queue than users B and C, this property will be set to 1.5 for user A.  Users B and C will default to 1.0. |
 
-  * Resource Allocation using Absolute Resources configuration
+  * Configuring Resource Allocation (legacy-queue-mode)
 
- `CapacityScheduler` supports configuration of absolute resources instead of providing Queue *capacity* in percentage. As mentioned in above configuration section for `yarn.scheduler.capacity.<queue-path>.capacity` and `yarn.scheduler.capacity.<queue-path>.max-capacity`, administrator could specify an absolute resource value like `[memory=10240,vcores=12]`. This is a valid configuration which indicates 10GB Memory and 12 VCores.
+  `CapacityScheduler` supports three different resource allocation configuration modes: percentage values (*relative mode*), weights and absolute resources.
+
+  Relative mode provides a way to describe queue's resources as a fraction of its parent's resources. For example if *capacity* is set as 50.0 for the queue `root.users`, users queue has 50% of root's resources set as minimum capacity.
+
+  In weight mode the resources are divided based on how the queue's weight relates to the sum of configured weights under the same parent. For example if there are three queues under a parent with weights *3w*, *2w*, *5w*, the sum is 10, so the calculated minimum *capacity* will be 30%, 20% and 50% respectively. The benefit of using this mode is flexibility. When using percentages every time a new queue gets added the percentage values need to be manually recalculated, as the sum under a parent must be 100%, but with weights this is performed automatically. Using the previous example when a new queue gets added under the same parent as the previous three with weight *10w* the new sum will be 20, so the new calculated *capacities* will be: 15%, 10%, 25%, 50%. Note: `yarn.scheduler.capacity.<queue-path>.max-capacity` must be configured with percentages, as there is no weight mode for *maximum-capacity*.
+
+  To use absolute resources mode both `yarn.scheduler.capacity.<queue-path>.capacity` and `yarn.scheduler.capacity.<queue-path>.max-capacity` should have absolute resource values like `[memory=10240,vcores=12]`. This configuration indicates 10GB Memory and 12 VCores.
+
+  It is possible to mix weights and percentages in a queue structure, but child queues under one parent must use the same *capacity* mode.
+
+  * Configuring Resource Allocation (non-legacy-queue-mode)
+
+  The capacity and maximum-capacity can be set for the queues using the Universal Capacity Vector format, e.g. `[memory=50%,vcores=2w,gpu=1]`.
+  In this example the Memory is set in percentage mode, the Vcores is set in weight mode and the GPU is set in absolute units.
+  It is also possible to use to old capacity format, e.g.: `50.0` for percentage, `[memory=1024,vcores=1]` for absolute and `1w` for weight mode.
+  Different modes can be mixed freely in the queue hierarchy.
+
+  The hierarchy between the resources is calculated based on the queues' capacity configuration and the available cluster resources.
+  Calculating the hierarchy of resources is done in the following way, for each defined resource type:
+  1. the configured absolute capacities are allocated to the queues from the available cluster resources
+  2. the remaining cluster resources are allocated to the queues with percentage resource configurations
+  3. the rest of the resources are allocated to the queues with weighted resource configurations
+
+  Example for mixed queue resource allocation using the Universal Capacity Vector format:
+```
+    # Configuration
+    yarn.scheduler.capacity.legacy-queue-mode.enabled = false
+    yarn.scheduler.capacity.root.queues = default, test_1, test_2
+    yarn.scheduler.capacity.root.test_1.queues = test_1_1, test_1_2, test_1_3
+    yarn.scheduler.capacity.root.default.capacity =         [memory=1w, vcores=1w]
+    yarn.scheduler.capacity.root.test_1.capacity =          [memory=16384, vcores=16]
+    yarn.scheduler.capacity.root.test_1.test_1_1.capacity = [memory=50%, vcores=50%]
+    yarn.scheduler.capacity.root.test_1.test_1_2.capacity = [memory=1w, vcores=1w]
+    yarn.scheduler.capacity.root.test_1.test_1_3.capacity = [memory=12288, vcores=12]
+    yarn.scheduler.capacity.root.test_2.capacity =          [memory=75%, vcores=75%]
+
+    # ClusterResources=[32GB 32VCores]  EffectiveMin                     AbsoluteCapacity
+    root.default              4/32      [memory=4096,    vcores=4]       12.5%
+    root.test_1              16/32      [memory=16384,   vcores=16]
+    root.test_1.test_1_1        2/16      [memory=2048,  vcores=2]       6.25%
+    root.test_1.test_1_2        2/16      [memory=2048,  vcores=2]       6.25%
+    root.test_1.test_1_3       12/16      [memory=12288, vcores=12]      37.5%
+    root.test_2              12/32      [memory=12288,   vcores=12]      37.5%
+```
+  Further examples can be found at `TestRMWebServicesCapacitySchedulerMixedMode.java`.
+
+  The capacity for the root queue cannot be configured, it is fixed to 100% (percentage mode).
+
+  The actual capacity, absoluteCapacity and derived properties like maximumApplications are calculated from the hierarchy between the resources.
+  If there is no cluster resource, the maximumApplications defaults to the configured values.
 
   * Running and Pending Application Limits
-  
+
   The `CapacityScheduler` supports the following parameters to control the running and pending applications:
 
 | Property | Description |
 |:---- |:---- |
-| `yarn.scheduler.capacity.maximum-applications` / `yarn.scheduler.capacity.<queue-path>.maximum-applications` | Maximum number of applications in the system which can be concurrently active both running and pending. Limits on each queue are directly proportional to their queue capacities and user limits. This is a hard limit and any applications submitted when this limit is reached will be rejected. Default is 10000. This can be set for all queues with `yarn.scheduler.capacity.maximum-applications` and can also be overridden on a per queue basis by setting `yarn.scheduler.capacity.<queue-path>.maximum-applications`. Integer value expected. |
+| `yarn.scheduler.capacity.maximum-applications` / `yarn.scheduler.capacity.<queue-path>.maximum-applications` | Maximum number of applications in the system which can be concurrently active both running and pending. Limits on each queue are directly proportional to their queue absolute capacities and user limits. This is a hard limit and any applications submitted when this limit is reached will be rejected. Default is 10000. This can be set for all queues with `yarn.scheduler.capacity.maximum-applications` and can also be overridden on a per queue basis by setting `yarn.scheduler.capacity.<queue-path>.maximum-applications`. When this property is not set for a specific queue path, the maximum application number is calculated by taking all configured node labels into consideration, and choosing the highest possible value. When the legacy-queue-mode is disabled and no cluster resource is available, it defaults to the configured values. Integer value expected. |
 | `yarn.scheduler.capacity.maximum-am-resource-percent` / `yarn.scheduler.capacity.<queue-path>.maximum-am-resource-percent` | Maximum percent of resources in the cluster which can be used to run application masters - controls number of concurrent active applications. Limits on each queue are directly proportional to their queue capacities and user limits. Specified as a float - ie 0.5 = 50%. Default is 10%. This can be set for all queues with `yarn.scheduler.capacity.maximum-am-resource-percent` and can also be overridden on a per queue basis by setting `yarn.scheduler.capacity.<queue-path>.maximum-am-resource-percent` |
-| `yarn.scheduler.capacity.max-parallel-apps` / `yarn.scheduler.capacity.<queue-path>.max-parallel-apps` | Maximum number of applications that can run at the same time. Unlike to `maximum-applications`, application submissions are *not* rejected when this limit is reached. Instead they stay in `ACCEPTED` state until they are eligible to run. This can be set for all queues with `yarn.scheduler.capacity.max-parallel-apps` and can also be overridden on a per queue basis by setting `yarn.scheduler.capacity.<queue-path>.max-parallel-apps`. Integer value is expected. By default, there is no limit. |
+| `yarn.scheduler.capacity.max-parallel-apps` / `yarn.scheduler.capacity.<queue-path>.max-parallel-apps` | Maximum number of applications that can run at the same time. Unlike to `maximum-applications`, application submissions are *not* rejected when this limit is reached. Instead they stay in `ACCEPTED` state until they are eligible to run. This can be set for all queues with `yarn.scheduler.capacity.max-parallel-apps` and can also be overridden on a per queue basis by setting `yarn.scheduler.capacity.<queue-path>.max-parallel-apps`. Integer value is expected. By default, there is no limit. The maximum parallel application limit is an inherited property in the queue hierarchy, meaning that the lowest value will be selected as the enforced limit in every branch of the hierarchy. |
 
   You can also limit the number of parallel applications on a per user basis.
 
@@ -168,8 +261,8 @@ Configuration
 | Property | Description |
 |:---- |:---- |
 | `yarn.scheduler.capacity.<queue-path>.state` | The *state* of the queue. Can be one of `RUNNING` or `STOPPED`. If a queue is in `STOPPED` state, new applications cannot be submitted to *itself* or *any of its child queues*. Thus, if the *root* queue is `STOPPED` no applications can be submitted to the entire cluster. Existing applications continue to completion, thus the queue can be *drained* gracefully. Value is specified as Enumeration. |
-| `yarn.scheduler.capacity.root.<queue-path>.acl_submit_applications` | The *ACL* which controls who can *submit* applications to the given queue. If the given user/group has necessary ACLs on the given queue or *one of the parent queues in the hierarchy* they can submit applications. *ACLs* for this property *are* inherited from the parent queue if not specified. |
-| `yarn.scheduler.capacity.root.<queue-path>.acl_administer_queue` | The *ACL* which controls who can *administer* applications on the given queue. If the given user/group has necessary ACLs on the given queue or *one of the parent queues in the hierarchy* they can administer applications. *ACLs* for this property *are* inherited from the parent queue if not specified. |
+| `yarn.scheduler.capacity.root.<queue-path>.acl_submit_applications` | The *ACL* which controls who can *submit* applications to the given queue. If the given user/group has necessary ACLs on the given queue or *one of the parent queues in the hierarchy* they can submit applications. *ACLs* for this property *are* inherited from the parent queue if not specified. If a tilde (~) is prepended to a user name in this list, the real user's ACLs will allow the proxied user to submit to the queue. |
+| `yarn.scheduler.capacity.root.<queue-path>.acl_administer_queue` | The *ACL* which controls who can *administer* applications on the given queue. If the given user/group has necessary ACLs on the given queue or *one of the parent queues in the hierarchy* they can administer applications. *ACLs* for this property *are* inherited from the parent queue if not specified. If a tilde (~) is prepended to a user name in this list, the real user's ACLs will allow the proxied user to administer apps the queue. |
 
 **Note:** An *ACL* is of the form *user1*,*user2* *space* *group1*,*group2*. The special value of * implies *anyone*. The special value of *space* implies *no one*. The default is * for the root queue if not specified.
 
@@ -261,7 +354,7 @@ Below example covers single mapping separately. In case of multiple mappings wit
 
   In order to make the queue mapping feature more versatile, a new format and evaluation engine has been added to Capacity Scheduler. The new engine is fully backwards compatible with the old one and adds several new features. Note that it can also parse the old format, but the new features are only available if you specify the mappings in JSON.
 
-  * Syntax
+####Syntax
 
   Based on the current JSON schema, users can define mapping rules the following way:
 
@@ -288,7 +381,28 @@ Below example covers single mapping separately. In case of multiple mappings wit
 
 Rules are evaluated from top to bottom. Compared to the legacy mapping rule evaluator, it can be adjusted more flexibly what happens when the evaluation stops and a given rule does not match.
 
-  * Rules
+####How to enable JSON-based queue mapping
+
+The following properties control how the new placement engine expects rules.
+
+| Setting | Description |
+|:---- |:---- |
+| `yarn.scheduler.capacity.mapping-rule-format` | Allowed values are `legacy` or `json`. If it is not set, then the engine assumes that the old format might be in use so it also checks the value of `yarn.scheduler.capacity.queue-mappings`. Therefore, this must be set to `json` and cannot be left empty. |
+| `yarn.scheduler.capacity.mapping-rule-json` | The value of this property should contain the entire chain of rules inline. This is the preferred way of configuring Capacity Scheduler if you use the Mutation API, ie. modify configuration real-time via the REST interface. |
+| `yarn.scheduler.capacity.mapping-rule-json-file` | Defines an absolute path to a JSON file which contains the rules. For example, `/opt/hadoop/config/mapping-rules.json`. |
+
+The property `yarn.scheduler.capacity.mapping-rule-json` takes precedence over `yarn.scheduler.capacity.mapping-rule-json-file`. If the format is set to `json` but you don't define either of these, then you'll get a warning but the initialization of Capacity Scheduler will not fail.
+
+####Differences between legacy and flexible queue auto-creation modes
+
+To use the flexible Queue Auto-Creation under a parent the queue capacities must be configured with weights in legacy-queue-mode. The flexible mode gives the user much more freedom to automatically create new leaf queues or entire queue hierarchies based on mapping rules. "Legacy" mode refers to either percentage-based configuration or where capacities are defined with absolute resources.
+If legacy-queue-mode is disabled the capacities can be configured using the Universal Capacity Vector format or using weights `1w`, percentages `75` or absolute units `[memory=1024,vcores=1]`.
+
+In flexible Queue Auto-Creation mode, every parent queue can have dynamically created parent or leaf queues (if the `yarn.scheduler.capacity.<queue-path>.auto-queue-creation-v2.enabled` property is set to true), even if it already has static child queues. This also means that certain settings influence the outcome of the queue placement depending on how the scheduler is configured.
+
+When the mode is relevant, the document explains how certain settings or flags affect the overall logic.
+
+####Rules
 
   Each mapping rule can have the following settings:
 
@@ -298,21 +412,28 @@ Rules are evaluated from top to bottom. Compared to the legacy mapping rule eval
 | `matches` | The string to match, or an asterisk "&ast;" which means "all". For example, if the type is `user` and this string is "hadoop" then the rule will only be evaluated if the submitter user is "hadoop". The "&ast;" does not work with groups. |
 | `policy` | Selects a list of pre-defined policies which defines where the application should be placed. This will be explained later in the "Policies" section. |
 | `parentQueue` | In case of `user`, `primaryGroup`, `primaryGroupUser`, `secondaryGroup`, `secondaryGroupUser` policies, this tells the engine where the matching queue should be looked for. For example, if the policy is `primaryGroup`, parent is `root.groups` and the submitter's group is "admins", then the resulting queue will be "root.groups.admin" |
-| `fallbackResult` | If the target queue does not exist or it cannot be created (ie. it exists under a regular parent), it defines a fallback action. Valid values are `skip`, `reject` and `placeDefault`. |
-| `create` | Only applies to managed queue parents. If set to "false", then the queue will not be created if it does not exist. |
+| `fallbackResult` | If the target queue does not exist or it cannot be created, it defines a fallback action. Valid values are `skip`, `reject` and `placeDefault`. |
+| `create` | If set to "false", then the queue will not be created if it does not exist. This flag works differently in flexible and in legacy mode (see below). |
 | `value` | If the policy is `setDefaultQueue`, then the default queue will change to this setting from "root.default". Otherwise ignored. |
 | `customPlacement` | Only works with `custom` placement policy. The value of this field will be evaluated directly by the engine, which means that various placeholders such as `%application` or `%primary_group` will be replaced with their respective values. |
 
 
   `type` is the equivalent of the first column in the old format. It is either "g" or "u" and there is a separate property for application mappings. `matches` is the second column. The only difference is that `%user` means to match all users, but it's not expressive enough. So in the new format, it's been changed to `*`.
   The `fallbackResult` setting is checked what to do when the target queue cannot be created or does not exist. The three settings work the following way:
+
 * `skip`: ignore the current rule and proceed to the next. This is how Fair Scheduler evaluates placement rules.
+
 * `placeDefault`: place the application to the default queue `root.default` (unless it's overridden to something else). This is how Capacity Scheduler works with the old mapping rules.
+
 * `reject`: rejects the submission.
 
-  The `create` flag has no effect on the queue if the parent is not managed.
+The `create` flag is affected by the mode:
 
- * Policies
+* **Legacy** mode: applies to all parent queues that have the `yarn.scheduler.capacity.<queue-path>.auto-create-child-queue.enabled` set to true.
+
+* **Flexible** mode: applies to all parent queues that have the `yarn.scheduler.capacity.<queue-path>.auto-queue-creation-v2.enabled` set to true.
+
+####Policies
 
   There are a number of pre-defined placement policies which are similar to those in Fair Scheduler. Many of them can be expressed as a "custom" placement policy as you will see soon, but in many cases, it's safer and more straightforward to use them directly.
 
@@ -327,19 +448,21 @@ Rules are evaluated from top to bottom. Compared to the legacy mapping rule eval
 | `primaryGroupUser` | Places the application into the queue hierarchy `root.[parentQueue].<primaryGroup>.<userName>`. Note that `parentQueue` is optional. |
 | `secondaryGroup` | Places the application into a queue which matches the secondary group of the submitter. |
 | `secondaryGroupUser` | Places the application into the queue hierarchy `root.[parentQueue].<secondaryGroup>.<userName>`. Note that `parentQueue` is optional. |
-| `setDefaultQueue` | Changes the default queue from `root.default`. The change is permament in a sense that it is not restored in the next rule. You can change the default queue at any point and as many times as necessary. |
+| `setDefaultQueue` | Changes the default queue from `root.default`. The change is permanent in a sense that it is not restored in the next rule. You can change the default queue at any point and as many times as necessary. |
 | `custom` | Enables the user to use custom placement strings. See explanation below. |
 
 Notes:
 
 1. The `setDefaultQueue` rule only changes the default queue. If you want to restore the default queue back to `root.default`, then it has to be added to the rule chain again.
 
-2. The nested rules `primaryGroupUser` and `secondaryGroupUser` expects the parent queues to exist, ie. they cannot be created automatically. More specifically: when you use `primaryGroupUser`, it will result in a queue path like `root.<primaryGroup>.<userName>` and `root.<primaryGroup>` must exist. It can be a managed parent in order to have `userName` leaf created automatically, but the parent still has to be created by hand (this is in contrast to Fair Scheduler, where this scenario is more flexible).
+2. The nested rules `primaryGroupUser` and `secondaryGroupUser` also work differently in legacy and flexible mode:
+    * **Legacy** mode: they expect the parent queues to exist, ie. they cannot be created automatically. More specifically: when you use `primaryGroupUser`, it will result in a queue path like `root.<primaryGroup>.<userName>` and `root.<primaryGroup>` must exist. It can be a managed parent in order to have `userName` leaf created automatically, but the parent still has to be created by hand.
+    * **Flexible** mode: as long as the parent allows dynamic queues to be created, there are no limitations. The requested queues will be created.
 
 3. The `custom` placement policy can describe other policies with the appropriate variable placeholders (see below). For example, `primaryGroupUser` with the parent queue `root.groups` can be expressed as `root.groups.%primary_group.%user`. The primary reason for the rules to exist is that its easier to understand for user who have background in configuring Fair Scheduler and it is more natural to configure the mapping rules this way. It is also more robust because it's less likely that the user makes a mistake. The "Variables" section describes what variables are available if you intend to use the `custom` policy.
 
 
-  * Variables
+####Variables
 
   Internally, the tool populates certain variables with appropriate values. These can be used if `custom` mapping policy is selected. Note that the engine does only minimal verification when it comes to replacing them - therefore it is your responsibility to provide the correct string.
 
@@ -357,7 +480,7 @@ Example: let's say we submit a MapReduce application to a queue `root.users.mrjo
 As explained in the "Policies" section, quite a few policies can be achieved with `custom`. So, instead of using the `specified` policy, you can use `custom` with setting the `customPlacement` field to `%specified`. However, you have much greater control over it, because you can also append or prepend an extra string to these variables. So the following setting is possible: `%specified.%user.largejobs`. Keep in mind that the string must be resolved to a valid queue path in order to have a proper placement.
 
 
-  * Converting the old mapping rule format to the new one
+####Converting the old mapping rule format to the new one
 
   In this table, you can see how to rewrite the old, colon-separated rules to the new format.
 
@@ -378,7 +501,7 @@ As explained in the "Policies" section, quite a few policies can be achieved wit
 
   It's worth noting that `%application:%application` requires a `user` type matcher. It is because internally, the "&ast;" is interpreted only for users. If you set the `type` to `application`, then the "&ast;" means to match an application which is named "&ast;".
 
-  * Example
+####Example
 
   We have a cluster which is shared among developers, QA engineers and test developers.
 
@@ -547,7 +670,7 @@ The following configuration parameters can be configured in yarn-site.xml to con
 | `yarn.resourcemanager.reservation-system.planfollower.time-step` | *Optional* parameter: the frequency in milliseconds of the `PlanFollower` timer. Long value expected. The default value is *1000*. |
 
 
-The `ReservationSystem` is integrated with the `CapacityScheduler` queue hierachy and can be configured for any **LeafQueue** currently. The `CapacityScheduler` supports the following parameters to tune the `ReservationSystem`:
+The `ReservationSystem` is integrated with the `CapacityScheduler` queue hierarchy and can be configured for any **LeafQueue** currently. The `CapacityScheduler` supports the following parameters to tune the `ReservationSystem`:
 
 | Property | Description |
 |:---- |:---- |
@@ -564,7 +687,7 @@ The `ReservationSystem` is integrated with the `CapacityScheduler` queue hierach
 
 ###Dynamic Auto-Creation and Management of Leaf Queues
 
-The `CapacityScheduler` supports auto-creation of **leaf queues** under parent queues which have been configured to enable this feature.
+The `CapacityScheduler` supports two types of queue auto-creation modes: legacy and flexible. Legacy mode allows the creation of **leaf queues** under parent queues which have been configured to use this feature. Flexible mode allows the creation of both **parent queues** and **leaf queues**. Note: The created queues will be and can only be configured with weights as *capacity*.
 
   * Setup for dynamic auto-created leaf queues through queue mapping
 
@@ -589,7 +712,7 @@ Example:
  </property>
 ```
 
- * Parent queue configuration for dynamic leaf queue auto-creation and management
+ * Parent queue configuration for **legacy** dynamic leaf queue auto-creation and management
 
 The `Dynamic Queue Auto-Creation and Management` feature is integrated with the
 `CapacityScheduler` queue hierarchy and can be configured for a **ParentQueue** currently to auto-create leaf queues. Such parent queues do not
@@ -601,13 +724,11 @@ support other pre-configured queues to co-exist along with auto-created queues. 
 | `yarn.scheduler.capacity.<queue-path>.auto-create-child-queue.management-policy` | *Optional* parameter: the class name that will be used to determine the implementation of the `AutoCreatedQueueManagementPolicy`  which will manage leaf queues and their capacities dynamically under this parent queue. The default value is *org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.queuemanagement.GuaranteedOrZeroCapacityOverTimePolicy*. Users or groups might submit applications to the auto-created leaf queues for a limited time and stop using them. Hence there could be more number of leaf queues auto-created under the parent queue than its guaranteed capacity. The current policy implementation allots either configured or zero capacity on a **best-effort** basis based on availability of capacity on the parent queue and the application submission order across leaf queues. |
 
 
-* Configuring `Auto-Created Leaf Queues` with `CapacityScheduler`
+* Configuring **legacy** `Auto-Created Leaf Queues` with `CapacityScheduler`
 
 The parent queue which has been enabled for auto leaf queue creation,supports
  the configuration of template parameters for automatic configuration of the auto-created leaf queues. The auto-created queues support all of the
- leaf queue configuration parameters except for **Queue ACL**, **Absolute
- Resource** configurations. Queue ACLs are
- currently inherited from the parent queue i.e they are not configurable on the leaf queue template
+ leaf queue configuration parameters except for **Absolute Resource** configurations.
 
 | Property | Description |
 |:---- |:---- |
@@ -681,6 +802,56 @@ list of current scheduling edit policies as a comma separated string in `yarn.re
 |:---- |:---- |
 | `yarn.resourcemanager.monitor.capacity.queue-management.monitoring-interval` | Time in milliseconds between invocations of this QueueManagementDynamicEditPolicy policy. Default value is 1500 |
 
+* Parent queue configuration for **flexible** dynamic leaf queue auto-creation and management
+
+The `Flexible Dynamic Queue Auto-Creation and Management` feature allows a **ParentQueue** to auto-create both parent and leaf queues. Such parent queues can have other pre-configured queues co-existing with the auto-created queues. The auto-created queues will have weights as *capacity* so the pre-configured queues under the parent must be configured the same way. The `CapacityScheduler` supports the following parameters to enable auto-creation of queues
+
+| Property | Description |
+|:---- |:---- |
+| `yarn.scheduler.capacity.<queue-path>.auto-queue-creation-v2.enabled` | *Mandatory* parameter: Indicates to the `CapacityScheduler` that flexible auto queue creation needs to be enabled for the specified parent queue.  Boolean value expected. The default value is *false*, i.e. auto leaf queue creation is not enabled in *ParentQueue* by default. |
+| `yarn.scheduler.capacity.<queue-path>.auto-queue-creation-v2.max-queues` | *Optional* parameter: Limits the number of dynamic queues created under a parent queue.  Integer value expected. The default value is *1000*. |
+
+
+* Configuring **flexible** `Auto-Created Leaf Queues` with `CapacityScheduler`
+
+The parent queue which has the flexible auto queue creation enabled supports the configuration of dynamically created leaf and parent queues through template parameters. The auto-created queues support all of the leaf queue configuration parameters except for **Absolute Resource** configurations.
+
+| Property | Description |
+|:---- |:---- |
+| `yarn.scheduler.capacity.<queue-path>.auto-queue-creation-v2.template.<queue-property>` | *Optional* parameter: Specifies a queue property (like capacity, maximum-capacity, user-limit-factor, maximum-am-resource-percent ...  - Refer **Queue Properties** section) inherited by the auto-created **parent** and **leaf** queues. Dynamic Queue ACLs set here can be overwritten by the parent-template for dynamic parent queues and with the leaf-template for dynamic leaf queues.  |
+| `yarn.scheduler.capacity.<queue-path>.auto-queue-creation-v2.leaf-template.<queue-property>` | *Optional* parameter: Specifies a queue property inherited by auto-created **leaf** queues. |
+| `yarn.scheduler.capacity.<queue-path>.auto-queue-creation-v2.parent-template.<queue-property>` |  *Optional* parameter: Specifies a queue property inherited by auto-created **parent** queues. |
+
+Using the following example configuration snippet will instruct the `CapacityScheduler` to:
+* enable the flexible auto queue creation for root.parent
+* create all of the dynamic queues **two levels below** `root.parent` (for example `root.parent.parent-auto.leaf-auto`) with 80% as the maximum capacity, because of the wildcard queue path (root.parent.*)
+* create the dynamic parent queues **directly** under `root.parent` with weight 2
+* add the GPU label to every leaf queue created **directly** under `root.parent`
+* set the GPU label related weight of every queue **directly** under `root.parent`
+
+```
+ <property>
+   <name>yarn.scheduler.capacity.root.parent.auto-queue-creation-v2.enabled</name>
+   <value>true</value>
+ </property>
+ <property>
+    <name>yarn.scheduler.capacity.root.parent.*.auto-queue-creation-v2.template.maximum-capacity</name>
+    <value>80</value>
+ </property>
+ <property>
+    <name>yarn.scheduler.capacity.root.parent.auto-queue-creation-v2.parent-template.capacity</name>
+    <value>2w</value>
+ </property>
+ <property>
+    <name>yarn.scheduler.capacity.root.parent.auto-queue-creation-v2.leaf-template.accessible-node-labels</name>
+    <value>GPU</value>
+ </property>
+  <property>
+    <name>yarn.scheduler.capacity.root.parent.auto-queue-creation-v2.leaf-template.accessible-node-labels.GPU.capacity</name>
+    <value>5w</value>
+ </property>
+```
+
 ###Other Properties
 
   * Resource Calculator
@@ -702,7 +873,7 @@ Note, this feature should be disabled if YARN is deployed separately with the fi
 
   * Container Allocation per NodeManager Heartbeat
 
-  The `CapacityScheduler` supports the following parameters to control how many containers can be allocated in each NodeManager heartbeat.
+  The `CapacityScheduler` supports the following parameters to control how many containers can be allocated in each NodeManager heartbeat. These parameters are refreshable via *yarn rmadmin -refreshQueues*.
 
 | Property | Description |
 |:---- |:---- |
@@ -744,6 +915,14 @@ Changing queue/scheduler properties and adding/removing queues can be done in tw
 
   Remove the queue configurations from the file and run refresh as described above
 
+### Enabling periodic configuration refresh
+Enabling queue configuration periodic refresh allows reloading and applying the configuration by editing the *conf/capacity-scheduler.xml* without the necessity of calling yarn rmadmin -refreshQueues.
+
+| Property | Description |
+|:---- |:---- |
+| `yarn.resourcemanager.scheduler.monitor.enable` | Enabling monitoring is necessary for the periodic refresh. Default value is false. |
+| `yarn.resourcemanager.scheduler.monitor.policies` | This is a configuration property that holds a list of classes. Adding more classes means more monitor tasks will be launched, Add `org.apache.hadoop.yarn.server.resourcemanager.capacity.QueueConfigurationAutoRefreshPolicy` to the policies list to enable the periodic refresh. Default value of this property is `org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity.ProportionalCapacityPreemptionPolicy`, it means the preemption feature is enabled by default. If the ProportionalCapacityPreemptionPolicy class is removed from the list, it disables the preemption feature. |
+| `yarn.resourcemanager.queue.auto.refresh.monitoring-interval` | Adjusting the auto-refresh monitoring interval is possible with this configuration property. The value is in milliseconds. The default value is 5000 (5 seconds). |
 ### Changing queue configuration via API
 
   Editing by API uses a backing store for the scheduler configuration. To enable this, the following parameters can be configured in yarn-site.xml.

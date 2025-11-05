@@ -22,18 +22,19 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.curator.shaded.com.google.common.collect.Lists;
 import org.apache.hadoop.fs.Path;
-import org.junit.Before;
-import org.junit.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import org.apache.hadoop.util.Lists;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class TestIntelFpgaOpenclPlugin {
   private IntelFpgaOpenclPlugin plugin;
 
-  @Before
+  @BeforeEach
   public void setup() {
     plugin = new IntelFpgaOpenclPlugin();
   }
@@ -44,7 +45,7 @@ public class TestIntelFpgaOpenclPlugin {
 
     String path = plugin.retrieveIPfilePath("fpga", "workDir", resources);
 
-    assertEquals("Retrieved IP file path", "/test/fpga.aocx", path);
+    assertEquals("/test/fpga.aocx", path, "Retrieved IP file path");
   }
 
   @Test
@@ -53,14 +54,14 @@ public class TestIntelFpgaOpenclPlugin {
 
     String path = plugin.retrieveIPfilePath("dummy", "workDir", resources);
 
-    assertNull("Retrieved IP file path", path);
+    assertNull(path, "Retrieved IP file path");
   }
 
   @Test
   public void testLocalizedIpfileNotFoundWithNoLocalResources() {
     String path = plugin.retrieveIPfilePath("fpga", "workDir", null);
 
-    assertNull("Retrieved IP file path", path);
+    assertNull(path, "Retrieved IP file path");
   }
 
   @Test
@@ -69,7 +70,7 @@ public class TestIntelFpgaOpenclPlugin {
 
     String path = plugin.retrieveIPfilePath(null, "workDir", resources);
 
-    assertNull("Retrieved IP file path", path);
+    assertNull(path, "Retrieved IP file path");
   }
 
   private Map<Path, List<String>> createResources() {

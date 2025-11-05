@@ -35,7 +35,7 @@ import java.util.concurrent.DelayQueue;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.io.IntWritable;
@@ -171,7 +171,7 @@ public class ShuffleSchedulerImpl<K,V> implements ShuffleScheduler<K,V> {
   }
 
   static URI getBaseURI(TaskAttemptID reduceId, String url) {
-    StringBuffer baseUrl = new StringBuffer(url);
+    StringBuilder baseUrl = new StringBuilder(url);
     if (!url.endsWith("/")) {
       baseUrl.append("/");
     }

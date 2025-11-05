@@ -23,51 +23,41 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.io.UncheckedIOException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
-import javax.security.auth.login.AppConfigurationEntry;
-
-import org.apache.curator.ensemble.fixed.FixedEnsembleProvider;
+import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
-import org.apache.curator.framework.CuratorFrameworkFactory;
-import org.apache.curator.framework.CuratorFrameworkFactory.Builder;
-import org.apache.curator.framework.api.ACLProvider;
-import org.apache.curator.framework.imps.DefaultACLProvider;
 import org.apache.curator.framework.recipes.cache.ChildData;
-import org.apache.curator.framework.recipes.cache.PathChildrenCache;
-import org.apache.curator.framework.recipes.cache.PathChildrenCache.StartMode;
-import org.apache.curator.framework.recipes.cache.PathChildrenCacheEvent;
-import org.apache.curator.framework.recipes.cache.PathChildrenCacheListener;
+import org.apache.curator.framework.recipes.cache.CuratorCache;
+import org.apache.curator.framework.recipes.cache.CuratorCacheBridge;
+import org.apache.curator.framework.recipes.cache.CuratorCacheListener;
 import org.apache.curator.framework.recipes.shared.SharedCount;
 import org.apache.curator.framework.recipes.shared.VersionedValue;
 import org.apache.curator.retry.RetryNTimes;
-import org.apache.curator.utils.EnsurePath;
+import org.apache.curator.utils.ZookeeperFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.security.SecurityUtil.TruststoreKeystore;
+import org.apache.hadoop.security.authentication.util.ZookeeperClient;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenManager;
+
+import static org.apache.hadoop.security.SecurityUtil.getServerPrincipal;
 import static org.apache.hadoop.util.Time.now;
+
+import org.apache.hadoop.util.curator.ZKCuratorManager.HadoopZookeeperFactory;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.KeeperException.NoNodeException;
-import org.apache.zookeeper.ZooDefs.Perms;
-import org.apache.zookeeper.client.ZKClientConfig;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Id;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * An implementation of {@link AbstractDelegationTokenSecretManager} that
@@ -99,21 +89,34 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
       + "kerberos.keytab";
   public static final String ZK_DTSM_ZK_KERBEROS_PRINCIPAL = ZK_CONF_PREFIX
       + "kerberos.principal";
+  public static final String ZK_DTSM_ZK_KERBEROS_SERVER_PRINCIPAL = ZK_CONF_PREFIX
+      + "kerberos.server.principal";
   public static final String ZK_DTSM_TOKEN_SEQNUM_BATCH_SIZE = ZK_CONF_PREFIX
       + "token.seqnum.batch.size";
   public static final String ZK_DTSM_TOKEN_WATCHER_ENABLED = ZK_CONF_PREFIX
       + "token.watcher.enabled";
   public static final boolean ZK_DTSM_TOKEN_WATCHER_ENABLED_DEFAULT = true;
 
+  public static final String ZK_DTSM_ZK_SSL_ENABLED = ZK_CONF_PREFIX + "ssl.enabled";
+  public static final String ZK_DTSM_ZK_SSL_KEYSTORE_LOCATION =
+      ZK_CONF_PREFIX + "ssl.keystore.location";
+  public static final String ZK_DTSM_ZK_SSL_KEYSTORE_PASSWORD =
+      ZK_CONF_PREFIX + "ssl.keystore.password";
+  public static final String ZK_DTSM_ZK_SSL_TRUSTSTORE_LOCATION =
+      ZK_CONF_PREFIX + "ssl.truststore.location";
+  public static final String ZK_DTSM_ZK_SSL_TRUSTSTORE_PASSWORD =
+      ZK_CONF_PREFIX + "ssl.truststore.password";
+
   public static final int ZK_DTSM_ZK_NUM_RETRIES_DEFAULT = 3;
   public static final int ZK_DTSM_ZK_SESSION_TIMEOUT_DEFAULT = 10000;
   public static final int ZK_DTSM_ZK_CONNECTION_TIMEOUT_DEFAULT = 10000;
   public static final int ZK_DTSM_ZK_SHUTDOWN_TIMEOUT_DEFAULT = 10000;
   public static final String ZK_DTSM_ZNODE_WORKING_PATH_DEAFULT = "zkdtsm";
-  // by default it is still incrementing seq number by 1 each time
-  public static final int ZK_DTSM_TOKEN_SEQNUM_BATCH_SIZE_DEFAULT = 1;
+  // By default, increase seq number by 100 each time to reduce overflow
+  // speed of znode dataVersion which is 32-integer now.
+  public static final int ZK_DTSM_TOKEN_SEQNUM_BATCH_SIZE_DEFAULT = 100;
 
-  private static Logger LOG = LoggerFactory
+  private static final Logger LOG = LoggerFactory
       .getLogger(ZKDelegationTokenSecretManager.class);
 
   private static final String JAAS_LOGIN_ENTRY_NAME =
@@ -135,14 +138,17 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
     CURATOR_TL.set(curator);
   }
 
+  @VisibleForTesting
+  protected static CuratorFramework getCurator() {
+    return CURATOR_TL.get();
+  }
+
   private final boolean isExternalClient;
   protected final CuratorFramework zkClient;
   private SharedCount delTokSeqCounter;
   private SharedCount keyIdSeqCounter;
-  private PathChildrenCache keyCache;
-  private PathChildrenCache tokenCache;
-  private ExecutorService listenerThreadPool;
-  private final long shutdownTimeout;
+  private CuratorCacheBridge keyCache;
+  private CuratorCacheBridge tokenCache;
   private final int seqNumBatchSize;
   private int currentSeqNum;
   private int currentMaxSeqNum;
@@ -158,158 +164,77 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
             DelegationTokenManager.RENEW_INTERVAL_DEFAULT) * 1000,
         conf.getLong(DelegationTokenManager.REMOVAL_SCAN_INTERVAL,
             DelegationTokenManager.REMOVAL_SCAN_INTERVAL_DEFAULT) * 1000);
-    shutdownTimeout = conf.getLong(ZK_DTSM_ZK_SHUTDOWN_TIMEOUT,
-        ZK_DTSM_ZK_SHUTDOWN_TIMEOUT_DEFAULT);
     seqNumBatchSize = conf.getInt(ZK_DTSM_TOKEN_SEQNUM_BATCH_SIZE,
         ZK_DTSM_TOKEN_SEQNUM_BATCH_SIZE_DEFAULT);
     isTokenWatcherEnabled = conf.getBoolean(ZK_DTSM_TOKEN_WATCHER_ENABLED,
         ZK_DTSM_TOKEN_WATCHER_ENABLED_DEFAULT);
+    
+    String workPath = conf.get(ZK_DTSM_ZNODE_WORKING_PATH, ZK_DTSM_ZNODE_WORKING_PATH_DEAFULT);
+    String nameSpace = workPath + "/" + ZK_DTSM_NAMESPACE;
     if (CURATOR_TL.get() != null) {
-      zkClient =
-          CURATOR_TL.get().usingNamespace(
-              conf.get(ZK_DTSM_ZNODE_WORKING_PATH,
-                  ZK_DTSM_ZNODE_WORKING_PATH_DEAFULT)
-                  + "/" + ZK_DTSM_NAMESPACE);
+      zkClient = CURATOR_TL.get().usingNamespace(nameSpace);
       isExternalClient = true;
     } else {
-      String connString = conf.get(ZK_DTSM_ZK_CONNECTION_STRING);
-      Preconditions.checkNotNull(connString,
-          "Zookeeper connection string cannot be null");
-      String authType = conf.get(ZK_DTSM_ZK_AUTH_TYPE);
-
-      // AuthType has to be explicitly set to 'none' or 'sasl'
-      Preconditions.checkNotNull(authType, "Zookeeper authType cannot be null !!");
-      Preconditions.checkArgument(
-          authType.equals("sasl") || authType.equals("none"),
-          "Zookeeper authType must be one of [none, sasl]");
-
-      Builder builder = null;
-      try {
-        ACLProvider aclProvider = null;
-        if (authType.equals("sasl")) {
-          LOG.info("Connecting to ZooKeeper with SASL/Kerberos"
-              + "and using 'sasl' ACLs");
-          String principal = setJaasConfiguration(conf);
-          System.setProperty(ZKClientConfig.LOGIN_CONTEXT_NAME_KEY,
-                             JAAS_LOGIN_ENTRY_NAME);
-          System.setProperty("zookeeper.authProvider.1",
-              "org.apache.zookeeper.server.auth.SASLAuthenticationProvider");
-          aclProvider = new SASLOwnerACLProvider(principal);
-        } else { // "none"
-          LOG.info("Connecting to ZooKeeper without authentication");
-          aclProvider = new DefaultACLProvider(); // open to everyone
-        }
-        int sessionT =
-            conf.getInt(ZK_DTSM_ZK_SESSION_TIMEOUT,
-                ZK_DTSM_ZK_SESSION_TIMEOUT_DEFAULT);
-        int numRetries =
-            conf.getInt(ZK_DTSM_ZK_NUM_RETRIES, ZK_DTSM_ZK_NUM_RETRIES_DEFAULT);
-        builder =
-            CuratorFrameworkFactory
-                .builder()
-                .aclProvider(aclProvider)
-                .namespace(
-                    conf.get(ZK_DTSM_ZNODE_WORKING_PATH,
-                        ZK_DTSM_ZNODE_WORKING_PATH_DEAFULT)
-                        + "/"
-                        + ZK_DTSM_NAMESPACE
-                )
-                .sessionTimeoutMs(sessionT)
-                .connectionTimeoutMs(
-                    conf.getInt(ZK_DTSM_ZK_CONNECTION_TIMEOUT,
-                        ZK_DTSM_ZK_CONNECTION_TIMEOUT_DEFAULT)
-                )
-                .retryPolicy(
-                    new RetryNTimes(numRetries, sessionT / numRetries));
-      } catch (Exception ex) {
-        throw new RuntimeException("Could not Load ZK acls or auth: " + ex, ex);
-      }
-      zkClient = builder.ensembleProvider(new FixedEnsembleProvider(connString))
-          .build();
+      zkClient = createCuratorClient(conf, nameSpace);
       isExternalClient = false;
     }
   }
 
-  private String setJaasConfiguration(Configuration config) throws Exception {
-    String keytabFile =
-        config.get(ZK_DTSM_ZK_KERBEROS_KEYTAB, "").trim();
-    if (keytabFile == null || keytabFile.length() == 0) {
-      throw new IllegalArgumentException(ZK_DTSM_ZK_KERBEROS_KEYTAB
-          + " must be specified");
-    }
-    String principal =
-        config.get(ZK_DTSM_ZK_KERBEROS_PRINCIPAL, "").trim();
-    principal = SecurityUtil.getServerPrincipal(principal, "");
-    if (principal == null || principal.length() == 0) {
-      throw new IllegalArgumentException(ZK_DTSM_ZK_KERBEROS_PRINCIPAL
-          + " must be specified");
-    }
+  @VisibleForTesting
+  static CuratorFramework createCuratorClient(Configuration conf, String namespace) {
+    try {
+      String connString = conf.get(ZK_DTSM_ZK_CONNECTION_STRING);
+      String authType = conf.get(ZK_DTSM_ZK_AUTH_TYPE);
+      String keytab = conf.get(ZK_DTSM_ZK_KERBEROS_KEYTAB, "").trim();
+      String principal = getServerPrincipal(conf.get(ZK_DTSM_ZK_KERBEROS_PRINCIPAL, "").trim(), "");
+      int sessionTimeout =
+          conf.getInt(ZK_DTSM_ZK_SESSION_TIMEOUT, ZK_DTSM_ZK_SESSION_TIMEOUT_DEFAULT);
+      int connectionTimeout =
+          conf.getInt(ZK_DTSM_ZK_CONNECTION_TIMEOUT, ZK_DTSM_ZK_CONNECTION_TIMEOUT_DEFAULT);
+      int retryCount =
+          conf.getInt(ZK_DTSM_ZK_NUM_RETRIES, ZK_DTSM_ZK_NUM_RETRIES_DEFAULT);
+      RetryPolicy retryPolicy =
+          new RetryNTimes(retryCount, retryCount == 0 ? 0 : sessionTimeout / retryCount);
 
-    JaasConfiguration jConf =
-        new JaasConfiguration(JAAS_LOGIN_ENTRY_NAME, principal, keytabFile);
-    javax.security.auth.login.Configuration.setConfiguration(jConf);
-    return principal.split("[/@]")[0];
-  }
+      boolean isSSLEnabled =
+          conf.getBoolean(CommonConfigurationKeys.ZK_CLIENT_SSL_ENABLED,
+              conf.getBoolean(ZK_DTSM_ZK_SSL_ENABLED, false));
+      String keystoreLocation = conf.get(ZK_DTSM_ZK_SSL_KEYSTORE_LOCATION,
+          conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION, ""));
+      String keystorePassword = conf.get(ZK_DTSM_ZK_SSL_KEYSTORE_PASSWORD,
+          conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD, ""));
+      String truststoreLocation = conf.get(ZK_DTSM_ZK_SSL_TRUSTSTORE_LOCATION,
+          conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION, ""));
+      String truststorePassword = conf.get(ZK_DTSM_ZK_SSL_TRUSTSTORE_PASSWORD,
+          conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD, ""));
 
-  /**
-   * Creates a programmatic version of a jaas.conf file. This can be used
-   * instead of writing a jaas.conf file and setting the system property,
-   * "java.security.auth.login.config", to point to that file. It is meant to be
-   * used for connecting to ZooKeeper.
-   */
-  @InterfaceAudience.Private
-  public static class JaasConfiguration extends
-      javax.security.auth.login.Configuration {
+      ZookeeperFactory zkFactory = new HadoopZookeeperFactory(
+          conf.get(ZK_DTSM_ZK_KERBEROS_SERVER_PRINCIPAL),
+          conf.get(ZK_DTSM_ZK_KERBEROS_PRINCIPAL),
+          conf.get(ZK_DTSM_ZK_KERBEROS_KEYTAB),
+          isSSLEnabled,
+          new TruststoreKeystore(conf));
 
-    private final javax.security.auth.login.Configuration baseConfig =
-        javax.security.auth.login.Configuration.getConfiguration();
-    private static AppConfigurationEntry[] entry;
-    private String entryName;
 
-    /**
-     * Add an entry to the jaas configuration with the passed in name,
-     * principal, and keytab. The other necessary options will be set for you.
-     *
-     * @param entryName
-     *          The name of the entry (e.g. "Client")
-     * @param principal
-     *          The principal of the user
-     * @param keytab
-     *          The location of the keytab
-     */
-    public JaasConfiguration(String entryName, String principal, String keytab) {
-      this.entryName = entryName;
-      Map<String, String> options = new HashMap<String, String>();
-      options.put("keyTab", keytab);
-      options.put("principal", principal);
-      options.put("useKeyTab", "true");
-      options.put("storeKey", "true");
-      options.put("useTicketCache", "false");
-      options.put("refreshKrb5Config", "true");
-      String jaasEnvVar = System.getenv("HADOOP_JAAS_DEBUG");
-      if (jaasEnvVar != null && "true".equalsIgnoreCase(jaasEnvVar)) {
-        options.put("debug", "true");
-      }
-      entry = new AppConfigurationEntry[] {
-          new AppConfigurationEntry(getKrb5LoginModuleName(),
-              AppConfigurationEntry.LoginModuleControlFlag.REQUIRED,
-              options) };
-    }
-
-    @Override
-    public AppConfigurationEntry[] getAppConfigurationEntry(String name) {
-      return (entryName.equals(name)) ? entry : ((baseConfig != null)
-        ? baseConfig.getAppConfigurationEntry(name) : null);
-    }
-
-    private String getKrb5LoginModuleName() {
-      String krb5LoginModuleName;
-      if (System.getProperty("java.vendor").contains("IBM")) {
-        krb5LoginModuleName = "com.ibm.security.auth.module.Krb5LoginModule";
-      } else {
-        krb5LoginModuleName = "com.sun.security.auth.module.Krb5LoginModule";
-      }
-      return krb5LoginModuleName;
+      return ZookeeperClient.configure()
+          .withConnectionString(connString)
+          .withNamespace(namespace)
+          .withZookeeperFactory(zkFactory)
+          .withAuthType(authType)
+          .withKeytab(keytab)
+          .withPrincipal(principal)
+          .withJaasLoginEntryName(JAAS_LOGIN_ENTRY_NAME)
+          .withRetryPolicy(retryPolicy)
+          .withSessionTimeout(sessionTimeout)
+          .withConnectionTimeout(connectionTimeout)
+          .enableSSL(isSSLEnabled)
+          .withKeystore(keystoreLocation)
+          .withKeystorePassword(keystorePassword)
+          .withTruststore(truststoreLocation)
+          .withTruststorePassword(truststorePassword)
+          .create();
+    } catch (Exception ex) {
+      throw new RuntimeException("Could not Load ZK acls or auth: " + ex, ex);
     }
   }
 
@@ -325,15 +250,15 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
       // If namespace parents are implicitly created, they won't have ACLs.
       // So, let's explicitly create them.
       CuratorFramework nullNsFw = zkClient.usingNamespace(null);
-      EnsurePath ensureNs =
-        nullNsFw.newNamespaceAwareEnsurePath("/" + zkClient.getNamespace());
       try {
-        ensureNs.ensure(nullNsFw.getZookeeperClient());
+        String nameSpace = "/" + zkClient.getNamespace();
+        nullNsFw.create().creatingParentContainersIfNeeded().forPath(nameSpace);
+      } catch (KeeperException.NodeExistsException ignore) {
+        // We don't care if the znode already exists
       } catch (Exception e) {
         throw new IOException("Could not create namespace", e);
       }
     }
-    listenerThreadPool = Executors.newSingleThreadExecutor();
     try {
       delTokSeqCounter = new SharedCount(zkClient, ZK_DTSM_SEQNUM_ROOT, 0);
       if (delTokSeqCounter != null) {
@@ -363,71 +288,65 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
       throw new RuntimeException("Could not create ZK paths");
     }
     try {
-      keyCache = new PathChildrenCache(zkClient, ZK_DTSM_MASTER_KEY_ROOT, true);
-      if (keyCache != null) {
-        keyCache.start(StartMode.BUILD_INITIAL_CACHE);
-        keyCache.getListenable().addListener(new PathChildrenCacheListener() {
-          @Override
-          public void childEvent(CuratorFramework client,
-              PathChildrenCacheEvent event)
-              throws Exception {
-            switch (event.getType()) {
-            case CHILD_ADDED:
-              processKeyAddOrUpdate(event.getData().getData());
-              break;
-            case CHILD_UPDATED:
-              processKeyAddOrUpdate(event.getData().getData());
-              break;
-            case CHILD_REMOVED:
-              processKeyRemoved(event.getData().getPath());
-              break;
-            default:
-              break;
+      keyCache = CuratorCache.bridgeBuilder(zkClient, ZK_DTSM_MASTER_KEY_ROOT)
+          .build();
+      CuratorCacheListener keyCacheListener = CuratorCacheListener.builder()
+          .forCreatesAndChanges((oldNode, node) -> {
+            try {
+              processKeyAddOrUpdate(node.getData());
+            } catch (IOException e) {
+              LOG.error("Error while processing Curator keyCacheListener "
+                  + "NODE_CREATED / NODE_CHANGED event");
+              throw new UncheckedIOException(e);
             }
-          }
-        }, listenerThreadPool);
-        loadFromZKCache(false);
-      }
+          })
+          .forDeletes(childData -> processKeyRemoved(childData.getPath()))
+          .build();
+      keyCache.listenable().addListener(keyCacheListener);
+      keyCache.start();
+      loadFromZKCache(false);
     } catch (Exception e) {
-      throw new IOException("Could not start PathChildrenCache for keys", e);
+      throw new IOException("Could not start Curator keyCacheListener for keys",
+          e);
     }
     if (isTokenWatcherEnabled) {
       LOG.info("TokenCache is enabled");
       try {
-        tokenCache = new PathChildrenCache(zkClient, ZK_DTSM_TOKENS_ROOT, true);
-        if (tokenCache != null) {
-          tokenCache.start(StartMode.BUILD_INITIAL_CACHE);
-          tokenCache.getListenable().addListener(new PathChildrenCacheListener() {
-
-            @Override
-            public void childEvent(CuratorFramework client,
-                                   PathChildrenCacheEvent event) throws Exception {
-              switch (event.getType()) {
-                case CHILD_ADDED:
-                  processTokenAddOrUpdate(event.getData().getData());
-                  break;
-                case CHILD_UPDATED:
-                  processTokenAddOrUpdate(event.getData().getData());
-                  break;
-                case CHILD_REMOVED:
-                  processTokenRemoved(event.getData());
-                  break;
-                default:
-                  break;
+        tokenCache = CuratorCache.bridgeBuilder(zkClient, ZK_DTSM_TOKENS_ROOT)
+            .build();
+        CuratorCacheListener tokenCacheListener = CuratorCacheListener.builder()
+            .forCreatesAndChanges((oldNode, node) -> {
+              try {
+                processTokenAddOrUpdate(node.getData());
+              } catch (IOException e) {
+                LOG.error("Error while processing Curator tokenCacheListener "
+                    + "NODE_CREATED / NODE_CHANGED event");
+                throw new UncheckedIOException(e);
               }
-            }
-          }, listenerThreadPool);
-          loadFromZKCache(true);
-        }
+            })
+            .forDeletes(childData -> {
+              try {
+                processTokenRemoved(childData);
+              } catch (IOException e) {
+                LOG.error("Error while processing Curator tokenCacheListener "
+                    + "NODE_DELETED event");
+                throw new UncheckedIOException(e);
+              }
+            })
+            .build();
+        tokenCache.listenable().addListener(tokenCacheListener);
+        tokenCache.start();
+        loadFromZKCache(true);
       } catch (Exception e) {
-        throw new IOException("Could not start PathChildrenCache for tokens", e);
+        throw new IOException(
+            "Could not start Curator tokenCacheListener for tokens", e);
       }
     }
     super.startThreads();
   }
 
   /**
-   * Load the PathChildrenCache into the in-memory map. Possible caches to be
+   * Load the CuratorCache into the in-memory map. Possible caches to be
    * loaded are keyCache and tokenCache.
    *
    * @param isTokenCache true if loading tokenCache, false if loading keyCache.
@@ -435,33 +354,34 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
   private void loadFromZKCache(final boolean isTokenCache) {
     final String cacheName = isTokenCache ? "token" : "key";
     LOG.info("Starting to load {} cache.", cacheName);
-    final List<ChildData> children;
+    final Stream<ChildData> children;
     if (isTokenCache) {
-      children = tokenCache.getCurrentData();
+      children = tokenCache.stream();
     } else {
-      children = keyCache.getCurrentData();
+      children = keyCache.stream();
     }
 
-    int count = 0;
-    for (ChildData child : children) {
+    final AtomicInteger count = new AtomicInteger(0);
+    children.forEach(childData -> {
       try {
         if (isTokenCache) {
-          processTokenAddOrUpdate(child.getData());
+          processTokenAddOrUpdate(childData.getData());
         } else {
-          processKeyAddOrUpdate(child.getData());
+          processKeyAddOrUpdate(childData.getData());
         }
       } catch (Exception e) {
         LOG.info("Ignoring node {} because it failed to load.",
-            child.getPath());
+            childData.getPath());
         LOG.debug("Failure exception:", e);
-        ++count;
+        count.getAndIncrement();
       }
-    }
+    });
     if (isTokenCache) {
       syncTokenOwnerStats();
     }
-    if (count > 0) {
-      LOG.warn("Ignored {} nodes while loading {} cache.", count, cacheName);
+    if (count.get() > 0) {
+      LOG.warn("Ignored {} nodes while loading {} cache.", count.get(),
+          cacheName);
     }
     LOG.info("Loaded {} cache.", cacheName);
   }
@@ -549,20 +469,6 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
       }
     } catch (Exception e) {
       LOG.error("Could not stop Curator Framework", e);
-    }
-    if (listenerThreadPool != null) {
-      listenerThreadPool.shutdown();
-      try {
-        // wait for existing tasks to terminate
-        if (!listenerThreadPool.awaitTermination(shutdownTimeout,
-            TimeUnit.MILLISECONDS)) {
-          LOG.error("Forcing Listener threadPool to shutdown !!");
-          listenerThreadPool.shutdownNow();
-        }
-      } catch (InterruptedException ie) {
-        listenerThreadPool.shutdownNow();
-        Thread.currentThread().interrupt();
-      }
     }
   }
 
@@ -961,40 +867,11 @@ public abstract class ZKDelegationTokenSecretManager<TokenIdent extends Abstract
     return isTokenWatcherEnabled;
   }
 
-  /**
-   * Simple implementation of an {@link ACLProvider} that simply returns an ACL
-   * that gives all permissions only to a single principal.
-   */
-  private static class SASLOwnerACLProvider implements ACLProvider {
-
-    private final List<ACL> saslACL;
-
-    private SASLOwnerACLProvider(String principal) {
-      this.saslACL = Collections.singletonList(
-          new ACL(Perms.ALL, new Id("sasl", principal)));
-    }
-
-    @Override
-    public List<ACL> getDefaultAcl() {
-      return saslACL;
-    }
-
-    @Override
-    public List<ACL> getAclForPath(String path) {
-      return saslACL;
-    }
-  }
-
   @VisibleForTesting
   @Private
   @Unstable
   static String getNodePath(String root, String nodeName) {
     return (root + "/" + nodeName);
-  }
-
-  @VisibleForTesting
-  public ExecutorService getListenerThreadPool() {
-    return listenerThreadPool;
   }
 
   @VisibleForTesting

@@ -40,5 +40,22 @@ public enum AbfsRestOperationType {
     Flush,
     ReadFile,
     DeletePath,
-    CheckAccess
+    CheckAccess,
+    LeasePath,
+    CreateContainer,
+    GetContainerProperties,
+    SetContainerMetadata,
+    DeleteContainer,
+    ListBlobs,
+    PutBlob,
+    PutBlock,
+    PutBlockList,
+    LeaseBlob,
+    GetBlob,
+    GetBlockList,
+    GetBlobProperties,
+    SetBlobMetadata,
+    DeleteBlob,
+    CopyBlob,
+    AppendBlock
 }

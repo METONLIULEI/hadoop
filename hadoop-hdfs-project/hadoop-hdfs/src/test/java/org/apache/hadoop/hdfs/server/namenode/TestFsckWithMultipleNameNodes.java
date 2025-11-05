@@ -28,7 +28,6 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.viewfs.ConfigUtil;
-import org.apache.hadoop.fs.viewfs.ViewFileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
@@ -36,9 +35,10 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.server.balancer.TestBalancer;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test fsck with multiple NameNodes
@@ -47,7 +47,7 @@ public class TestFsckWithMultipleNameNodes {
   static final Logger LOG =
       LoggerFactory.getLogger(TestFsckWithMultipleNameNodes.class);
   {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
   }
 
   
@@ -121,7 +121,7 @@ public class TestFsckWithMultipleNameNodes {
         LOG.info("urls[" + i + "]=" + urls[i]);
         final String result = TestFsck.runFsck(conf, 0, false, urls[i]);
         LOG.info("result=" + result);
-        Assert.assertTrue(result.contains("Status: HEALTHY"));
+        assertTrue(result.contains("Status: HEALTHY"));
       }
 
       // Test viewfs
@@ -138,7 +138,7 @@ public class TestFsckWithMultipleNameNodes {
         LOG.info("vurls[" + i + "]=" + vurls[i]);
         final String result = TestFsck.runFsck(conf, 0, false, vurls[i]);
         LOG.info("result=" + result);
-        Assert.assertTrue(result.contains("Status: HEALTHY"));
+        assertTrue(result.contains("Status: HEALTHY"));
       }
     } finally {
       cluster.shutdown();

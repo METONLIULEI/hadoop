@@ -19,11 +19,11 @@
 package org.apache.hadoop.yarn.server.nodemanager.containermanager;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -42,6 +42,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileContext;
@@ -116,9 +117,8 @@ import org.apache.hadoop.yarn.server.nodemanager.security.NMTokenSecretManagerIn
 import org.apache.hadoop.yarn.server.nodemanager.timelineservice.NMTimelinePublisher;
 import org.apache.hadoop.yarn.server.security.ApplicationACLsManager;
 import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestContainerManagerRecovery extends BaseContainerManagerTest {
 
@@ -127,7 +127,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
   }
 
   @Override
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     localFS.delete(new Path(localDir.getAbsolutePath()), true);
     localFS.delete(new Path(tmpDir.getAbsolutePath()), true);
@@ -158,7 +158,6 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     dirsHandler = new LocalDirsHandlerService();
     nodeHealthChecker = new NodeHealthCheckerService(dirsHandler);
     nodeHealthChecker.init(conf);
-
   }
 
   @Test
@@ -409,8 +408,10 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     NMStateStoreService stateStore = new NMMemoryStateStoreService();
     stateStore.init(conf);
     stateStore.start();
-    Context context = createContext(conf, stateStore);
+    context = createContext(conf, stateStore);
     ContainerManagerImpl cm = createContainerManager(context, delSrvc);
+    ((NMContext) context).setContainerManager(cm);
+    ((NMContext) context).setNodeStatusUpdater(getNodeStatusUpdater());
     cm.init(conf);
     cm.start();
     metrics.addResource(Resource.newInstance(10240, 8));
@@ -422,7 +423,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     Map<String, String> containerEnv = Collections.emptyMap();
     Map<String, ByteBuffer> serviceData = Collections.emptyMap();
     Map<String, LocalResource> localResources = Collections.emptyMap();
-    List<String> commands = Arrays.asList("sleep 60s".split(" "));
+    List<String> commands = Arrays.asList("sleep 60".split(" "));
     ContainerLaunchContext clc = ContainerLaunchContext.newInstance(
         localResources, containerEnv, commands, serviceData,
         null, null);
@@ -437,14 +438,16 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     waitForNMContainerState(cm, cid,
         org.apache.hadoop.yarn.server.nodemanager
             .containermanager.container.ContainerState.RUNNING);
-    TestNodeManagerMetrics.checkMetrics(1, 0, 0, 0, 0, 1, 1, 1, 9, 1, 7);
+    TestNodeManagerMetrics.checkMetrics(1, 0, 0, 0, 0,
+        1, 1, 1, 9, 1, 7, 0F, 1);
 
     // restart and verify metrics could be recovered
     cm.stop();
     DefaultMetricsSystem.shutdown();
     metrics = NodeManagerMetrics.create();
     metrics.addResource(Resource.newInstance(10240, 8));
-    TestNodeManagerMetrics.checkMetrics(0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 8);
+    TestNodeManagerMetrics.checkMetrics(0, 0, 0, 0, 0, 0,
+        0, 0, 10, 0, 8, 0F, 0);
     context = createContext(conf, stateStore);
     cm = createContainerManager(context, delSrvc);
     cm.init(conf);
@@ -452,7 +455,8 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     assertEquals(1, context.getApplications().size());
     app = context.getApplications().get(appId);
     assertNotNull(app);
-    TestNodeManagerMetrics.checkMetrics(1, 0, 0, 0, 0, 1, 1, 1, 9, 1, 7);
+    TestNodeManagerMetrics.checkMetrics(1, 0, 0, 0, 0,
+        1, 1, 1, 9, 1, 7, 0F, 1);
     cm.stop();
   }
 
@@ -595,14 +599,14 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     app = context.getApplications().get(appId);
     assertNotNull(app);
 
-    Assert.assertNotNull(nmContainer);
+    assertNotNull(nmContainer);
     ResourceMappings resourceMappings = nmContainer.getResourceMappings();
     List<Serializable> assignedResource = resourceMappings
         .getAssignedResources("gpu");
-    Assert.assertTrue(assignedResource.equals(gpuResources));
-    Assert.assertTrue(
+    assertTrue(assignedResource.equals(gpuResources));
+    assertTrue(
         resourceMappings.getAssignedResources("numa").equals(numaResources));
-    Assert.assertTrue(
+    assertTrue(
         resourceMappings.getAssignedResources("fpga").equals(fpgaResources));
     cm.stop();
   }
@@ -679,7 +683,49 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
     verify(cm, never()).handle(isA(CMgrCompletedAppsEvent.class));
   }
 
-  private void commonLaunchContainer(ApplicationId appId, ContainerId cid,
+  @Test
+  public void testKilledContainerInQueuedStateRecovery() throws Exception {
+    conf.setBoolean(YarnConfiguration.NM_RECOVERY_ENABLED, true);
+    conf.setBoolean(YarnConfiguration.NM_RECOVERY_SUPERVISED, true);
+    NMStateStoreService stateStore = new NMMemoryStateStoreService();
+    stateStore.init(conf);
+    stateStore.start();
+    context = createContext(conf, stateStore);
+    ContainerManagerImpl cm = createContainerManager(context, delSrvc);
+    ((NMContext) context).setContainerManager(cm);
+    cm.init(conf);
+    cm.start();
+
+    // add an application by starting a container
+    ApplicationId appId = ApplicationId.newInstance(0, 0);
+    ApplicationAttemptId attemptId =
+        ApplicationAttemptId.newInstance(appId, 1);
+    ContainerId cid = ContainerId.newContainerId(attemptId, 1);
+    createStartContainerRequest(appId, cid, cm);
+
+    Application app = context.getApplications().get(appId);
+    assertEquals(1, context.getApplications().size());
+    assertNotNull(app);
+
+    stateStore.storeContainerKilled(cid);
+    // restart and verify container scheduler has recovered correctly
+    cm.stop();
+    context = createContext(conf, stateStore);
+    cm = createContainerManager(context, delSrvc);
+    ((NMContext) context).setContainerManager(cm);
+    cm.init(conf);
+    cm.start();
+    assertEquals(1, context.getApplications().size());
+
+    ConcurrentMap<ContainerId, Container> containers = context.getContainers();
+    Container c = containers.get(cid);
+    assertEquals(ContainerState.DONE, c.getContainerState());
+    app = context.getApplications().get(appId);
+    assertNotNull(app);
+    cm.stop();
+  }
+
+  private void createStartContainerRequest(ApplicationId appId, ContainerId cid,
       ContainerManagerImpl cm) throws Exception {
     Map<String, String> containerEnv = new HashMap<>();
     setFlowContext(containerEnv, "app_name1", appId);
@@ -724,6 +770,11 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
         context, cm, cid, clc, null, ContainerType.TASK);
     assertTrue(startResponse.getFailedRequests().isEmpty());
     assertEquals(1, context.getApplications().size());
+  }
+
+  private void commonLaunchContainer(ApplicationId appId, ContainerId cid,
+      ContainerManagerImpl cm) throws Exception {
+    createStartContainerRequest(appId, cid, cm);
     // make sure the container reaches RUNNING state
     waitForNMContainerState(cm, cid,
         org.apache.hadoop.yarn.server.nodemanager
@@ -746,7 +797,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
       }
       @Override
       protected ContainerScheduler createContainerScheduler(Context context) {
-        return new ContainerScheduler(context, dispatcher, metrics){
+        return new ContainerScheduler(context, getDispatcher(), metrics){
           @Override
           public ContainersMonitor getContainersMonitor() {
             return new ContainersMonitorImpl(null, null, null) {
@@ -950,7 +1001,7 @@ public class TestContainerManagerRecovery extends BaseContainerManagerTest {
             return null;
           }
     };
-    containerManager.dispatcher.disableExitOnDispatchException();
+    containerManager.getDispatcher().disableExitOnDispatchException();
     return containerManager;
   }
 

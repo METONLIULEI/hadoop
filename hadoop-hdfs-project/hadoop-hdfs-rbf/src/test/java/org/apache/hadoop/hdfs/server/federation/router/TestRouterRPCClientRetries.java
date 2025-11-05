@@ -20,10 +20,10 @@ package org.apache.hadoop.hdfs.server.federation.router;
 import static org.apache.hadoop.hdfs.server.federation.FederationTestUtils.simulateSlowNamenode;
 import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
 import static org.apache.hadoop.test.GenericTestUtils.waitFor;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.List;
@@ -48,17 +48,15 @@ import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.ipc.RemoteException;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
-
-import java.util.function.Supplier;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test retry behavior of the Router RPC Client.
  */
+@Timeout(100000)
 public class TestRouterRPCClientRetries {
 
   private static StateStoreDFSCluster cluster;
@@ -67,10 +65,7 @@ public class TestRouterRPCClientRetries {
   private static MembershipNamenodeResolver resolver;
   private static ClientProtocol routerProtocol;
 
-  @Rule
-  public final Timeout testTimeout = new Timeout(100000);
-
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     // Build and start a federated cluster
     cluster = new StateStoreDFSCluster(false, 2);
@@ -106,7 +101,7 @@ public class TestRouterRPCClientRetries {
     routerProtocol = routerContext.getClient().getNamenode();
   }
 
-  @After
+  @AfterEach
   public void tearDown() {
     if (cluster != null) {
       cluster.stopRouter(routerContext);
@@ -153,7 +148,7 @@ public class TestRouterRPCClientRetries {
 
     DFSClient client = nnContext1.getClient();
     // Renew lease for the DFS client, it will succeed.
-    routerProtocol.renewLease(client.getClientName());
+    routerProtocol.renewLease(client.getClientName(), null);
 
     // Verify the retry times, it will retry one time for ns0.
     FederationRPCMetrics rpcMetrics = routerContext.getRouter()
@@ -168,7 +163,7 @@ public class TestRouterRPCClientRetries {
   private void registerInvalidNameReport() throws IOException {
     String ns0 = cluster.getNameservices().get(0);
     List<? extends FederationNamenodeContext> origin = resolver
-        .getNamenodesForNameserviceId(ns0);
+        .getNamenodesForNameserviceId(ns0, false);
     FederationNamenodeContext nnInfo = origin.get(0);
     NamenodeStatusReport report = new NamenodeStatusReport(ns0,
         nnInfo.getNamenodeId(), nnInfo.getRpcAddress(),
@@ -237,11 +232,6 @@ public class TestRouterRPCClientRetries {
   private static void waitUpdateLiveNodes(
       final String oldValue, final NamenodeBeanMetrics metrics)
           throws Exception {
-    waitFor(new Supplier<Boolean>() {
-      @Override
-      public Boolean get() {
-        return !oldValue.equals(metrics.getLiveNodes());
-      }
-    }, 500, 5 * 1000);
+    waitFor(() -> !oldValue.equals(metrics.getLiveNodes()), 500, 5 * 1000);
   }
 }

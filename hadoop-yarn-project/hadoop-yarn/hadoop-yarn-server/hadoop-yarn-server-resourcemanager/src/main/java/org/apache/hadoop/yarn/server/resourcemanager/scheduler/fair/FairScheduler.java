@@ -18,17 +18,12 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
-import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.SettableFuture;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.Container;
@@ -46,8 +41,7 @@ import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.api.records.SchedulingRequest;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.exceptions
-        .SchedulerInvalidResoureRequestException;
+import org.apache.hadoop.yarn.exceptions.SchedulerInvalidResourceRequestException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.SchedulerResourceTypes;
@@ -65,6 +59,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationCons
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppEventType;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptEventType;
@@ -81,6 +76,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerApplication;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils.MaxResourceValidationResult;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.QueueEntitlement;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.AppAttemptAddedSchedulerEvent;
@@ -101,6 +97,13 @@ import org.apache.hadoop.yarn.util.resource.DominantResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
+
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.SettableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -463,6 +466,12 @@ public class FairScheduler extends
    * Add a new application to the scheduler, with a given id, queue name, and
    * user. This will accept a new app even if the user or queue is above
    * configured limits, but the app will not be marked as runnable.
+   *
+   * @param applicationId  applicationId.
+   * @param queueName queue name.
+   * @param user submit application user.
+   * @param isAppRecovering true, app recover; false, app not recover.
+   * @param placementContext application placement context.
    */
   protected void addApplication(ApplicationId applicationId,
       String queueName, String user, boolean isAppRecovering,
@@ -552,11 +561,15 @@ public class FairScheduler extends
           return;
         }
       }
+      boolean unmanagedAM = rmApp != null &&
+          rmApp.getApplicationSubmissionContext() != null
+          && rmApp.getApplicationSubmissionContext().getUnmanagedAM();
 
       SchedulerApplication<FSAppAttempt> application =
-          new SchedulerApplication<>(queue, user);
+          new SchedulerApplication<>(queue, user, unmanagedAM);
       applications.put(applicationId, application);
-      queue.getMetrics().submitApp(user);
+
+      queue.getMetrics().submitApp(user, unmanagedAM);
 
       LOG.info("Accepted application " + applicationId + " from user: " + user
           + ", in queue: " + queueName
@@ -582,6 +595,10 @@ public class FairScheduler extends
 
   /**
    * Add a new application attempt to the scheduler.
+   *
+   * @param applicationAttemptId application AttemptId.
+   * @param transferStateFromPreviousAttempt transferStateFromPreviousAttempt.
+   * @param isAttemptRecovering true, attempt recovering;false, attempt not recovering.
    */
   protected void addApplicationAttempt(
       ApplicationAttemptId applicationAttemptId,
@@ -610,7 +627,7 @@ public class FairScheduler extends
         maxRunningEnforcer.trackNonRunnableApp(attempt);
       }
 
-      queue.getMetrics().submitAppAttempt(user);
+      queue.getMetrics().submitAppAttempt(user, application.isUnmanagedAM());
 
       LOG.info("Added Application Attempt " + applicationAttemptId
           + " to scheduler from user: " + user);
@@ -895,7 +912,7 @@ public class FairScheduler extends
     // scheduler would clear them right away and AM
     // would not get this information.
     if (!invalidAsks.isEmpty()) {
-      throw new SchedulerInvalidResoureRequestException(String.format(
+      throw new SchedulerInvalidResourceRequestException(String.format(
               "Resource request is invalid for application %s because queue %s "
                       + "has 0 amount of resource for a resource type! "
                       + "Validation result: %s",
@@ -926,6 +943,11 @@ public class FairScheduler extends
                   + " application=" + application.getApplicationId());
         }
         application.showRequests();
+
+        // update the current container ask by considering the already allocated containers
+        // from previous allocation request as well as populate the updatedNewlyAllocatedContainers
+        // list according the to the current ask.
+        autoCorrectContainerAllocation(ask, application);
 
         // Update application requests
         application.updateResourceRequests(ask);
@@ -1347,7 +1369,11 @@ public class FairScheduler extends
     readLock.lock();
     try {
       FSQueue queue = queueMgr.getQueue(queueName);
-      if ((queue == null) || !allocConf.isReservable(queue.getQueueName())) {
+      if (queue == null) {
+        return queueName;
+      }
+      QueuePath queuePath = new QueuePath(queue.getQueueName());
+      if (!allocConf.isReservable(queuePath)) {
         return queueName;
       }
       // Use fully specified name from now on (including root. prefix)
@@ -1357,7 +1383,7 @@ public class FairScheduler extends
         queue = queueMgr.getQueue(resQName);
         if (queue == null) {
           // reservation has terminated during failover
-          if (isRecovering && allocConf.getMoveOnExpiry(queueName)) {
+          if (isRecovering && allocConf.getMoveOnExpiry(queuePath)) {
             // move to the default child queue of the plan
             return getDefaultQueueForPlanQueue(queueName);
           }
@@ -1440,6 +1466,13 @@ public class FairScheduler extends
             + " is invalid, so using default value "
             + FairSchedulerConfiguration.DEFAULT_UPDATE_INTERVAL_MS
             + " ms instead");
+      }
+
+      boolean globalAmPreemption = conf.getBoolean(
+          FairSchedulerConfiguration.AM_PREEMPTION,
+          FairSchedulerConfiguration.DEFAULT_AM_PREEMPTION);
+      if (!globalAmPreemption) {
+        LOG.info("AM preemption is DISABLED globally");
       }
 
       rootMetrics = FSQueueMetrics.forQueue("root", null, true, conf);
@@ -1949,7 +1982,7 @@ public class FairScheduler extends
     Set<String> planQueues = new HashSet<String>();
     for (FSQueue fsQueue : queueMgr.getQueues()) {
       String queueName = fsQueue.getName();
-      if (allocConf.isReservable(queueName)) {
+      if (allocConf.isReservable(new QueuePath(queueName))) {
         planQueues.add(queueName);
       }
     }
@@ -1990,7 +2023,7 @@ public class FairScheduler extends
 
   private String handleMoveToPlanQueue(String targetQueueName) {
     FSQueue dest = queueMgr.getQueue(targetQueueName);
-    if (dest != null && allocConf.isReservable(dest.getQueueName())) {
+    if (dest != null && allocConf.isReservable(new QueuePath(dest.getQueueName()))) {
       // use the default child reservation queue of the plan
       targetQueueName = getDefaultQueueForPlanQueue(targetQueueName);
     }
@@ -2010,7 +2043,8 @@ public class FairScheduler extends
   }
 
   @Override
-  public long checkAndGetApplicationLifetime(String queueName, long lifetime) {
+  public long checkAndGetApplicationLifetime(String queueName, long lifetime,
+                                             RMAppImpl app) {
     // Lifetime is the application lifetime by default.
     return lifetime;
   }

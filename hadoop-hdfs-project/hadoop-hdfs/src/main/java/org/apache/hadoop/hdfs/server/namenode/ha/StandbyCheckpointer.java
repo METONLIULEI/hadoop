@@ -19,7 +19,6 @@ package org.apache.hadoop.hdfs.server.namenode.ha;
 
 import static org.apache.hadoop.util.Time.monotonicNow;
 
-import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URL;
@@ -47,10 +46,12 @@ import org.apache.hadoop.hdfs.util.Canceler;
 import org.apache.hadoop.io.MultipleIOException;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.Lists;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -341,7 +342,7 @@ public class StandbyCheckpointer {
       throw ie;
     }
 
-    if (!ioes.isEmpty()) {
+    if (ioes.size() > activeNNAddresses.size() / 2) {
       throw MultipleIOException.createIOException(ioes);
     }
   }
@@ -372,6 +373,11 @@ public class StandbyCheckpointer {
   @VisibleForTesting
   static int getCanceledCount() {
     return canceledCount;
+  }
+
+  @VisibleForTesting
+  public long getLastCheckpointTime() {
+    return lastCheckpointTime;
   }
 
   private long countUncheckpointedTxns() {
@@ -460,7 +466,8 @@ public class StandbyCheckpointer {
           } else if (secsSinceLast >= checkpointConf.getPeriod()) {
             LOG.info("Triggering checkpoint because it has been {} seconds " +
                 "since the last checkpoint, which exceeds the configured " +
-                "interval {}", secsSinceLast, checkpointConf.getPeriod());
+                "interval {}, And now is {}, lastCheckpointTime is {}.",
+                secsSinceLast, checkpointConf.getPeriod(), now, lastCheckpointTime);
             needCheckpoint = true;
           }
 
@@ -486,8 +493,9 @@ public class StandbyCheckpointer {
               namesystem.setCreatedRollbackImages(true);
               namesystem.setNeedRollbackFsImage(false);
             }
-            lastCheckpointTime = now;
-            LOG.info("Checkpoint finished successfully.");
+            lastCheckpointTime = monotonicNow();
+            LOG.info("Checkpoint finished successfully, the lastCheckpointTime is:{}.",
+                lastCheckpointTime);
           }
         } catch (SaveNamespaceCancelledException ce) {
           LOG.info("Checkpoint was cancelled: {}", ce.getMessage());

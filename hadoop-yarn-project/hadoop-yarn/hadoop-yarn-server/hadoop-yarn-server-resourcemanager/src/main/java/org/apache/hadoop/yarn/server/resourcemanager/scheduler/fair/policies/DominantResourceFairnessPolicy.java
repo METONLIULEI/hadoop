@@ -22,7 +22,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -390,7 +390,7 @@ public class DominantResourceFairnessPolicy extends SchedulingPolicy {
       // share for that resource
       boolean s1Needy = resourceInfo1[dominant1].getValue() <
           minShareInfo1[dominant1].getValue();
-      boolean s2Needy = resourceInfo1[dominant2].getValue() <
+      boolean s2Needy = resourceInfo2[dominant2].getValue() <
           minShareInfo2[dominant2].getValue();
 
       int res;

@@ -36,8 +36,8 @@ import org.apache.hadoop.mapreduce.OutputCommitter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.DurationInfo;
 import org.apache.hadoop.util.Progressable;
 import org.slf4j.Logger;
@@ -157,6 +157,11 @@ public class FileOutputCommitter extends PathOutputCommitter {
     LOG.info("FileOutputCommitter skip cleanup _temporary folders under " +
         "output directory:" + skipCleanup + ", ignore cleanup failures: " +
         ignoreCleanupFailures);
+
+    if (algorithmVersion == 1 && skipCleanup) {
+        LOG.warn("Skip cleaning up when using FileOutputCommitter V1 can lead to unexpected behaviors. " +
+                "For example, committing several times may be allowed falsely.");
+    }
 
     if (outputPath != null) {
       FileSystem fs = outputPath.getFileSystem(context.getConfiguration());

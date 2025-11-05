@@ -29,7 +29,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentSkipListMap;
 
-import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -48,6 +48,7 @@ import org.apache.hadoop.hdfs.server.common.BlockAlias;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage.State;
 import org.apache.hadoop.hdfs.util.RwLock;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.util.ReflectionUtils;
 
 import org.slf4j.Logger;
@@ -75,11 +76,9 @@ public class ProvidedStorageMap {
   private final ProvidedDescriptor providedDescriptor;
   private final DatanodeStorageInfo providedStorageInfo;
   private boolean providedEnabled;
-  private long capacity;
   private int defaultReplication;
 
-  ProvidedStorageMap(RwLock lock, BlockManager bm, Configuration conf)
-      throws IOException {
+  ProvidedStorageMap(RwLock lock, BlockManager bm, Configuration conf) {
 
     storageId = conf.get(DFSConfigKeys.DFS_PROVIDER_STORAGEUUID,
         DFSConfigKeys.DFS_PROVIDER_STORAGEUUID_DEFAULT);
@@ -146,7 +145,7 @@ public class ProvidedStorageMap {
 
   private void processProvidedStorageReport()
       throws IOException {
-    assert lock.hasWriteLock() : "Not holding write lock";
+    assert lock.hasWriteLock(RwLockMode.GLOBAL) : "Not holding write lock";
     if (providedStorageInfo.getBlockReportCount() == 0
         || providedDescriptor.activeProvidedDatanodes() == 0) {
       LOG.info("Calling process first blk report from storage: "
@@ -175,7 +174,7 @@ public class ProvidedStorageMap {
 
   public void removeDatanode(DatanodeDescriptor dnToRemove) {
     if (providedEnabled) {
-      assert lock.hasWriteLock() : "Not holding write lock";
+      assert lock.hasWriteLock(RwLockMode.BM) : "Not holding write lock";
       providedDescriptor.remove(dnToRemove);
       // if all datanodes fail, set the block report count to 0
       if (providedDescriptor.activeProvidedDatanodes() == 0) {
